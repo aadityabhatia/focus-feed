@@ -1,0 +1,3332 @@
+"""Tests for the CLI module (Phase 5).
+
+Tests cover:
+- CLI framework: group, shared options, config loading, help text
+- Process command: orchestration, progress, summary, exit codes
+- Watch command: observer startup, event handling, graceful shutdown, error handling
+- Generate-feeds command: skip processing, read JSON, generate feeds, summary
+- Validate command: schema validation, orphaned JSON, special characters, exit codes
+- Entry point: main() function, pyproject.toml configuration
+- --file flag: process only a specific file
+- --force flag: force processing even if complete
+"""
+
+import json
+import os
+from pathlib import Path
+import time
+from unittest import mock
+
+import click
+from click.testing import CliRunner
+import pytest
+
+from local_feed_generator.cli import app, main
+from local_feed_generator.scanner import ScannedFile
+
+# ---------------------------------------------------------------------------
+# Fixtures
+# ---------------------------------------------------------------------------
+
+
+def _set_valid_env(monkeypatch):
+    """Set valid environment variables for config."""
+    monkeypatch.setenv("BASE_URL", "https://example.com/feeds")
+    monkeypatch.setenv("DATA_DIR", "./data")
+    monkeypatch.setenv("LLM_ENDPOINT", "https://llm.example.com/v1")
+    monkeypatch.setenv("LLM_API_KEY", "test-key")
+    monkeypatch.setenv("LLM_MODEL", "test-model")
+    monkeypatch.setenv("LLM_SYSTEM_PROMPT", "Test system prompt")
+    # Clear transcription endpoint to force local mode (not remote).
+    # Using setenv with empty string overrides the .env file value (env vars
+    # take precedence over .env in pydantic-settings).
+    monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "")
+    monkeypatch.setenv("TRANSCRIPTION_API_KEY", "")
+    monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "")
+    import local_feed_generator.config as config_module
+
+    config_module._config_instance = None
+
+
+@pytest.fixture
+def valid_env(monkeypatch):
+    """Provide valid environment variables for all required config fields."""
+    _set_valid_env(monkeypatch)
+    # Mock CUDA availability check so tests that mock the Transcriber or
+    # invoke the transcribe CLI command can proceed without an actual
+    # CUDA installation.
+    monkeypatch.setattr(
+        "local_feed_generator.services.transcriber.check_cuda_available",
+        lambda: True,
+    )
+    yield
+    import local_feed_generator.config as config_module
+
+    config_module._config_instance = None
+
+
+@pytest.fixture(autouse=True)
+def _restore_data_dir_env():
+    """Save and restore DATA_DIR env var around every test.
+
+    The CLI's ``_load_config`` function sets ``os.environ["DATA_DIR"]``
+    directly during command execution.  This fixture ensures the original
+    value is restored after each test so that environment state does not
+    leak between test modules.
+    """
+    original = os.environ.get("DATA_DIR")
+    yield
+    if original is not None:
+        os.environ["DATA_DIR"] = original
+    else:
+        os.environ.pop("DATA_DIR", None)
+    # Also reset the config singleton
+    import local_feed_generator.config as config_module
+
+    config_module._config_instance = None
+
+
+@pytest.fixture
+def runner():
+    """Create a Click test runner."""
+    return CliRunner()
+
+
+@pytest.fixture
+def tmp_data_dir(tmp_path):
+    """Create a temporary data directory with test files."""
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    return data_dir
+
+
+def _make_scanned_file(
+    filepath: str,
+    absolute_path: str | None = None,
+    filename: str | None = None,
+    filetype: str | None = None,
+) -> ScannedFile:
+    """Helper to create a ScannedFile for testing."""
+    if absolute_path is None:
+        absolute_path = f"/data/{filepath}"
+    if filename is None:
+        filename = Path(filepath).name
+    if filetype is None:
+        filetype = Path(filepath).suffix.lstrip(".")
+    return ScannedFile(
+        filepath=filepath,
+        absolute_path=absolute_path,
+        filename=filename,
+        filetype=filetype,
+    )
+
+
+def _make_valid_metadata(
+    filepath: str = "videos/lecture.mp4",
+    filename: str = "lecture.mp4",
+    filetype: str = "mp4",
+    error: str | None = None,
+) -> dict:
+    """Create a valid metadata dictionary for testing.
+
+    Creates metadata with all applicable step statuses set to "complete"
+    in the status dict. If ``error`` is provided, the error field is set
+    and step statuses are left as None (making the file not feed-eligible).
+    """
+    meta: dict = {
+        "title": "Test Title",
+        "description": "Test description",
+        "filename": filename,
+        "filepath": filepath,
+        "filetype": filetype,
+        "date": 1728931200,
+        "size": 12345,
+        "processing_date": 1728931200,
+    }
+    if error:
+        meta["error"] = error
+    else:
+        if filetype == "mp4":
+            meta["status"] = {"transcribe": "complete", "summarize": "complete"}
+            meta["transcript"] = "Test transcript"
+            meta["summary"] = "Test summary"
+        else:
+            meta["status"] = {"extract": "complete"}
+    return meta
+
+
+def _make_mock_metadata(feed_eligible: bool = True):
+    """Create a mock Metadata object for testing."""
+    mock_obj = mock.MagicMock()
+    mock_obj.feed_eligible = feed_eligible
+    return mock_obj
+
+
+# ---------------------------------------------------------------------------
+# T5.1: CLI Framework Tests
+# ---------------------------------------------------------------------------
+
+
+class TestCliFramework:
+    """Tests for the CLI framework (T5.1)."""
+
+    def test_app_is_click_group(self):
+        """The CLI should be a Click group."""
+        assert isinstance(app, click.Group)
+
+    def test_app_has_process_command(self):
+        """The CLI should have a 'process' command."""
+        assert "process" in app.commands
+
+    def test_app_has_watch_command(self):
+        """The CLI should have a 'watch' command."""
+        assert "watch" in app.commands
+
+    def test_app_has_feeds_command(self):
+        """The CLI should have a 'feeds' command."""
+        assert "feeds" in app.commands
+
+    def test_app_has_validate_command(self):
+        """The CLI should have a 'validate' command."""
+        assert "validate" in app.commands
+
+    def test_help_text(self, runner):
+        """The CLI should display help text."""
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "Local Feed Generator" in result.output
+
+    def test_process_help(self, runner):
+        """The process command should have help text."""
+        result = runner.invoke(app, ["process", "--help"])
+        assert result.exit_code == 0
+        assert "--data-dir" in result.output
+        assert "--config-file" in result.output
+        assert "--file" in result.output
+        assert "--force" in result.output
+
+    def test_watch_help(self, runner):
+        """The watch command should have help text."""
+        result = runner.invoke(app, ["watch", "--help"])
+        assert result.exit_code == 0
+        assert "--data-dir" in result.output
+        assert "--config-file" in result.output
+        assert "--file" in result.output
+        assert "--force" in result.output
+
+    def test_feeds_help(self, runner):
+        """The feeds command should have help text."""
+        result = runner.invoke(app, ["feeds", "--help"])
+        assert result.exit_code == 0
+        assert "--data-dir" in result.output
+        assert "--config-file" in result.output
+        assert "--file" in result.output
+        assert "--force" in result.output
+
+    def test_validate_help(self, runner):
+        """The validate command should have help text."""
+        result = runner.invoke(app, ["validate", "--help"])
+        assert result.exit_code == 0
+        assert "--data-dir" in result.output
+        assert "--config-file" in result.output
+        assert "--file" in result.output
+        assert "--force" in result.output
+
+    def test_config_loading_with_valid_env(self, runner, valid_env, tmp_data_dir):
+        """Config should load successfully with valid environment variables."""
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+
+    def test_config_error_exits_with_code_1(self, runner, tmp_data_dir, monkeypatch):
+        """CLI should exit with code 1 when config is invalid."""
+        # Clear all required env vars
+        for key in ["BASE_URL", "DATA_DIR", "LLM_ENDPOINT", "LLM_API_KEY", "LLM_MODEL", "LLM_SYSTEM_PROMPT"]:
+            monkeypatch.delenv(key, raising=False)
+        import local_feed_generator.config as config_module
+
+        config_module._config_instance = None
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+        assert result.exit_code != 0
+
+    def test_data_dir_option_validates_directory(self, runner, valid_env, tmp_path):
+        """--data-dir should reject non-existent directories."""
+        result = runner.invoke(
+            app,
+            ["process", "--data-dir", str(tmp_path / "nonexistent")],
+        )
+        assert result.exit_code != 0
+
+    def test_version_option(self, runner):
+        """The CLI should support --version."""
+        result = runner.invoke(app, ["--version"])
+        assert result.exit_code == 0
+
+
+# ---------------------------------------------------------------------------
+# T5.2: Process Command Tests
+# ---------------------------------------------------------------------------
+
+
+class TestProcessCommand:
+    """Tests for the process command (T5.2)."""
+
+    def test_process_no_files_to_process(self, runner, valid_env, tmp_data_dir):
+        """Process should report no files when directory is empty."""
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            result = runner.invoke(
+                app,
+                ["process", "--data-dir", str(tmp_data_dir)],
+            )
+        assert result.exit_code == 0
+        assert "No files to process." in result.output
+
+    def test_process_finds_files_to_process(self, runner, valid_env, tmp_data_dir):
+        """Process should find and report files to process."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                mock_producer = mock.MagicMock()
+                mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
+                MockProducer.return_value = mock_producer
+
+                result = runner.invoke(
+                    app,
+                    ["process", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 0
+        assert "Found 1 file(s) to process." in result.output
+        assert "[1/1] Processing" in result.output
+        mock_producer.process_file.assert_called_once()
+
+    def test_process_generates_feeds_after_processing(self, runner, valid_env, tmp_data_dir):
+        """Process should generate feeds after all files are processed."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 1, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                mock_producer = mock.MagicMock()
+                mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
+                MockProducer.return_value = mock_producer
+
+                result = runner.invoke(
+                    app,
+                    ["process", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 0
+        assert "Feeds generated" in result.output
+        mock_gen.assert_called_once()
+
+    def test_process_exit_code_0_on_success(self, runner, valid_env, tmp_data_dir):
+        """Process should exit with code 0 when all files succeed."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 1}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                mock_producer = mock.MagicMock()
+                mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
+                MockProducer.return_value = mock_producer
+
+                result = runner.invoke(
+                    app,
+                    ["process", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 0
+        assert "1 succeeded" in result.output
+
+    def test_process_exit_code_1_on_errors(self, runner, valid_env, tmp_data_dir):
+        """Process should exit with code 1 when any file fails."""
+        (tmp_data_dir / "bad.mp4").write_bytes(b"bad data")
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                mock_producer = mock.MagicMock()
+                mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=False)
+                MockProducer.return_value = mock_producer
+
+                result = runner.invoke(
+                    app,
+                    ["process", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 1
+        assert "1 failed" in result.output
+
+    def test_process_continues_on_error(self, runner, valid_env, tmp_data_dir):
+        """Process should continue processing after an error."""
+        # Create two files; Scanner sorts by filepath so "bad.mp4" comes first
+        (tmp_data_dir / "bad.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 1}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                mock_producer = mock.MagicMock()
+                # First call (bad.mp4) returns error, second (doc.pdf) returns success
+                mock_producer.process_file.side_effect = [
+                    _make_mock_metadata(feed_eligible=False),
+                    _make_mock_metadata(feed_eligible=True),
+                ]
+                MockProducer.return_value = mock_producer
+
+                result = runner.invoke(
+                    app,
+                    ["process", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 1
+        assert "1 succeeded" in result.output
+        assert "1 failed" in result.output
+
+    def test_process_skips_files_with_existing_json(self, runner, valid_env, tmp_data_dir):
+        """Process should only process files without JSON metadata."""
+        (tmp_data_dir / "processed.mp4").write_bytes(b"video")
+        (tmp_data_dir / "processed.mp4.json").write_text(json.dumps(_make_valid_metadata()))
+        (tmp_data_dir / "unprocessed.pdf").write_bytes(b"pdf")
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 1}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                mock_producer = mock.MagicMock()
+                mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
+                MockProducer.return_value = mock_producer
+
+                result = runner.invoke(
+                    app,
+                    ["process", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 0
+        assert "Found 1 file(s) to process." in result.output
+        # Only unprocessed.pdf should be processed
+        call_arg = mock_producer.process_file.call_args[0][0]
+        assert call_arg.filename == "unprocessed.pdf"
+
+    def test_process_with_config_file(self, runner, valid_env, tmp_data_dir, tmp_path):
+        """Process should accept --config-file option."""
+        config_file = tmp_path / "custom.env"
+        config_file.write_text(
+            "BASE_URL=https://custom.example.com\n"
+            "DATA_DIR=./data\n"
+            "LLM_ENDPOINT=https://llm.example.com/v1\n"
+            "LLM_API_KEY=test-key\n"
+            "LLM_MODEL=test-model\n"
+            "LLM_SYSTEM_PROMPT=Test prompt\n"
+        )
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            result = runner.invoke(
+                app,
+                [
+                    "process",
+                    "--data-dir",
+                    str(tmp_data_dir),
+                    "--config-file",
+                    str(config_file),
+                ],
+            )
+
+        assert result.exit_code == 0
+
+    def test_process_shows_progress(self, runner, valid_env, tmp_data_dir):
+        """Process should show progress for each file."""
+        (tmp_data_dir / "file1.mp4").write_bytes(b"video1")
+        (tmp_data_dir / "file2.pdf").write_bytes(b"pdf2")
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                mock_producer = mock.MagicMock()
+                mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
+                MockProducer.return_value = mock_producer
+
+                result = runner.invoke(
+                    app,
+                    ["process", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 0
+        assert "[1/2]" in result.output
+        assert "[2/2]" in result.output
+
+
+# ---------------------------------------------------------------------------
+# T5.3: Watch Command Tests
+# ---------------------------------------------------------------------------
+
+
+class TestWatchCommand:
+    """Tests for the watch command (T5.3)."""
+
+    def test_watch_starts_observer(self, runner, valid_env, tmp_data_dir):
+        """Watch should start a watchdog Observer."""
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                mock_producer = mock.MagicMock()
+                mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
+                MockProducer.return_value = mock_producer
+
+                with mock.patch("watchdog.observers.Observer") as MockObserver:
+                    mock_observer = mock.MagicMock()
+                    MockObserver.return_value = mock_observer
+
+                    # Mock time.sleep to raise KeyboardInterrupt to stop the loop
+                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
+                        mock_sleep.side_effect = KeyboardInterrupt
+
+                        result = runner.invoke(
+                            app,
+                            ["watch", "--data-dir", str(tmp_data_dir)],
+                        )
+
+        assert result.exit_code == 0
+        MockObserver.assert_called_once()
+        mock_observer.start.assert_called_once()
+        mock_observer.stop.assert_called_once()
+        mock_observer.join.assert_called_once()
+
+    def test_watch_initial_scan_processes_files(self, runner, valid_env, tmp_data_dir):
+        """Watch should process files on initial scan."""
+        (tmp_data_dir / "new.mp4").write_bytes(b"video")
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 1, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                mock_producer = mock.MagicMock()
+                mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
+                MockProducer.return_value = mock_producer
+
+                with mock.patch("watchdog.observers.Observer") as MockObserver:
+                    mock_observer = mock.MagicMock()
+                    MockObserver.return_value = mock_observer
+
+                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
+                        mock_sleep.side_effect = KeyboardInterrupt
+
+                        result = runner.invoke(
+                            app,
+                            ["watch", "--data-dir", str(tmp_data_dir)],
+                        )
+
+        assert result.exit_code == 0
+        assert "Initial scan: found 1 file(s) to process." in result.output
+        mock_producer.process_file.assert_called_once()
+
+    def test_watch_no_files_initial_scan(self, runner, valid_env, tmp_data_dir):
+        """Watch should handle empty directory on initial scan."""
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                MockProducer.return_value = mock.MagicMock()
+
+                with mock.patch("watchdog.observers.Observer") as MockObserver:
+                    mock_observer = mock.MagicMock()
+                    MockObserver.return_value = mock_observer
+
+                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
+                        mock_sleep.side_effect = KeyboardInterrupt
+
+                        result = runner.invoke(
+                            app,
+                            ["watch", "--data-dir", str(tmp_data_dir)],
+                        )
+
+        assert result.exit_code == 0
+        assert "Initial scan: no files to process." in result.output
+
+    def test_watch_nonexistent_directory_exits_1(self, runner, valid_env, tmp_path):
+        """Watch should exit with code 1 for nonexistent directory."""
+        result = runner.invoke(
+            app,
+            ["watch", "--data-dir", str(tmp_path / "nonexistent")],
+        )
+        assert result.exit_code != 0
+
+    def test_watch_handler_processes_source_file(self, valid_env, tmp_data_dir):
+        """Watch handler should process source files on event."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "new.mp4"
+        source_file.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 1, "articles": 0}
+            handler._handle_event(str(source_file))
+
+        producer.process_file.assert_called_once()
+
+    def test_watch_handler_ignores_unsupported_files(self, valid_env, tmp_data_dir):
+        """Watch handler should ignore non-source files."""
+        from local_feed_generator.cli import _WatchHandler
+
+        other_file = tmp_data_dir / "readme.txt"
+        other_file.write_text("text")
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        handler._handle_event(str(other_file))
+
+        producer.process_file.assert_not_called()
+
+    def test_watch_handler_logs_warning_for_orphaned_json(self, valid_env, tmp_data_dir):
+        """Watch handler should log warning for orphaned JSON files."""
+        from local_feed_generator.cli import _WatchHandler
+
+        # Create a JSON file without a source file
+        json_file = tmp_data_dir / "orphan.mp4.json"
+        json_file.write_text("{}")
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli._logger") as mock_logger:
+            handler._handle_json_event(json_file)
+
+        mock_logger.warning.assert_called_once()
+        assert "Orphaned JSON" in mock_logger.warning.call_args[0][0]
+
+    def test_watch_handler_json_with_source_no_warning(self, valid_env, tmp_data_dir):
+        """Watch handler should not warn for JSON files with existing source."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "doc.pdf"
+        source_file.write_bytes(b"pdf")
+        json_file = tmp_data_dir / "doc.pdf.json"
+        json_file.write_text("{}")
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli._logger") as mock_logger:
+            handler._handle_json_event(json_file)
+
+        mock_logger.warning.assert_not_called()
+
+    def test_watch_graceful_shutdown(self, runner, valid_env, tmp_data_dir):
+        """Watch should shut down gracefully on SIGINT."""
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                MockProducer.return_value = mock.MagicMock()
+
+                with mock.patch("watchdog.observers.Observer") as MockObserver:
+                    mock_observer = mock.MagicMock()
+                    MockObserver.return_value = mock_observer
+
+                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
+                        mock_sleep.side_effect = KeyboardInterrupt
+
+                        result = runner.invoke(
+                            app,
+                            ["watch", "--data-dir", str(tmp_data_dir)],
+                        )
+
+        assert result.exit_code == 0
+        mock_observer.stop.assert_called_once()
+        mock_observer.join.assert_called_once()
+
+    def test_watch_handler_continues_after_error(self, valid_env, tmp_data_dir):
+        """Watch handler should not crash when file processing raises an exception."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "bad.mp4"
+        source_file.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        producer.process_file.side_effect = RuntimeError("Processing failed")
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        # _handle_event should not raise; it should catch and log the error
+        with mock.patch("local_feed_generator.cli.log_error"):
+            handler._handle_event(str(source_file))
+
+        # Producer was called despite the error (the event was dispatched)
+        producer.process_file.assert_called_once()
+
+    def test_watch_handler_logs_error_on_processing_failure(self, valid_env, tmp_data_dir):
+        """Watch handler should log an error when file processing fails."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "bad.mp4"
+        source_file.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        producer.process_file.side_effect = RuntimeError("Processing failed")
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli.log_error") as mock_log_error:
+            handler._handle_event(str(source_file))
+
+        mock_log_error.assert_called_once()
+        # Verify the filepath was passed
+        call_kwargs = mock_log_error.call_args
+        assert "bad.mp4" in call_kwargs[1]["filepath"]
+        assert call_kwargs[1]["stage"] == "processing"
+
+    def test_watch_handler_error_rate_limiting(self, valid_env, tmp_data_dir):
+        """Watch handler should suppress detailed errors after rate limit."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "bad.mp4"
+        source_file.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        producer.process_file.side_effect = RuntimeError("Processing failed")
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        # Pre-fill the error timestamps to the threshold
+        handler._error_timestamps = [time.monotonic()] * handler._max_errors_per_minute
+
+        with (
+            mock.patch("local_feed_generator.cli.log_error") as mock_log_error,
+            mock.patch("local_feed_generator.cli._logger") as mock_logger,
+        ):
+            handler._handle_event(str(source_file))
+
+        # log_error should NOT have been called (rate limited)
+        mock_log_error.assert_not_called()
+        # A warning summary should have been logged instead
+        mock_logger.warning.assert_called_once()
+        assert "rate limit" in mock_logger.warning.call_args[0][0].lower()
+
+    def test_watch_handler_rate_limiting_resets_after_window(self, valid_env, tmp_data_dir):
+        """Watch handler should resume detailed logging after the window expires."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "bad.mp4"
+        source_file.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        producer.process_file.side_effect = RuntimeError("Processing failed")
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        # Pre-fill with old timestamps (outside the 60-second window)
+        handler._error_timestamps = [time.monotonic() - 61] * handler._max_errors_per_minute
+
+        with mock.patch("local_feed_generator.cli.log_error") as mock_log_error:
+            handler._handle_event(str(source_file))
+
+        # log_error SHOULD have been called because old timestamps were trimmed
+        mock_log_error.assert_called_once()
+
+    def test_watch_handler_error_timestamps_trimmed(self, valid_env, tmp_data_dir):
+        """Watch handler should trim old error timestamps on each error."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "bad.mp4"
+        source_file.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        producer.process_file.side_effect = RuntimeError("Processing failed")
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        # Add a mix of recent and old timestamps
+        handler._error_timestamps = [
+            time.monotonic() - 61,  # old, should be trimmed
+            time.monotonic() - 30,  # recent, should be kept
+        ]
+
+        with mock.patch("local_feed_generator.cli.log_error"):
+            handler._handle_event(str(source_file))
+
+        # The old timestamp should have been trimmed, leaving only 2 entries
+        assert len(handler._error_timestamps) == 2
+
+    def test_watch_handler_continues_after_multiple_errors(self, valid_env, tmp_data_dir):
+        """Watch handler should continue processing after multiple errors."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file1 = tmp_data_dir / "bad1.mp4"
+        source_file1.write_bytes(b"video")
+        source_file2 = tmp_data_dir / "bad2.mp4"
+        source_file2.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        producer.process_file.side_effect = RuntimeError("Processing failed")
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli.log_error"):
+            # First error
+            handler._handle_event(str(source_file1))
+            # Second error - should not crash
+            handler._handle_event(str(source_file2))
+
+        # Both files should have been attempted
+        assert producer.process_file.call_count == 2
+
+    # -- T6.2: Event Debouncing Tests -------------------------------------
+
+    def test_debounce_rapid_events_same_file_single_processing(self, valid_env, tmp_data_dir):
+        """Multiple rapid events for the same file should be debounced into a single processing."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "video.mp4"
+        source_file.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+            # First event at t=0 — should process
+            mock_monotonic.return_value = 0.0
+            handler._handle_event(str(source_file))
+
+            # Second event at t=0.3 — within debounce window, should be skipped
+            mock_monotonic.return_value = 0.3
+            handler._handle_event(str(source_file))
+
+            # Third event at t=0.6 — still within window, should be skipped
+            mock_monotonic.return_value = 0.6
+            handler._handle_event(str(source_file))
+
+        producer.process_file.assert_called_once()
+
+    def test_debounce_different_files_independent(self, valid_env, tmp_data_dir):
+        """Different files should not be blocked by each other's debounce timers."""
+        from local_feed_generator.cli import _WatchHandler
+
+        file_a = tmp_data_dir / "file_a.mp4"
+        file_a.write_bytes(b"video a")
+        file_b = tmp_data_dir / "file_b.mp4"
+        file_b.write_bytes(b"video b")
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+            # Event for file_a at t=0
+            mock_monotonic.return_value = 0.0
+            handler._handle_event(str(file_a))
+
+            # Event for file_b at t=0.1 — different file, should process
+            mock_monotonic.return_value = 0.1
+            handler._handle_event(str(file_b))
+
+            # Rapid event for file_a at t=0.2 — within debounce, should be skipped
+            mock_monotonic.return_value = 0.2
+            handler._handle_event(str(file_a))
+
+        # Each file should have been processed once
+        assert producer.process_file.call_count == 2
+        call_filepaths = [call.args[0].filepath for call in producer.process_file.call_args_list]
+        assert "file_a.mp4" in call_filepaths
+        assert "file_b.mp4" in call_filepaths
+
+    def test_debounce_allows_reprocessing_after_interval(self, valid_env, tmp_data_dir):
+        """A file should be processed again after the debounce interval expires."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "video.mp4"
+        source_file.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+            # First event at t=0 — should process
+            mock_monotonic.return_value = 0.0
+            handler._handle_event(str(source_file))
+
+            # Second event within window at t=0.5 — should be skipped
+            mock_monotonic.return_value = 0.5
+            handler._handle_event(str(source_file))
+
+        assert producer.process_file.call_count == 1
+
+        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+            # Third event after window at t=2.0 — should process again
+            mock_monotonic.return_value = 2.0
+            handler._handle_event(str(source_file))
+
+        assert producer.process_file.call_count == 2
+
+    def test_debounce_extends_window_on_rapid_events(self, valid_env, tmp_data_dir):
+        """Rapid events should keep extending the debounce window."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "video.mp4"
+        source_file.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+            # First event at t=0 — should process
+            mock_monotonic.return_value = 0.0
+            handler._handle_event(str(source_file))
+
+            # Event at t=0.9 — within 1.0 window, should be skipped, extends window
+            mock_monotonic.return_value = 0.9
+            handler._handle_event(str(source_file))
+
+            # Event at t=1.5 — 1.5 - 0.9 = 0.6 < 1.0, still within window, skipped
+            mock_monotonic.return_value = 1.5
+            handler._handle_event(str(source_file))
+
+            # Event at t=2.0 — 2.0 - 1.5 = 0.5 < 1.0, still within window, skipped
+            mock_monotonic.return_value = 2.0
+            handler._handle_event(str(source_file))
+
+        # Only the first event should have triggered processing
+        producer.process_file.assert_called_once()
+
+    def test_debounce_default_interval_is_one_second(self, valid_env, tmp_data_dir):
+        """The default debounce interval should be 1.0 second."""
+        from local_feed_generator.cli import _WatchHandler
+
+        assert _WatchHandler._debounce_interval == 1.0
+
+    def test_debounce_configurable_interval(self, valid_env, tmp_data_dir):
+        """The debounce interval should be configurable via class attribute."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "video.mp4"
+        source_file.write_bytes(b"video")
+
+        # Create a subclass with a custom debounce interval
+        class FastDebounceHandler(_WatchHandler):
+            _debounce_interval = 0.5
+
+        producer = mock.MagicMock()
+        handler = FastDebounceHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+            # First event at t=0 — should process
+            mock_monotonic.return_value = 0.0
+            handler._handle_event(str(source_file))
+
+            # Event at t=0.3 — within 0.5 window, should be skipped
+            mock_monotonic.return_value = 0.3
+            handler._handle_event(str(source_file))
+
+            # Event at t=0.6 — 0.6 - 0.3 = 0.3 < 0.5, still within window, skipped
+            mock_monotonic.return_value = 0.6
+            handler._handle_event(str(source_file))
+
+        producer.process_file.assert_called_once()
+
+    def test_debounce_does_not_block_json_events(self, valid_env, tmp_data_dir):
+        """Debounce should not prevent JSON orphaned-file detection."""
+        from local_feed_generator.cli import _WatchHandler
+
+        json_file = tmp_data_dir / "orphan.mp4.json"
+        json_file.write_text("{}")
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+            # First JSON event at t=0
+            mock_monotonic.return_value = 0.0
+            handler._handle_event(str(json_file))
+
+            # Rapid second JSON event at t=0.3 — should be debounced
+            mock_monotonic.return_value = 0.3
+            handler._handle_event(str(json_file))
+
+        # Producer should not have been called (JSON events don't process)
+        producer.process_file.assert_not_called()
+
+    def test_debounce_first_event_always_processed(self, valid_env, tmp_data_dir):
+        """The first event for a file should always be processed (no prior timestamp)."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "video.mp4"
+        source_file.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        # _last_event should start empty
+        assert handler._last_event == {}
+
+        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+            mock_monotonic.return_value = 0.0
+            handler._handle_event(str(source_file))
+
+        # First event should have been processed
+        producer.process_file.assert_called_once()
+        # Timestamp should now be recorded
+        assert str(source_file) in handler._last_event
+
+    # -- T6.3: Periodic Rescan Fallback Tests -------------------------------
+
+    def test_rescan_interval_default_is_300_seconds(self, valid_env, tmp_data_dir):
+        """The default rescan interval should be 300 seconds (5 minutes)."""
+        from local_feed_generator.cli import _WatchHandler
+
+        assert _WatchHandler._rescan_interval == 300
+
+    def test_periodic_rescan_processes_new_files(self, valid_env, tmp_data_dir):
+        """_periodic_rescan should process files found by the scanner."""
+        from local_feed_generator.cli import _WatchHandler
+
+        # Create a source file without JSON metadata
+        source_file = tmp_data_dir / "missed.mp4"
+        source_file.write_bytes(b"video data")
+
+        producer = mock.MagicMock()
+        producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 1, "articles": 0}
+            handler._periodic_rescan()
+
+        # Scanner should have found the file and producer should have processed it
+        producer.process_file.assert_called_once()
+        call_arg = producer.process_file.call_args[0][0]
+        assert call_arg.filename == "missed.mp4"
+        # Feeds should have been regenerated
+        mock_gen.assert_called_once()
+
+    def test_periodic_rescan_no_files_logs_info(self, valid_env, tmp_data_dir):
+        """_periodic_rescan should handle empty directory gracefully."""
+        from local_feed_generator.cli import _WatchHandler
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.cli._logger") as mock_logger:
+                handler._periodic_rescan()
+
+        producer.process_file.assert_not_called()
+        mock_gen.assert_not_called()
+        # Should log that no files were found
+        mock_logger.info.assert_any_call("Periodic rescan: no new files to process.")
+
+    def test_periodic_rescan_sets_last_rescan_time(self, valid_env, tmp_data_dir):
+        """_periodic_rescan should record the timestamp of the last rescan."""
+        from local_feed_generator.cli import _WatchHandler
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        assert handler.last_rescan_time is None
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.cli.time") as mock_time:
+                mock_time.time.return_value = 1234567890.0
+                handler._periodic_rescan()
+
+        assert handler.last_rescan_time == 1234567890.0
+
+    def test_periodic_rescan_logs_start_and_complete(self, valid_env, tmp_data_dir):
+        """_periodic_rescan should log start and completion events."""
+        from local_feed_generator.cli import _WatchHandler
+
+        # Create a source file so the rescan has work to do
+        source_file = tmp_data_dir / "new.mp4"
+        source_file.write_bytes(b"video data")
+
+        producer = mock.MagicMock()
+        producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 1, "articles": 0}
+            with mock.patch("local_feed_generator.cli._logger") as mock_logger:
+                handler._periodic_rescan()
+
+        # Should log start
+        mock_logger.info.assert_any_call("Periodic rescan started for %s", handler.data_dir)
+        # Should log completion
+        mock_logger.info.assert_any_call("Periodic rescan complete. Feeds regenerated.")
+
+    def test_periodic_rescan_continues_after_processing_error(self, valid_env, tmp_data_dir):
+        """_periodic_rescan should continue processing after an error."""
+        from local_feed_generator.cli import _WatchHandler
+
+        source_file = tmp_data_dir / "bad.mp4"
+        source_file.write_bytes(b"video")
+
+        producer = mock.MagicMock()
+        producer.process_file.side_effect = RuntimeError("Processing failed")
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.cli.log_error"):
+                # Should not raise
+                handler._periodic_rescan()
+
+        producer.process_file.assert_called_once()
+        # Feeds should still be regenerated even after errors
+        mock_gen.assert_called_once()
+
+    def test_periodic_rescan_skips_already_processed_files(self, valid_env, tmp_data_dir):
+        """_periodic_rescan should not reprocess files with up-to-date JSON."""
+        from local_feed_generator.cli import _WatchHandler
+
+        # Create a source file with complete JSON metadata
+        source_file = tmp_data_dir / "processed.mp4"
+        source_file.write_bytes(b"video")
+        json_file = tmp_data_dir / "processed.mp4.json"
+        json_file.write_text(
+            json.dumps(
+                _make_valid_metadata(
+                    filepath="processed.mp4",
+                    filename="processed.mp4",
+                    filetype="mp4",
+                )
+            )
+        )
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            handler._periodic_rescan()
+
+        # Scanner should have skipped the file (JSON is up-to-date)
+        producer.process_file.assert_not_called()
+
+    def test_watch_starts_rescan_thread(self, runner, valid_env, tmp_data_dir):
+        """Watch should start a periodic rescan background thread."""
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                MockProducer.return_value = mock.MagicMock()
+
+                with mock.patch("watchdog.observers.Observer") as MockObserver:
+                    mock_observer = mock.MagicMock()
+                    MockObserver.return_value = mock_observer
+
+                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
+                        mock_sleep.side_effect = KeyboardInterrupt
+
+                        result = runner.invoke(
+                            app,
+                            ["watch", "--data-dir", str(tmp_data_dir)],
+                        )
+
+        assert result.exit_code == 0
+        assert "Periodic rescan enabled" in result.output
+
+    def test_watch_graceful_shutdown_stops_rescan_thread(self, runner, valid_env, tmp_data_dir):
+        """Watch should gracefully shut down the rescan thread on exit."""
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                MockProducer.return_value = mock.MagicMock()
+
+                with mock.patch("watchdog.observers.Observer") as MockObserver:
+                    mock_observer = mock.MagicMock()
+                    MockObserver.return_value = mock_observer
+
+                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
+                        mock_sleep.side_effect = KeyboardInterrupt
+
+                        result = runner.invoke(
+                            app,
+                            ["watch", "--data-dir", str(tmp_data_dir)],
+                        )
+
+        assert result.exit_code == 0
+        assert "Watcher stopped." in result.output
+
+    def test_watch_rescan_interval_env_var_override(
+        self, runner, valid_env, tmp_data_dir, monkeypatch
+    ):
+        """Watch should respect RESCAN_INTERVAL environment variable."""
+        monkeypatch.setenv("RESCAN_INTERVAL", "60")
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                MockProducer.return_value = mock.MagicMock()
+
+                with mock.patch("watchdog.observers.Observer") as MockObserver:
+                    mock_observer = mock.MagicMock()
+                    MockObserver.return_value = mock_observer
+
+                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
+                        mock_sleep.side_effect = KeyboardInterrupt
+
+                        result = runner.invoke(
+                            app,
+                            ["watch", "--data-dir", str(tmp_data_dir)],
+                        )
+
+        assert result.exit_code == 0
+        assert "Periodic rescan enabled (every 60s)." in result.output
+
+    def test_watch_rescan_disabled_when_zero(self, runner, valid_env, tmp_data_dir, monkeypatch):
+        """Watch should disable periodic rescan when RESCAN_INTERVAL is 0."""
+        monkeypatch.setenv("RESCAN_INTERVAL", "0")
+
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+                MockProducer.return_value = mock.MagicMock()
+
+                with mock.patch("watchdog.observers.Observer") as MockObserver:
+                    mock_observer = mock.MagicMock()
+                    MockObserver.return_value = mock_observer
+
+                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
+                        mock_sleep.side_effect = KeyboardInterrupt
+
+                        result = runner.invoke(
+                            app,
+                            ["watch", "--data-dir", str(tmp_data_dir)],
+                        )
+
+        assert result.exit_code == 0
+        assert "Periodic rescan disabled." in result.output
+
+
+class TestFeedsCommand:
+    """Tests for the feeds command (T5.4)."""
+
+    def test_feeds_skips_processing(self, runner, valid_env, tmp_data_dir):
+        """Feeds should not process any files."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+        # Create a JSON metadata file
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
+        )
+
+        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            mock_generator = mock.MagicMock()
+            mock_generator.generate_all_feeds.return_value = None
+            MockGen.return_value = mock_generator
+
+            result = runner.invoke(
+                app,
+                ["feeds", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        mock_generator.generate_all_feeds.assert_called_once()
+
+    def test_feeds_reads_existing_json(self, runner, valid_env, tmp_data_dir):
+        """Feeds should read existing JSON metadata files."""
+        # Create a valid MP4 metadata file
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video")
+        (tmp_data_dir / "lecture.mp4.json").write_text(json.dumps(_make_valid_metadata()))
+        # Create a valid PDF metadata file
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
+        )
+
+        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            mock_generator = mock.MagicMock()
+            mock_generator.generate_all_feeds.return_value = None
+            MockGen.return_value = mock_generator
+
+            result = runner.invoke(
+                app,
+                ["feeds", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "1 item(s)" in result.output
+
+    def test_feeds_empty_directory(self, runner, valid_env, tmp_data_dir):
+        """Feeds should handle empty directory."""
+        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            mock_generator = mock.MagicMock()
+            mock_generator.generate_all_feeds.return_value = None
+            MockGen.return_value = mock_generator
+
+            result = runner.invoke(
+                app,
+                ["feeds", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "0 item(s)" in result.output
+
+    def test_feeds_with_config_file(self, runner, valid_env, tmp_data_dir, tmp_path):
+        """Feeds should accept --config-file option."""
+        config_file = tmp_path / "custom.env"
+        config_file.write_text(
+            "BASE_URL=https://custom.example.com\n"
+            "DATA_DIR=./data\n"
+            "LLM_ENDPOINT=https://llm.example.com/v1\n"
+            "LLM_API_KEY=test-key\n"
+            "LLM_MODEL=test-model\n"
+            "LLM_SYSTEM_PROMPT=Test prompt\n"
+        )
+
+        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            mock_generator = mock.MagicMock()
+            mock_generator.generate_all_feeds.return_value = None
+            MockGen.return_value = mock_generator
+
+            result = runner.invoke(
+                app,
+                [
+                    "feeds",
+                    "--data-dir",
+                    str(tmp_data_dir),
+                    "--config-file",
+                    str(config_file),
+                ],
+            )
+
+        assert result.exit_code == 0
+
+    def test_feeds_does_not_count_error_metadata(self, runner, valid_env, tmp_data_dir):
+        """Feeds should not count error metadata in the summary."""
+        # Success metadata
+        (tmp_data_dir / "good.mp4").write_bytes(b"video")
+        (tmp_data_dir / "good.mp4.json").write_text(
+            json.dumps(
+                _make_valid_metadata(filepath="good.mp4", filename="good.mp4", filetype="mp4")
+            )
+        )
+        # Error metadata
+        (tmp_data_dir / "bad.mp4").write_bytes(b"video")
+        error_meta = _make_valid_metadata(filepath="bad.mp4", filename="bad.mp4", filetype="mp4")
+        error_meta["error"] = "Processing failed"
+        # Remove status since this is an error
+        error_meta.pop("status", None)
+        (tmp_data_dir / "bad.mp4.json").write_text(json.dumps(error_meta))
+
+        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            mock_generator = mock.MagicMock()
+            mock_generator.generate_all_feeds.return_value = None
+            MockGen.return_value = mock_generator
+
+            result = runner.invoke(
+                app,
+                ["feeds", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        # Only 1 podcast item (the success one)
+        assert "1 item(s)" in result.output
+
+
+# ---------------------------------------------------------------------------
+# T5.5: Validate Command Tests
+# ---------------------------------------------------------------------------
+
+
+class TestValidateCommand:
+    """Tests for the validate command (T5.5)."""
+
+    def test_validate_valid_metadata_no_errors(self, runner, valid_env, tmp_data_dir):
+        """Validate should report no errors for valid metadata."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "All files are valid" in result.output
+
+    def test_validate_invalid_json_schema(self, runner, valid_env, tmp_data_dir):
+        """Validate should report errors for invalid JSON metadata."""
+        (tmp_data_dir / "bad.pdf").write_bytes(b"pdf")
+        # Invalid JSON - missing required fields
+        (tmp_data_dir / "bad.pdf.json").write_text(
+            json.dumps({"status": {"extract": "complete"}, "title": "Missing fields"})
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 1
+        assert "ERROR" in result.output
+
+    def test_validate_detects_orphaned_json(self, runner, valid_env, tmp_data_dir):
+        """Validate should detect orphaned JSON files."""
+        # JSON file without a source file
+        (tmp_data_dir / "orphan.mp4.json").write_text(
+            json.dumps(
+                _make_valid_metadata(filepath="orphan.mp4", filename="orphan.mp4", filetype="mp4")
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0  # warnings, not errors
+        assert "Orphaned JSON" in result.output
+        assert "WARNING" in result.output
+
+    def test_validate_detects_special_characters(self, runner, valid_env, tmp_data_dir):
+        """Validate should warn about special characters in filenames."""
+        (tmp_data_dir / "file<test>.mp4").write_bytes(b"video")
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "special characters" in result.output
+
+    def test_validate_exit_code_0_when_only_warnings(self, runner, valid_env, tmp_data_dir):
+        """Validate should exit 0 when only warnings are found (no errors)."""
+        (tmp_data_dir / "orphan.mp4.json").write_text(
+            json.dumps(
+                _make_valid_metadata(filepath="orphan.mp4", filename="orphan.mp4", filetype="mp4")
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "Warnings" in result.output
+
+    def test_validate_exit_code_1_when_errors(self, runner, valid_env, tmp_data_dir):
+        """Validate should exit 1 when errors are found."""
+        (tmp_data_dir / "bad.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "bad.pdf.json").write_text(
+            json.dumps({"transcribe_status": "complete", "title": "Missing fields"})
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 1
+
+    def test_validate_reports_checked_count(self, runner, valid_env, tmp_data_dir):
+        """Validate should report the number of JSON files checked."""
+        (tmp_data_dir / "doc1.pdf").write_bytes(b"pdf1")
+        (tmp_data_dir / "doc1.pdf.json").write_text(
+            json.dumps(
+                _make_valid_metadata(filepath="doc1.pdf", filename="doc1.pdf", filetype="pdf")
+            )
+        )
+        (tmp_data_dir / "doc2.html").write_bytes(b"html2")
+        (tmp_data_dir / "doc2.html.json").write_text(
+            json.dumps(
+                _make_valid_metadata(filepath="doc2.html", filename="doc2.html", filetype="html")
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "Checked 2 JSON metadata file(s)." in result.output
+
+    def test_validate_empty_directory(self, runner, valid_env, tmp_data_dir):
+        """Validate should handle empty directory."""
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "Checked 0 JSON metadata file(s)." in result.output
+
+    def test_validate_with_config_file(self, runner, valid_env, tmp_data_dir, tmp_path):
+        """Validate should accept --config-file option."""
+        config_file = tmp_path / "custom.env"
+        config_file.write_text(
+            "BASE_URL=https://custom.example.com\n"
+            "DATA_DIR=./data\n"
+            "LLM_ENDPOINT=https://llm.example.com/v1\n"
+            "LLM_API_KEY=test-key\n"
+            "LLM_MODEL=test-model\n"
+            "LLM_SYSTEM_PROMPT=Test prompt\n"
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "validate",
+                "--data-dir",
+                str(tmp_data_dir),
+                "--config-file",
+                str(config_file),
+            ],
+        )
+
+        assert result.exit_code == 0
+
+    def test_validate_ignores_version_field(self, runner, valid_env, tmp_data_dir):
+        """Validate should ignore the version field (no longer validated)."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+        meta = _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
+        meta["version"] = "2.0"
+        (tmp_data_dir / "doc.pdf.json").write_text(json.dumps(meta))
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+
+    def test_validate_multiple_errors(self, runner, valid_env, tmp_data_dir):
+        """Validate should report all errors."""
+        (tmp_data_dir / "bad1.pdf").write_bytes(b"pdf1")
+        (tmp_data_dir / "bad1.pdf.json").write_text(
+            json.dumps({"status": {"extract": "complete"}, "title": "Missing fields"})
+        )
+        (tmp_data_dir / "bad2.html").write_bytes(b"html2")
+        (tmp_data_dir / "bad2.html.json").write_text(
+            json.dumps({"status": {"extract": "complete"}, "title": "Missing fields"})
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 1
+        assert "Errors (2)" in result.output
+
+
+# ---------------------------------------------------------------------------
+# T5.6: Entry Point Tests
+# ---------------------------------------------------------------------------
+
+
+class TestEntryPoint:
+    """Tests for the entry point configuration (T5.6)."""
+
+    def test_main_function_exists(self):
+        """The main() function should be callable."""
+        assert callable(main)
+
+    def test_main_invokes_app(self, runner, valid_env, tmp_data_dir):
+        """main() should invoke the app group."""
+        with mock.patch("local_feed_generator.cli.app") as mock_app:
+            main()
+        mock_app.assert_called_once()
+
+    def test_main_via_cli_runner(self, runner, valid_env, tmp_data_dir):
+        """main() should work via CliRunner when called as the command."""
+        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+            mock_gen.return_value = {"podcast": 0, "articles": 0}
+            result = runner.invoke(app, ["validate", "--data-dir", str(tmp_data_dir)])
+        assert result.exit_code == 0
+
+    def test_all_commands_accessible_from_app(self):
+        """All subcommands should be accessible from the app group."""
+        result_commands = set(app.commands.keys())
+        expected = {
+            "process",
+            "watch",
+            "feeds",
+            "validate",
+            "transcribe",
+            "summarize",
+            "extract-metadata",
+            "title",
+        }
+        assert expected.issubset(result_commands)
+
+    def test_pyproject_entry_point(self):
+        """The pyproject.toml should have the correct entry point."""
+        import tomllib
+
+        pyproject_path = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+        with open(pyproject_path, "rb") as f:
+            config = tomllib.load(f)
+        scripts = config.get("project", {}).get("scripts", {})
+        assert "local-feed-generator" in scripts
+        assert scripts["local-feed-generator"] == "local_feed_generator.cli:main"
+
+
+# ---------------------------------------------------------------------------
+# Integration-style tests
+# ---------------------------------------------------------------------------
+
+
+class TestCliIntegration:
+    """Integration-style tests for the CLI."""
+
+    def test_process_and_generate_feeds_workflow(self, runner, valid_env, tmp_data_dir):
+        """Full workflow: process files then generate feeds."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+
+        with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+            mock_producer = mock.MagicMock()
+            mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
+            MockProducer.return_value = mock_producer
+
+            with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+                mock_generator = mock.MagicMock()
+                mock_generator.generate_all_feeds.return_value = None
+                MockGen.return_value = mock_generator
+
+                result = runner.invoke(
+                    app,
+                    ["process", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 0
+        mock_producer.process_file.assert_called_once()
+        mock_generator.generate_all_feeds.assert_called_once()
+
+    def test_validate_after_processing(self, runner, valid_env, tmp_data_dir):
+        """Validate should work after processing."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "All files are valid" in result.output
+
+    def test_feeds_after_processing(self, runner, valid_env, tmp_data_dir):
+        """Feeds should work after processing."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
+        )
+
+        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            mock_generator = mock.MagicMock()
+            mock_generator.generate_all_feeds.return_value = None
+            MockGen.return_value = mock_generator
+
+            result = runner.invoke(
+                app,
+                ["feeds", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "1 item(s)" in result.output
+
+    def test_cli_group_with_no_command_shows_help(self, runner):
+        """Invoking the CLI with no subcommand should show help."""
+        result = runner.invoke(app, [], catch_exceptions=False)
+        # Click groups exit with code 2 when no subcommand is given
+        # and help is displayed
+        assert result.exit_code == 2
+        assert "process" in result.output
+        assert "watch" in result.output
+        assert "feeds" in result.output
+        assert "validate" in result.output
+
+
+# ---------------------------------------------------------------------------
+# T5.7-T5.10: Granular Subcommand Tests
+# ---------------------------------------------------------------------------
+
+
+class TestTranscribeCommand:
+    """Tests for the transcribe command (T5.7)."""
+
+    def test_transcribe_help(self, runner):
+        """The transcribe command should have help text."""
+        result = runner.invoke(app, ["transcribe", "--help"])
+        assert result.exit_code == 0
+        assert "--data-dir" in result.output
+        assert "--dry-run" in result.output
+        assert "--config-file" in result.output
+        assert "--file" in result.output
+        assert "--force" in result.output
+
+    def test_transcribe_no_files(self, runner, valid_env, tmp_data_dir):
+        """Transcribe should report no files when directory is empty."""
+        result = runner.invoke(
+            app,
+            ["transcribe", "--data-dir", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "No MP4 files need transcription." in result.output
+
+    def test_transcribe_dry_run(self, runner, valid_env, tmp_data_dir):
+        """Transcribe --dry-run should list files without processing."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+
+        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+            mock_transcriber = mock.MagicMock()
+            MockTranscriber.return_value = mock_transcriber
+
+            result = runner.invoke(
+                app,
+                ["transcribe", "--data-dir", str(tmp_data_dir), "--dry-run"],
+            )
+
+        assert result.exit_code == 0
+        assert "[Dry run]" in result.output
+        assert "lecture.mp4" in result.output
+        # Transcriber should NOT have been instantiated in dry-run mode
+        mock_transcriber.transcribe.assert_not_called()
+
+    def test_transcribe_skips_files_with_transcript(self, runner, valid_env, tmp_data_dir):
+        """Transcribe should skip MP4 files that already have status['transcribe']='complete'."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        # Create JSON with existing transcript and status with transcribe complete
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": None},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "Existing transcript",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            ["transcribe", "--data-dir", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "No MP4 files need transcription." in result.output
+
+    def test_transcribe_processes_files(self, runner, valid_env, tmp_data_dir):
+        """Transcribe should process MP4 files without transcripts."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+
+        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+            mock_transcriber = mock.MagicMock()
+            mock_transcriber.transcribe.return_value = "This is a transcript."
+            MockTranscriber.return_value = mock_transcriber
+
+            result = runner.invoke(
+                app,
+                ["transcribe", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 MP4 file(s) to transcribe." in result.output
+        mock_transcriber.transcribe.assert_called_once()
+
+    def test_transcribe_writes_transcript_to_json(self, runner, valid_env, tmp_data_dir):
+        """Transcribe should write the transcript to the JSON metadata file."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+
+        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+            mock_transcriber = mock.MagicMock()
+            mock_transcriber.transcribe.return_value = "This is a transcript."
+            MockTranscriber.return_value = mock_transcriber
+
+            result = runner.invoke(
+                app,
+                ["transcribe", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        json_path = tmp_data_dir / "lecture.mp4.json"
+        assert json_path.exists()
+        data = json.loads(json_path.read_text())
+        assert data["transcript"] == "This is a transcript."
+        assert data["status"]["transcribe"] == "complete"
+
+    def test_transcribe_uses_data_dir_from_config(
+        self, runner, valid_env, tmp_data_dir, monkeypatch
+    ):
+        """Transcribe should use DATA_DIR from config when --data-dir is not provided."""
+        monkeypatch.setenv("DATA_DIR", str(tmp_data_dir))
+        import local_feed_generator.config as config_module
+
+        config_module._config_instance = None
+
+        result = runner.invoke(app, ["transcribe"])
+        assert result.exit_code == 0
+        assert "No MP4 files need transcription." in result.output
+
+    def test_transcribe_exit_code_1_on_error(self, runner, valid_env, tmp_data_dir):
+        """Transcribe should exit with code 1 when transcription fails."""
+        (tmp_data_dir / "bad.mp4").write_bytes(b"bad data")
+
+        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+            mock_transcriber = mock.MagicMock()
+            mock_transcriber.transcribe.side_effect = RuntimeError("Transcription failed")
+            MockTranscriber.return_value = mock_transcriber
+
+            result = runner.invoke(
+                app,
+                ["transcribe", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 1
+        assert "1 failed" in result.output
+
+    def test_transcribe_with_config_file(self, runner, valid_env, tmp_data_dir, tmp_path):
+        """Transcribe should accept --config-file option."""
+        config_file = tmp_path / "custom.env"
+        config_file.write_text(
+            "BASE_URL=https://custom.example.com\n"
+            "DATA_DIR=./data\n"
+            "LLM_ENDPOINT=https://llm.example.com/v1\n"
+            "LLM_API_KEY=test-key\n"
+            "LLM_MODEL=test-model\n"
+            "LLM_SYSTEM_PROMPT=Test prompt\n"
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "transcribe",
+                "--data-dir",
+                str(tmp_data_dir),
+                "--config-file",
+                str(config_file),
+            ],
+        )
+        assert result.exit_code == 0
+
+    def test_transcribe_force_flag_reprocesses_complete_files(self, runner, valid_env, tmp_data_dir):
+        """Transcribe --force should re-transcribe files with status['transcribe']='complete'."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        # Create JSON with status with transcribe complete
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": None},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "Existing transcript",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+            mock_transcriber = mock.MagicMock()
+            mock_transcriber.transcribe.return_value = "New transcript."
+            MockTranscriber.return_value = mock_transcriber
+
+            result = runner.invoke(
+                app,
+                ["transcribe", "--data-dir", str(tmp_data_dir), "--force"],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 MP4 file(s) to transcribe." in result.output
+        mock_transcriber.transcribe.assert_called_once()
+
+    def test_transcribe_file_flag_processes_specific_file(self, runner, valid_env, tmp_data_dir):
+        """Transcribe --file should process only the specified file."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "other.mp4").write_bytes(b"video data")
+
+        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+            mock_transcriber = mock.MagicMock()
+            mock_transcriber.transcribe.return_value = "Transcript."
+            MockTranscriber.return_value = mock_transcriber
+
+            result = runner.invoke(
+                app,
+                ["transcribe", "--data-dir", str(tmp_data_dir), "--file", "lecture.mp4"],
+            )
+
+        assert result.exit_code == 0
+        # Only one file should be transcribed
+        mock_transcriber.transcribe.assert_called_once_with(str(tmp_data_dir / "lecture.mp4"))
+
+    def test_transcribe_cuda_unavailable_shows_error(self, runner, valid_env, tmp_data_dir):
+        """Transcribe should show a clear error when CUDA is unavailable."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+
+        with mock.patch(
+            "local_feed_generator.services.transcriber.check_cuda_available",
+            return_value=False,
+        ):
+            result = runner.invoke(
+                app,
+                ["transcribe", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 1
+        assert "CUDA libraries not found" in result.output
+        assert "TRANSCRIPTION_DEVICE=cpu" in result.output
+
+    def test_transcribe_sets_in_progress_before_and_complete_after(
+        self, runner, valid_env, tmp_data_dir
+    ):
+        """Transcribe should set status to 'in_progress' before transcription, then 'complete' after."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+
+        # Track the status values written at each _write_json_metadata call.
+        written_statuses: list[str] = []
+
+        def track_write(data, source_path):
+            written_statuses.append(data.get("status", {}).get("transcribe"))
+            # Call the real implementation to actually write the file
+            json_path = source_path.with_name(source_path.name + ".json")
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
+            tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp_path.replace(json_path)
+
+        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+            mock_transcriber = mock.MagicMock()
+            mock_transcriber.transcribe.return_value = "This is a transcript."
+            MockTranscriber.return_value = mock_transcriber
+
+            with mock.patch("local_feed_generator.cli._write_json_metadata", side_effect=track_write):
+                result = runner.invoke(
+                    app,
+                    ["transcribe", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 0
+        # Should have written at least twice: once for in_progress, once for complete
+        assert len(written_statuses) >= 2
+        assert written_statuses[0] == "in_progress"
+        assert written_statuses[-1] == "complete"
+
+        # Verify final JSON state
+        json_path = tmp_data_dir / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        assert data["status"]["transcribe"] == "complete"
+        assert data["transcript"] == "This is a transcript."
+        assert "completed_at" in data
+
+
+class TestSummarizeCommand:
+    """Tests for the summarize command (T5.8)."""
+
+    def test_summarize_help(self, runner):
+        """The summarize command should have help text."""
+        result = runner.invoke(app, ["summarize", "--help"])
+        assert result.exit_code == 0
+        assert "--data-dir" in result.output
+        assert "--dry-run" in result.output
+        assert "--config-file" in result.output
+        assert "--file" in result.output
+        assert "--force" in result.output
+
+    def test_summarize_no_files(self, runner, valid_env, tmp_data_dir):
+        """Summarize should report no files when none need summarization."""
+        result = runner.invoke(
+            app,
+            ["summarize", "--data-dir", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "No MP4 files need summarization." in result.output
+
+    def test_summarize_dry_run(self, runner, valid_env, tmp_data_dir):
+        """Summarize --dry-run should list files without processing."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": None},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "Existing transcript",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["summarize", "--data-dir", str(tmp_data_dir), "--dry-run"],
+            )
+
+        assert result.exit_code == 0
+        assert "[Dry run]" in result.output
+        assert "lecture.mp4" in result.output
+        mock_summarizer.summarize.assert_not_called()
+
+    def test_summarize_processes_files(self, runner, valid_env, tmp_data_dir):
+        """Summarize should process MP4 files with transcripts but no summaries."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": None},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "Existing transcript",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["summarize", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 MP4 file(s) to summarize." in result.output
+        mock_summarizer.summarize.assert_called_once()
+
+    def test_summarize_skips_files_without_transcript(self, runner, valid_env, tmp_data_dir):
+        """Summarize should skip MP4 files without a transcript."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": None},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            ["summarize", "--data-dir", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "No MP4 files need summarization." in result.output
+
+    def test_summarize_writes_summary_to_json(self, runner, valid_env, tmp_data_dir):
+        """Summarize should write the summary to the JSON metadata file."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": None},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "Existing transcript",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["summarize", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        json_path = tmp_data_dir / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        assert data["summary"] == "Key takeaways."
+        assert data["description"] == "Key takeaways."
+        assert data["status"]["summarize"] == "complete"
+
+    def test_summarize_force_flag_resummarizes_complete_files(self, runner, valid_env, tmp_data_dir):
+        """Summarize --force should re-summarize files with status['summarize']='complete'."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": "complete"},
+                    "title": "Test",
+                    "description": "Old summary",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "Existing transcript",
+                    "summary": "Old summary",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.summarize.return_value = ("New summary.", 200, 60)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["summarize", "--data-dir", str(tmp_data_dir), "--force"],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 MP4 file(s) to summarize." in result.output
+        mock_summarizer.summarize.assert_called_once()
+
+    def test_summarize_sets_in_progress_before_and_complete_after(
+        self, runner, valid_env, tmp_data_dir
+    ):
+        """Summarize should set status to 'in_progress' before summarization, then 'complete' after."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": None},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "Existing transcript",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        # Track the status values written at each _write_json_metadata call.
+        written_statuses: list[str] = []
+
+        def track_write(data, source_path):
+            written_statuses.append(data.get("status", {}).get("summarize"))
+            # Call the real implementation to actually write the file
+            json_path = source_path.with_name(source_path.name + ".json")
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
+            tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp_path.replace(json_path)
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
+            MockSummarizer.return_value = mock_summarizer
+
+            with mock.patch("local_feed_generator.cli._write_json_metadata", side_effect=track_write):
+                result = runner.invoke(
+                    app,
+                    ["summarize", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 0
+        # Should have written at least twice: once for in_progress, once for complete
+        assert len(written_statuses) >= 2
+        assert written_statuses[0] == "in_progress"
+        assert written_statuses[-1] == "complete"
+
+        # Verify final JSON state
+        json_path = tmp_data_dir / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        assert data["status"]["summarize"] == "complete"
+        assert data["summary"] == "Key takeaways."
+        assert data["description"] == "Key takeaways."
+
+    def test_summarize_outputs_token_counts(self, runner, valid_env, tmp_data_dir):
+        """Summarize command should output token counts from the LLM response."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": None},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "Existing transcript",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.summarize.return_value = (
+                "Key takeaways from this video.",
+                1234,
+                567,
+            )
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["summarize", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Tokens in: 1234, Tokens out: 567" in result.output
+
+    def test_summarize_outputs_word_count(self, runner, valid_env, tmp_data_dir):
+        """Summarize command should output word count of the summary."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": None},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "Existing transcript",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            # "Key takeaways from this video." has 5 words
+            mock_summarizer.summarize.return_value = (
+                "Key takeaways from this video.",
+                100,
+                50,
+            )
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["summarize", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Summarized 5 words." in result.output
+
+
+class TestExtractMetadataCommand:
+    """Tests for the extract-metadata command (T5.9)."""
+
+    def test_extract_metadata_help(self, runner):
+        """The extract-metadata command should have help text."""
+        result = runner.invoke(app, ["extract-metadata", "--help"])
+        assert result.exit_code == 0
+        assert "--data-dir" in result.output
+        assert "--dry-run" in result.output
+        assert "--config-file" in result.output
+        assert "--file" in result.output
+        assert "--force" in result.output
+
+    def test_extract_metadata_no_files(self, runner, valid_env, tmp_data_dir):
+        """Extract-metadata should report no files when directory is empty."""
+        result = runner.invoke(
+            app,
+            ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "No PDF/HTML files need metadata extraction." in result.output
+
+    def test_extract_metadata_dry_run(self, runner, valid_env, tmp_data_dir):
+        """Extract-metadata --dry-run should list files without processing."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+
+        with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
+            mock_extractor = mock.MagicMock()
+            MockExtractor.return_value = mock_extractor
+
+            result = runner.invoke(
+                app,
+                ["extract-metadata", "--data-dir", str(tmp_data_dir), "--dry-run"],
+            )
+
+        assert result.exit_code == 0
+        assert "[Dry run]" in result.output
+        assert "doc.pdf" in result.output
+        mock_extractor.extract.assert_not_called()
+
+    def test_extract_metadata_processes_pdf(self, runner, valid_env, tmp_data_dir):
+        """Extract-metadata should process PDF files without status['extract']='complete'."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+
+        with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
+            mock_extractor = mock.MagicMock()
+            mock_extractor.extract.return_value = {
+                "title": "PDF Title",
+                "description": "PDF Description",
+                "date": 1728931200,
+                "size": 1024,
+                "filetype": "pdf",
+            }
+            MockExtractor.return_value = mock_extractor
+
+            result = runner.invoke(
+                app,
+                ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 PDF/HTML file(s)" in result.output
+        mock_extractor.extract.assert_called_once()
+
+    def test_extract_metadata_processes_html(self, runner, valid_env, tmp_data_dir):
+        """Extract-metadata should process HTML files without status['extract']='complete'."""
+        (tmp_data_dir / "page.html").write_bytes(b"<html><title>Test</title></html>")
+
+        with mock.patch("local_feed_generator.services.extractors.HTMLExtractor") as MockExtractor:
+            mock_extractor = mock.MagicMock()
+            mock_extractor.extract.return_value = {
+                "title": "HTML Title",
+                "description": "HTML Description",
+                "date": 1728931200,
+                "size": 1024,
+                "filetype": "html",
+            }
+            MockExtractor.return_value = mock_extractor
+
+            result = runner.invoke(
+                app,
+                ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 PDF/HTML file(s)" in result.output
+        mock_extractor.extract.assert_called_once()
+
+    def test_extract_metadata_skips_files_with_title(self, runner, valid_env, tmp_data_dir):
+        """Extract-metadata should skip files that already have status['extract']='complete'."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "Existing Title",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "No PDF/HTML files need metadata extraction." in result.output
+
+    def test_extract_metadata_writes_to_json(self, runner, valid_env, tmp_data_dir):
+        """Extract-metadata should write extracted data to JSON metadata."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+
+        with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
+            mock_extractor = mock.MagicMock()
+            mock_extractor.extract.return_value = {
+                "title": "PDF Title",
+                "description": "PDF Description",
+                "date": 1728931200,
+                "size": 1024,
+                "filetype": "pdf",
+            }
+            MockExtractor.return_value = mock_extractor
+
+            result = runner.invoke(
+                app,
+                ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        json_path = tmp_data_dir / "doc.pdf.json"
+        assert json_path.exists()
+        data = json.loads(json_path.read_text())
+        assert data["title"] == "PDF Title"
+        assert data["description"] == "PDF Description"
+        assert data["filetype"] == "pdf"
+        assert data["status"]["extract"] == "complete"
+
+    def test_extract_metadata_force_flag_reprocesses_complete_files(self, runner, valid_env, tmp_data_dir):
+        """Extract-metadata --force should re-extract files with status['extract']='complete'."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "Existing Title",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
+            mock_extractor = mock.MagicMock()
+            mock_extractor.extract.return_value = {
+                "title": "New Title",
+                "description": "New Description",
+                "date": 1728931200,
+                "size": 2048,
+                "filetype": "pdf",
+            }
+            MockExtractor.return_value = mock_extractor
+
+            result = runner.invoke(
+                app,
+                ["extract-metadata", "--data-dir", str(tmp_data_dir), "--force"],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 PDF/HTML file(s)" in result.output
+        mock_extractor.extract.assert_called_once()
+
+    def test_extract_metadata_sets_in_progress_before_and_complete_after(
+        self, runner, valid_env, tmp_data_dir
+    ):
+        """Extract-metadata should set status to 'in_progress' before extraction, then 'complete' after."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+
+        # Track the status values written at each _write_json_metadata call.
+        written_statuses: list[str] = []
+
+        def track_write(data, source_path):
+            written_statuses.append(data.get("status", {}).get("extract"))
+            # Call the real implementation to actually write the file
+            json_path = source_path.with_name(source_path.name + ".json")
+            json_path.parent.mkdir(parents=True, exist_ok=True)
+            tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
+            tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+            tmp_path.replace(json_path)
+
+        with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
+            mock_extractor = mock.MagicMock()
+            mock_extractor.extract.return_value = {
+                "title": "PDF Title",
+                "description": "PDF Description",
+                "date": 1728931200,
+                "size": 1024,
+                "filetype": "pdf",
+            }
+            MockExtractor.return_value = mock_extractor
+
+            with mock.patch("local_feed_generator.cli._write_json_metadata", side_effect=track_write):
+                result = runner.invoke(
+                    app,
+                    ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 0
+        # Should have written at least twice: once for in_progress, once for complete
+        assert len(written_statuses) >= 2
+        assert written_statuses[0] == "in_progress"
+        assert written_statuses[-1] == "complete"
+
+        # Verify final JSON state
+        json_path = tmp_data_dir / "doc.pdf.json"
+        data = json.loads(json_path.read_text())
+        assert data["status"]["extract"] == "complete"
+        assert data["title"] == "PDF Title"
+        assert "completed_at" in data
+
+
+class TestJsonFinalizationIntegration:
+    """Tests for JSON finalization integrated into validate and feeds commands."""
+
+    def test_validate_finalizes_incomplete_pdf_metadata(self, runner, valid_env, tmp_data_dir):
+        """Validate should finalize incomplete PDF metadata before validation."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "in_progress"},
+                    "title": "PDF Title",
+                    "description": "PDF Description",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+        json_path = tmp_data_dir / "doc.pdf.json"
+        data = json.loads(json_path.read_text())
+        assert data["status"]["extract"] == "complete"
+        assert "completed_at" in data
+
+    def test_feeds_finalizes_incomplete_mp4_metadata(self, runner, valid_env, tmp_data_dir):
+        """Feeds should finalize incomplete MP4 metadata before generating feeds."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": None},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "Some transcript content",
+                    "summary": "Some summary",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            mock_generator = mock.MagicMock()
+            mock_generator.generate_all_feeds.return_value = None
+            MockGen.return_value = mock_generator
+
+            result = runner.invoke(
+                app,
+                ["feeds", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        json_path = tmp_data_dir / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        assert data["status"]["transcribe"] == "complete"
+        assert data["status"]["summarize"] == "complete"
+        assert "completed_at" in data
+
+    def test_feeds_skips_finalization_for_complete_files(self, runner, valid_env, tmp_data_dir):
+        """Feeds should not re-finalize files that are already feed-eligible."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        # Already complete metadata
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "Existing Title",
+                    "description": "Existing Description",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            mock_generator = mock.MagicMock()
+            mock_generator.generate_all_feeds.return_value = None
+            MockGen.return_value = mock_generator
+
+            result = runner.invoke(
+                app,
+                ["feeds", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        # File should still be valid and feed-eligible
+        json_path = tmp_data_dir / "doc.pdf.json"
+        data = json.loads(json_path.read_text())
+        assert data["status"]["extract"] == "complete"
+
+    def test_feeds_generates_title_for_mp4_without_title(self, runner, valid_env, tmp_data_dir):
+        """Feeds finalization should generate a title for MP4 files when missing."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": None},
+                    "title": "",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "Some transcript content",
+                    "summary": "Some summary",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.generate_title.return_value = ("Generated Title", 30, 5)
+            MockSummarizer.return_value = mock_summarizer
+
+            with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+                mock_generator = mock.MagicMock()
+                mock_generator.generate_all_feeds.return_value = None
+                MockGen.return_value = mock_generator
+
+                result = runner.invoke(
+                    app,
+                    ["feeds", "--data-dir", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 0
+        json_path = tmp_data_dir / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        assert data["title"] == "Generated Title"
+        mock_summarizer.generate_title.assert_called_once()
+
+    def test_validate_finalizes_and_reports_no_errors(self, runner, valid_env, tmp_data_dir):
+        """Validate should finalize incomplete metadata and report no errors."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "in_progress"},
+                    "title": "PDF Title",
+                    "description": "PDF Description",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "All files are valid" in result.output
+
+
+# ---------------------------------------------------------------------------
+# T5.10: Title Command Tests
+# ---------------------------------------------------------------------------
+
+
+class TestTitleCommand:
+    """Tests for the title command (T5.10)."""
+
+    def test_title_help(self, runner):
+        """The title command should have help text."""
+        result = runner.invoke(app, ["title", "--help"])
+        assert result.exit_code == 0
+        assert "--data-dir" in result.output
+        assert "--dry-run" in result.output
+        assert "--config-file" in result.output
+        assert "--file" in result.output
+        assert "--force" in result.output
+
+    def test_title_no_files_needing_titles(self, runner, valid_env, tmp_data_dir):
+        """Title should report no files when all have proper titles."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "Proper Title",
+                    "description": "Desc",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            ["title", "--data-dir", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "No files need title generation." in result.output
+
+    def test_title_dry_run(self, runner, valid_env, tmp_data_dir):
+        """Title --dry-run should list files without processing."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["title", "--data-dir", str(tmp_data_dir), "--dry-run"],
+            )
+
+        assert result.exit_code == 0
+        assert "[Dry run]" in result.output
+        assert "doc.pdf" in result.output
+        mock_summarizer.generate_title.assert_not_called()
+
+    def test_title_processes_pdf_with_empty_title(self, runner, valid_env, tmp_data_dir):
+        """Title should process PDF files with empty titles."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data content")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.generate_title.return_value = ("Generated Title", 30, 5)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["title", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 file(s) to generate titles for." in result.output
+        mock_summarizer.generate_title.assert_called_once()
+
+    def test_title_writes_title_to_json(self, runner, valid_env, tmp_data_dir):
+        """Title command should write the generated title to the JSON metadata file."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data content")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.generate_title.return_value = ("Generated Title", 30, 5)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["title", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        json_path = tmp_data_dir / "doc.pdf.json"
+        data = json.loads(json_path.read_text())
+        assert data["title"] == "Generated Title"
+
+    def test_title_skips_files_with_proper_title(self, runner, valid_env, tmp_data_dir):
+        """Title should skip files that already have a proper title."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "A Proper Title",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["title", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "No files need title generation." in result.output
+        mock_summarizer.generate_title.assert_not_called()
+
+    def test_title_force_regenerates_for_proper_title(
+        self, runner, valid_env, tmp_data_dir
+    ):
+        """Title --force should regenerate titles even for files with proper titles."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data content")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "Existing Title",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.generate_title.return_value = ("New Title", 30, 5)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["title", "--data-dir", str(tmp_data_dir), "--force"],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 file(s) to generate titles for." in result.output
+        mock_summarizer.generate_title.assert_called_once()
+
+    def test_title_processes_mp4_with_transcript(self, runner, valid_env, tmp_data_dir):
+        """Title should process MP4 files using the transcript as content."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "status": {"transcribe": "complete", "summarize": "complete"},
+                    "title": "",
+                    "description": "Summary",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "transcript": "This is the transcript content.",
+                    "summary": "Summary",
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.generate_title.return_value = ("Video Title", 30, 5)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["title", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 file(s) to generate titles for." in result.output
+        # Should use transcript as content
+        call_arg = mock_summarizer.generate_title.call_args[0][0]
+        assert "This is the transcript content." in call_arg
+
+    def test_title_processes_html_with_empty_title(self, runner, valid_env, tmp_data_dir):
+        """Title should process HTML files with empty titles."""
+        (tmp_data_dir / "page.html").write_text("<html><body>Content</body></html>")
+        (tmp_data_dir / "page.html.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "",
+                    "description": "",
+                    "filename": "page.html",
+                    "filepath": "page.html",
+                    "filetype": "html",
+                    "date": 1728931200,
+                    "size": 512,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.generate_title.return_value = ("HTML Page Title", 30, 5)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["title", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 file(s) to generate titles for." in result.output
+
+    def test_title_file_flag_processes_specific_file(self, runner, valid_env, tmp_data_dir):
+        """Title --file should process only the specified file."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data content")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+        (tmp_data_dir / "other.pdf").write_bytes(b"other pdf")
+        (tmp_data_dir / "other.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "",
+                    "description": "",
+                    "filename": "other.pdf",
+                    "filepath": "other.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.generate_title.return_value = ("Title", 30, 5)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["title", "--data-dir", str(tmp_data_dir), "--file", "doc.pdf"],
+            )
+
+        assert result.exit_code == 0
+        # Only doc.pdf should be processed
+        assert "Found 1 file(s) to generate titles for." in result.output
+
+    def test_title_file_not_found(self, runner, valid_env, tmp_data_dir):
+        """Title --file should error when file does not exist."""
+        result = runner.invoke(
+            app,
+            ["title", "--data-dir", str(tmp_data_dir), "--file", "nonexistent.pdf"],
+        )
+        assert result.exit_code != 0
+        assert "File not found" in result.output
+
+    def test_title_processes_files_with_filename_stem_title(self, runner, valid_env, tmp_data_dir):
+        """Title should process files where title equals the filename stem (not a proper title)."""
+        (tmp_data_dir / "my_document.pdf").write_bytes(b"pdf data content")
+        (tmp_data_dir / "my_document.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "my document",  # filename stem with underscores replaced
+                    "description": "",
+                    "filename": "my_document.pdf",
+                    "filepath": "my_document.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.generate_title.return_value = ("New Title", 30, 5)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["title", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 file(s) to generate titles for." in result.output
+        mock_summarizer.generate_title.assert_called_once()
+
+    def test_title_skips_files_without_json(self, runner, valid_env, tmp_data_dir):
+        """Title should skip files that don't have a JSON metadata file."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+
+        result = runner.invoke(
+            app,
+            ["title", "--data-dir", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "No files need title generation." in result.output
+
+    def test_title_exit_code_1_on_error(self, runner, valid_env, tmp_data_dir):
+        """Title should exit with code 1 when title generation fails."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data content")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.generate_title.side_effect = RuntimeError("LLM failed")
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["title", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 1
+        assert "1 failed" in result.output
+
+    def test_title_outputs_generated_title(self, runner, valid_env, tmp_data_dir):
+        """Title command should output the generated title."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data content")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.generate_title.return_value = ("My Document Title", 30, 5)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["title", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Title: My Document Title" in result.output
+
+
+class TestFindFilesNeedingTitle:
+    """Tests for the _find_files_needing_title helper function."""
+
+    def test_find_files_needing_title_finds_empty_title(self, valid_env, tmp_data_dir):
+        """Should find files with empty titles."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_title
+
+        result = _find_files_needing_title(tmp_data_dir)
+        assert len(result) == 1
+        assert result[0].name == "doc.pdf"
+
+    def test_find_files_needing_title_finds_filename_stem_title(self, valid_env, tmp_data_dir):
+        """Should find files where title equals the filename stem (not a proper title)."""
+        (tmp_data_dir / "my_doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "my_doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "my doc",  # filename stem with underscores replaced
+                    "description": "",
+                    "filename": "my_doc.pdf",
+                    "filepath": "my_doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_title
+
+        result = _find_files_needing_title(tmp_data_dir)
+        assert len(result) == 1
+
+    def test_find_files_needing_title_skips_proper_title(self, valid_env, tmp_data_dir):
+        """Should skip files with proper titles."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "A Proper Title",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_title
+
+        result = _find_files_needing_title(tmp_data_dir)
+        assert len(result) == 0
+
+    def test_find_files_needing_title_force_includes_proper_title(
+        self, valid_env, tmp_data_dir
+    ):
+        """Force should include files with proper titles."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "A Proper Title",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_title
+
+        result = _find_files_needing_title(tmp_data_dir, force=True)
+        assert len(result) == 1
+
+    def test_find_files_needing_title_skips_orphaned_json(self, valid_env, tmp_data_dir):
+        """Should skip JSON files without a source file."""
+        (tmp_data_dir / "orphan.pdf.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "",
+                    "description": "",
+                    "filename": "orphan.pdf",
+                    "filepath": "orphan.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_title
+
+        result = _find_files_needing_title(tmp_data_dir)
+        assert len(result) == 0
+
+    def test_find_files_needing_title_skips_ignored_filenames(self, valid_env, tmp_data_dir):
+        """Should skip JSON files with ignored names (podcast.xml, etc.)."""
+        # Create a JSON file that would be ignored
+        (tmp_data_dir / "podcast.xml.json").write_text(
+            json.dumps(
+                {
+                    "status": {"extract": "complete"},
+                    "title": "",
+                    "description": "",
+                    "filename": "podcast.xml",
+                    "filepath": "podcast.xml",
+                    "filetype": "html",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "processing_date": 1728931200,
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_title
+
+        result = _find_files_needing_title(tmp_data_dir)
+        assert len(result) == 0
+
+
+class TestGetContentForTitle:
+    """Tests for the _get_content_for_title helper function."""
+
+    def test_get_content_for_title_mp4_uses_transcript(self, valid_env):
+        """Should use transcript from metadata for MP4 files."""
+        from local_feed_generator.cli import _get_content_for_title
+
+        file_path = Path("/fake/path/lecture.mp4")
+        metadata_dict = {"transcript": "This is the transcript."}
+        result = _get_content_for_title(file_path, metadata_dict)
+        assert result == "This is the transcript."
+
+    def test_get_content_for_title_mp4_uses_empty_when_no_transcript(self, valid_env):
+        """Should return empty string for MP4 without transcript."""
+        from local_feed_generator.cli import _get_content_for_title
+
+        file_path = Path("/fake/path/lecture.mp4")
+        metadata_dict = {}
+        result = _get_content_for_title(file_path, metadata_dict)
+        assert result == ""
+
+    def test_get_content_for_title_pdf_reads_file_content(self, valid_env, tmp_path):
+        """Should read file content for PDF files."""
+        from local_feed_generator.cli import _get_content_for_title
+
+        source = tmp_path / "doc.pdf"
+        source.write_text("PDF content here.")
+        metadata_dict = {}
+        result = _get_content_for_title(source, metadata_dict)
+        assert "PDF content here." in result
+
+    def test_get_content_for_title_html_reads_file_content(self, valid_env, tmp_path):
+        """Should read file content for HTML files."""
+        from local_feed_generator.cli import _get_content_for_title
+
+        source = tmp_path / "page.html"
+        source.write_text("<html>HTML content</html>")
+        metadata_dict = {}
+        result = _get_content_for_title(source, metadata_dict)
+        assert "HTML content" in result
+
+    def test_get_content_for_title_truncates_long_content(self, valid_env, tmp_path):
+        """Should truncate content to 8000 characters for PDF/HTML files."""
+        from local_feed_generator.cli import _get_content_for_title
+
+        source = tmp_path / "doc.pdf"
+        source.write_text("x" * 20000)
+        metadata_dict = {}
+        result = _get_content_for_title(source, metadata_dict)
+        assert len(result) <= 8000
+
+    def test_get_content_for_title_unsupported_ext_returns_empty(self, valid_env, tmp_path):
+        """Should return empty string for unsupported file types."""
+        from local_feed_generator.cli import _get_content_for_title
+
+        file_path = Path("/fake/path/file.txt")
+        metadata_dict = {}
+        result = _get_content_for_title(file_path, metadata_dict)
+        assert result == ""
+
+    def test_get_content_for_title_pdf_handles_read_error(self, valid_env, tmp_path):
+        """Should return empty string when file cannot be read."""
+        from local_feed_generator.cli import _get_content_for_title
+
+        source = tmp_path / "doc.pdf"
+        source.write_text("content")
+        # Make the file unreadable
+        source.chmod(0o000)
+        try:
+            metadata_dict = {}
+            result = _get_content_for_title(source, metadata_dict)
+            assert result == ""
+        finally:
+            source.chmod(0o644)
