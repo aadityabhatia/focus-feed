@@ -153,6 +153,9 @@ uv run local-feed-generator feeds --data-dir ./data
 # Validate all metadata files and finalize JSON
 uv run local-feed-generator validate --data-dir ./data
 
+# Create feed.json template in a directory
+uv run local-feed-generator create-feed --dir ./data/my-course
+
 # Transcribe MP4 files to markdown text
 uv run local-feed-generator transcribe --data-dir ./data
 
@@ -179,11 +182,12 @@ uv run local-feed-generator extract --data-dir ./data
 
 - **`process`**: Process all files in data directory (batch mode)
 - **`watch`**: Watch for changes and process incrementally
- - **`feeds`**: Generate RSS feeds from existing JSON metadata; supports per-folder feeds via feed.json; generates root-level index.html; only generates feeds where feed.json exists and applicable files are present
+- **`feeds`**: Generate RSS feeds from existing JSON metadata; supports per-folder feeds via feed.json; generates root-level index.html; only generates feeds where feed.json exists and applicable files are present
 - **`validate`**: Validate all metadata files and finalize incomplete ones by setting step completion statuses
 - **`transcribe`**: Transcribe MP4 files using local or remote mode
 - **`summarize`**: Generate summaries from existing transcripts or extracted content; uses reflection questions if available; works with MP4, PDF, and HTML files
 - **`extract`**: Extract metadata and content from PDF/HTML files
+- **`create-feed`**: Create a template feed.json file in the specified directory
 
 #### Flags
 
@@ -372,8 +376,10 @@ The `feed.json` file can contain:
 - `description`: Custom description for the feeds generated in this folder (optional)
 - `language`: Language code for the feed (optional, e.g., "en-us")
 - `author`: Feed author name (optional)
-- `link`: URL to the feed's homepage (optional)
+- `link`: URL to the feed's homepage (optional - if omitted, defaults to BASE_URL; if provided, overrides BASE_URL for the channel link)
 - `image`: Feed image/logo with `url`, `title`, and `link` subfields (optional)
+
+**Note:** The `create-feed` CLI subcommand generates a template with only `title` and `description`. The channel link in generated feeds is derived from BASE_URL + relative path by default, but can be overridden by the `link` field in feed.json.
 
 When `feed.json` exists:
  - `podcast.xml` is generated in that folder **only if MP4 files with feed_eligible=true exist in the subtree**

@@ -12,6 +12,10 @@
 This document provides a detailed, executable implementation plan for building `local-feed-generator`, a Python application that processes PDF/HTML/MP4 files and generates RSS feeds. The plan is organized into phases with ordered tasks, dependencies, and completion criteria.
 
 **Latest Updates:**
+  - Added create-feed CLI subcommand to create template feed.json files with title and description placeholders
+  - Feed links derived from BASE_URL + relative path (not hardcoded). Channel link can be overridden via optional link field in feed.json
+  - feed.json supports metadata fields: title (required), description (optional), language (optional), author (optional), link (optional), image (optional)
+- Added expected metadata fields to feed.json: title (required), description, language, author, link, and image (with url, title, link subfields)
 - Added support for title as dict with source tracking (filename, extracted, generated)
 - Added new config variables: SUMMARY_PROMPT, TITLE_PROMPT, SUMMARY_REFLECTION_PROMPT
 - Added reflection.md support for reflection questions in summarization
@@ -707,6 +711,26 @@ Implement command-line interface for all processing modes.
   - All subcommands are available
   - Help text is displayed correctly
 
+- [x] T5.7: Implement Create-Feed Command
+- **Description:** Create `create-feed` command to generate template feed.json files
+- **File:** `src/local_feed_generator/cli.py`
+- **Actions:**
+  - Implement `create-feed` command with required `--dir` or `--directory` option (directory path)
+  - Generate template feed.json with placeholder title and description fields
+  - Do NOT include hardcoded link field (link derived from BASE_URL + relative path)
+  - Create target directory if it doesn't exist
+  - Overwrite existing feed.json if present
+  - Output success message with generated feed.json path
+- **Dependencies:**
+  - T2.1 (Config)
+  - T4.1 (Feed generator base)
+- **Completion Criteria:**
+  - Command creates valid feed.json with template structure (title, description)
+  - No link field in template (derived from BASE_URL)
+  - Target directory created if missing
+  - Success message includes generated file path
+  - Works with --dir and --directory flag aliases
+
 ---
 
 ## Phase 6: Incremental Mode (Watch)
@@ -1256,7 +1280,7 @@ The following tasks can be worked on concurrently:
 
 **Phase 4:** T4.2, T4.3, T4.5, T4.7 can be parallel; T4.1, T4.4, T4.6 are sequential
 
-**Phase 5:** T5.2, T5.3, T5.4, T5.5 can be parallel; T5.1 and T5.6 are sequential
+**Phase 5:** T5.2, T5.3, T5.4, T5.5, T5.7 can be parallel; T5.1 and T5.6 are sequential
 
 **Phase 6:** Sequential (depends on watch mode implementation)
 
@@ -1320,6 +1344,9 @@ The following tasks can be worked on concurrently:
 7. **Index.html generation**: Auto-generated in folders with feed.json
 8. **No root feeds without feed.json**: Root-level feeds require explicit feed.json configuration
 9. **summarize command**: Works with MP4 (transcripts), PDF (extracted content), and HTML (extracted content)
+10. **create-feed command**: CLI subcommand to create template feed.json files with optional metadata fields
+11. **feed.json metadata fields**: Supports optional fields: title, description, language, author, link, image
+12. **Feed link derivation**: Links derived from BASE_URL + relative path (not hardcoded)
 
 ### Other Constraints
 1. **Dependencies:** Use uv for all dependency management
@@ -1345,6 +1372,7 @@ The following tasks can be worked on concurrently:
 - [x] Error handling implemented for all error paths
 - [x] XML feeds are valid and properly formatted
 - [x] All CLI commands work as specified
+- [x] create-feed command generates template feed.json files
 - [x] Watch mode processes files incrementally
 - [x] Feeds are regenerated after each file processing
 - [x] Root-level index.html is regenerated after each file processing
@@ -1369,11 +1397,11 @@ The following tasks can be worked on concurrently:
 ## Completion Report
 
 ### Artifacts Updated
-1. **README.md** - Updated with all new features, configuration, usage examples, conditional feed generation, index.html
-2. **proposal.md** - Updated problem statement, scope, success criteria, conditional feed generation, index.html
-3. **specs.md** - Updated with new functional requirements, conditional feed generation, index.html, summarize for PDF/HTML
-4. **design.md** - Updated with new architecture, interfaces, data flow, conditional feed generation, index.html, summarize for PDF/HTML
-5. **tasks.md** - Updated with new tasks for conditional feed generation, index.html, summarize for PDF/HTML, all marked complete
+1. **README.md** - Updated with all new features, configuration, usage examples, conditional feed generation, index.html, create-feed command
+2. **proposal.md** - Updated problem statement, scope, success criteria, conditional feed generation, index.html, create-feed command
+3. **specs.md** - Updated with new functional requirements, conditional feed generation, index.html, summarize for PDF/HTML, create-feed command, feed.json metadata fields
+4. **design.md** - Updated with new architecture, interfaces, data flow, conditional feed generation, index.html, summarize for PDF/HTML, create-feed command, feed.json metadata fields
+5. **tasks.md** - Updated with new tasks for conditional feed generation, index.html, summarize for PDF/HTML, create-feed command, all marked complete
 
 ### New Features Implemented
 1. \u2705 Title field as dict with source tracking
@@ -1393,6 +1421,9 @@ The following tasks can be worked on concurrently:
 15. \u2705 podcast.xml only if MP4 files present
 16. \u2705 articles.xml only if PDF/HTML files present
 17. \u2705 summarize command processes PDF/HTML files
+18. ✓ create-feed CLI subcommand for template feed.json generation
+19. ✓ feed.json supports optional metadata fields: title, description, language, author, link, image
+20. ✓ Feed links derived from BASE_URL + relative path (not hardcoded)
 
 ### Implementation Status
 - **All required features:** \u2705 COMPLETED
@@ -1414,3 +1445,6 @@ The following tasks can be worked on concurrently:
 - Root-level index.html auto-generated listing all feeds for easy feed discovery
 - Root-level feeds require explicit feed.json configuration
 - summarize command works with both MP4 transcripts and PDF/HTML extracted content
+- create-feed command generates template feed.json files with optional metadata fields
+- feed.json supports optional metadata: title, description, language, author, link, image
+- Feed links are derived from BASE_URL + relative path (not hardcoded)

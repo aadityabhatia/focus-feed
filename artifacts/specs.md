@@ -232,6 +232,7 @@ This system processes education content files in the `data` directory and genera
 - `extract`: Extract metadata from PDF/HTML files
 - `feeds`: Generate RSS feeds and finalize JSON metadata by computing feed eligibility, and generate root-level index.html
 - `validate`: Validate all metadata files and finalize JSON by setting step completion statuses
+- `create-feed`: Create a template `feed.json` file in the specified directory
 
 **FR-030**: All CLI subcommands SHALL accept the following flags:
 - `--data-dir <path>`: Path to the data directory. Defaults to `DATA_DIR` from configuration.
@@ -490,6 +491,9 @@ local-feed-generator extract --file ./data/documents/report.pdf --force
 
 # Generate feeds only (no processing); finalizes JSON metadata; generates index.html
 local-feed-generator feeds --data-dir ./data
+
+# Create feed.json template in a directory
+local-feed-generator create-feed --dir ./data/my-course
 
 # Validate all metadata files and finalize JSON
 local-feed-generator validate --data-dir ./data
