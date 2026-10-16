@@ -355,13 +355,25 @@ When a `feed.json` file exists in a subfolder of `data/`, the system generates f
 ```json
 {
   "title": "Course 1: Introduction to AI",
-  "description": "All materials for Course 1 covering AI fundamentals"
+  "description": "All materials for Course 1 covering AI fundamentals",
+  "language": "en-us",
+  "author": "Course Author",
+  "link": "https://example.com/course1",
+  "image": {
+    "url": "https://example.com/course1-logo.png",
+    "title": "Course 1 Logo",
+    "link": "https://example.com/course1"
+  }
 }
 ```
 
 The `feed.json` file can contain:
-- `title`: Custom title for the feeds generated in this folder
-- `description`: Custom description for the feeds generated in this folder
+- `title`: Custom title for the feeds generated in this folder (required)
+- `description`: Custom description for the feeds generated in this folder (optional)
+- `language`: Language code for the feed (optional, e.g., "en-us")
+- `author`: Feed author name (optional)
+- `link`: URL to the feed's homepage (optional)
+- `image`: Feed image/logo with `url`, `title`, and `link` subfields (optional)
 
 When `feed.json` exists:
  - `podcast.xml` is generated in that folder **only if MP4 files with feed_eligible=true exist in the subtree**

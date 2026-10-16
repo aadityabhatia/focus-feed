@@ -183,7 +183,7 @@ This system processes education content files in the `data` directory and genera
 
 **FR-023**: The system SHALL convert markdown in descriptions to HTML for feed output, with proper XSS protection (safe URL schemes only).
 
-**FR-024**: Per-folder feed generation: When a folder contains a `feed.json` file, the system SHALL generate `podcast.xml` and `articles.xml` in that folder containing only items from that folder's subtree, using the title and description from `feed.json`.
+**FR-024**: Per-folder feed generation: When a folder contains a `feed.json` file, the system SHALL generate `podcast.xml` and `articles.xml` in that folder containing only items from that folder's subtree, using the title and description from `feed.json`. The `feed.json` SHALL support standard RSS metadata fields including title (required), description (optional), language (optional), author (optional), link (optional), and image (optional).
 
 **FR-025**: Root-level feeds SHALL **NOT** be generated unless a `feed.json` file exists in the root of the `data/` directory. Feeds require explicit configuration via feed.json.
 
@@ -828,9 +828,20 @@ data/
 ```json
 {
   "title": "Course 1: Introduction to AI",
-  "description": "All materials for Course 1 covering AI fundamentals"
+  "description": "All materials for Course 1 covering AI fundamentals",
+  "language": "en-us",
+  "author": "Course Author",
+  "link": "https://example.com/course1",
+  "image": {
+    "url": "https://example.com/course1-logo.png",
+    "title": "Course 1 Logo",
+    "link": "https://example.com/course1"
+  }
 }
 ```
+
+**Required fields:** `title`
+**Optional fields:** `description`, `language`, `author`, `link`, `image` (with `url`, `title`, `link` subfields)
 
 **Benefits:**
 - Better organization in feed readers
