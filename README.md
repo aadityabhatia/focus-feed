@@ -609,6 +609,22 @@ Example `reflection.md`:
 - **Debounced watching**: Prevents rapid successive events from triggering multiple processes
 - **Periodic rescan**: Fallback for file systems that may not reliably trigger watchdog events
 
+#### Error Logging
+
+The system provides multi-channel error reporting when processing failures occur:
+
+- **error.log file**: A dedicated `error.log` file is created in the data directory (or the current working directory if configuration is unavailable). This file captures all `ERROR`-level messages with full details including timestamp, error type, message, file path, processing stage, retry info, and sanitized endpoint URL. The file is appended to on each run, preserving a persistent history of errors for review.
+
+- **stderr**: All errors are logged to stderr via the module logger with a consistent format including timestamp, log level, and error details (exception class name, message, filepath, stage, and sanitized endpoint).
+
+- **stdout (connection errors only)**: When LLM API connection or timeout errors occur (e.g., `APIConnectionError`, `APITimeoutError`), a detailed multi-line error summary is also printed to stdout. This includes the error type, message, retry information, endpoint URL, file path, processing stage, and model name. Non-connection errors (e.g., rate limiting, server errors, authentication failures) are not printed to stdout — they are only logged to stderr and `error.log`.
+
+- **URL sanitization**: Endpoint URLs are sanitized before logging to prevent sensitive data exposure. Credentials (username/password) and query parameters (e.g., API keys in query strings) are stripped from URLs. For example, `https://key:secret@llm.example.com/v1?api_key=hidden` is logged as `https://llm.example.com/v1`. This sanitization applies to both stderr and `error.log` output.
+
+#### Retry Behavior
+
+When LLM API requests fail with transient errors (`APIConnectionError`, `APITimeoutError`, `RateLimitError`, `InternalServerError`), the system automatically retries with exponential backoff and jitter. Up to 3 retries are attempted by default (4 total attempts). Non-retryable errors (authentication, bad request, permission denied, not found, unprocessable entity) fail immediately without retrying.
+
 ## File Types Supported
 
 - **MP4 (audio)**: Transcribed + summarized (Feed: Podcast feed). Fields: `description=""`, `summary`=LLM key takeaways, `content`=full transcript, `duration`=audio length in seconds, `creation_time`=ISO8601 string

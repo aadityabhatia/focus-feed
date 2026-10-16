@@ -34,7 +34,7 @@ from openai import (
 )
 
 from local_feed_generator.config import Settings, get_config
-from local_feed_generator.errors import SummarizationError
+from local_feed_generator.errors import SummarizationError, log_error
 
 _logger = logging.getLogger(__name__)
 
@@ -146,6 +146,7 @@ class Summarizer:
         self,
         transcript: str,
         reflection_questions: str | None = None,
+        filepath: str | None = None,
     ) -> tuple[str, int, int]:
         """Generate key takeaways from a transcript.
 
@@ -160,6 +161,8 @@ class Summarizer:
             reflection_questions: Optional reflection questions to focus the
                 summary.  When provided, the summary_reflection_prompt is used
                 and the questions are prepended to the user content.
+            filepath: Optional path of the file being processed, included in
+                error logging for debugging context.
 
         Returns:
             A tuple of ``(summary, prompt_tokens, completion_tokens)``.
@@ -184,6 +187,8 @@ class Summarizer:
         result = self._chat_completion(
             system_prompt=system_prompt,
             user_content=user_content,
+            stage="summarization",
+            filepath=filepath,
         )
         return result.content, result.prompt_tokens, result.completion_tokens
 
@@ -192,6 +197,7 @@ class Summarizer:
         content: str,
         filename: str | None = None,
         extracted_title: str | None = None,
+        filepath: str | None = None,
     ) -> tuple[str, int, int]:
         """Generate a concise title from content.
 
@@ -219,6 +225,8 @@ class Summarizer:
             extracted_title: Optional title extracted from source metadata
                 (PDF metadata title, HTML ``<title>`` tag).  Only included
                 if not ``None`` and not empty.
+            filepath: Optional path of the file being processed, included in
+                error logging for debugging context.
 
         Returns:
             A tuple of ``(title, prompt_tokens, completion_tokens)``.
@@ -245,6 +253,8 @@ class Summarizer:
         result = self._chat_completion(
             system_prompt=self._config.title_prompt,
             user_content=user_content,
+            stage="title_generation",
+            filepath=filepath,
         )
         return result.content, result.prompt_tokens, result.completion_tokens
 
@@ -256,6 +266,8 @@ class Summarizer:
         self,
         system_prompt: str,
         user_content: str,
+        stage: str | None = None,
+        filepath: str | None = None,
     ) -> LLmResponse:
         """Execute a chat completion with retry logic.
 
@@ -264,9 +276,17 @@ class Summarizer:
         data. Implements exponential backoff with jitter for transient
         failures.
 
+        For connection and timeout errors, detailed information is printed
+        to stdout and logged to ``error.log`` via :func:`log_error`.
+
         Args:
             system_prompt: The system message content.
             user_content: The user message content (transcript or other text).
+            stage: Optional processing stage label (e.g.
+                ``"summarization"``, ``"title_generation"``) for error
+                logging context.
+            filepath: Optional path of the file being processed, included in
+                error logging for debugging context.
 
         Returns:
             An :class:`LLmResponse` with content, prompt_tokens, and
@@ -282,6 +302,8 @@ class Summarizer:
         ]
 
         last_exc: Exception | None = None
+        endpoint = self._config.llm_endpoint
+        model = self._config.llm_model
 
         for attempt in range(self._max_retries + 1):
             try:
@@ -306,12 +328,39 @@ class Summarizer:
 
             except _NON_RETRYABLE_ERRORS as exc:
                 # Permanent failures — do not retry.
-                raise SummarizationError(f"LLM request failed (non-retryable): {exc}") from exc
+                is_connection_error = isinstance(
+                    exc, (APIConnectionError, APITimeoutError)
+                )
+                log_error(
+                    exc,
+                    filepath=filepath,
+                    stage=stage,
+                    endpoint=endpoint,
+                    model=model,
+                    print_stdout=is_connection_error,
+                )
+                raise SummarizationError(
+                    f"LLM request failed (non-retryable): {exc}"
+                ) from exc
 
             except _RETRYABLE_ERRORS as exc:
                 last_exc = exc
                 if attempt < self._max_retries:
                     delay = self._calculate_backoff(attempt)
+                    is_connection_error = isinstance(
+                        exc, (APIConnectionError, APITimeoutError)
+                    )
+                    retry_info = f"attempt={attempt + 1}/{self._max_retries + 1}"
+                    if is_connection_error:
+                        log_error(
+                            exc,
+                            filepath=filepath,
+                            stage=stage,
+                            retry_info=retry_info,
+                            endpoint=endpoint,
+                            model=model,
+                            print_stdout=True,
+                        )
                     _logger.warning(
                         "LLM request failed (attempt %d/%d), retrying in %.2fs: %s",
                         attempt + 1,
@@ -321,6 +370,20 @@ class Summarizer:
                     )
                     time.sleep(delay)
                 else:
+                    # Final failure — all retries exhausted.
+                    is_connection_error = isinstance(
+                        exc, (APIConnectionError, APITimeoutError)
+                    )
+                    retry_info = f"attempt={attempt + 1}/{self._max_retries + 1}"
+                    log_error(
+                        exc,
+                        filepath=filepath,
+                        stage=stage,
+                        retry_info=retry_info,
+                        endpoint=endpoint,
+                        model=model,
+                        print_stdout=is_connection_error,
+                    )
                     _logger.error(
                         "LLM request failed after %d attempts: %s",
                         self._max_retries + 1,
@@ -329,7 +392,20 @@ class Summarizer:
 
             except Exception as exc:
                 # Unexpected errors — do not retry.
-                raise SummarizationError(f"Unexpected error during LLM request: {exc}") from exc
+                is_connection_error = isinstance(
+                    exc, (APIConnectionError, APITimeoutError)
+                )
+                log_error(
+                    exc,
+                    filepath=filepath,
+                    stage=stage,
+                    endpoint=endpoint,
+                    model=model,
+                    print_stdout=is_connection_error,
+                )
+                raise SummarizationError(
+                    f"Unexpected error during LLM request: {exc}"
+                ) from exc
 
         # All retries exhausted.
         raise SummarizationError(

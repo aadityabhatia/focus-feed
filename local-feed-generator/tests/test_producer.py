@@ -223,7 +223,7 @@ class TestProcessFileMP4:
         producer.process_file(scanned)
 
         mock_summarizer.summarize.assert_called_once_with(
-            "This is a test transcript.", reflection_questions=None
+            "This is a test transcript.", reflection_questions=None, filepath="lecture.mp4"
         )
 
     def test_mp4_generates_title_from_transcript(self, producer, mock_summarizer, tmp_path):
@@ -240,6 +240,7 @@ class TestProcessFileMP4:
             "This is a test transcript.",
             filename="lecture",
             extracted_title=None,
+            filepath="lecture.mp4",
         )
 
     def test_mp4_writes_json_metadata(self, producer, tmp_path):
@@ -433,7 +434,7 @@ class TestProcessFileMP4:
         mock_transcriber.transcribe.assert_not_called()
         # Summarizer SHOULD have been called with the existing transcript
         mock_summarizer.summarize.assert_called_once_with(
-            existing_transcript, reflection_questions=None
+            existing_transcript, reflection_questions=None, filepath="lecture.mp4"
         )
         # Metadata should have the existing transcript
         assert metadata is not None
@@ -870,7 +871,7 @@ class TestGenerateTitle:
         producer.generate_title("Some content here")
 
         mock_summarizer.generate_title.assert_called_once_with(
-            "Some content here", None, None
+            "Some content here", None, None, filepath=None
         )
 
     def test_generate_title_returns_title(self, producer, mock_summarizer):

@@ -539,7 +539,7 @@ class Producer:
         # Check for reflection.md in the source file's directory.
         reflection_questions = _check_reflection_md(absolute_path)
         summary, prompt_tokens, completion_tokens = self.summarizer.summarize(
-            transcript, reflection_questions=reflection_questions
+            transcript, reflection_questions=reflection_questions, filepath=filepath
         )
         summarize_end = datetime.now(UTC)
 
@@ -596,6 +596,7 @@ class Producer:
             transcript,
             filename=filename_title,
             extracted_title=extracted_title,
+            filepath=filepath,
         )
         generated_title = _clean_title(generated_title) or generated_title
 
@@ -746,6 +747,7 @@ class Producer:
                 file_content,
                 filename=filename_title,
                 extracted_title=extracted_title,
+                filepath=filepath,
             )
             generated_title = _clean_title(generated_title) or generated_title
         else:
@@ -894,6 +896,7 @@ class Producer:
                 file_content,
                 filename=filename_title,
                 extracted_title=extracted_title,
+                filepath=filepath,
             )
             generated_title = _clean_title(generated_title) or generated_title
         else:
@@ -949,6 +952,7 @@ class Producer:
         content: str,
         filename: str | None = None,
         extracted_title: str | None = None,
+        filepath: str | None = None,
     ) -> tuple[str, int, int]:
         """Generate a title from content using the LLM.
 
@@ -963,6 +967,8 @@ class Producer:
                 replaced with spaces) to provide as context to the LLM.
             extracted_title: Optional title extracted from source metadata
                 (PDF metadata title, HTML ``<title>`` tag).
+            filepath: Optional path of the file being processed, included in
+                error logging for debugging context.
 
         Returns:
             A tuple of ``(title, prompt_tokens, completion_tokens)``.
@@ -970,7 +976,7 @@ class Producer:
         Raises:
             SummarizationError: If the LLM request fails.
         """
-        return self.summarizer.generate_title(content, filename, extracted_title)
+        return self.summarizer.generate_title(content, filename, extracted_title, filepath=filepath)
 
     def generate_title_from_file(self, filepath: str | Path) -> tuple[str, int, int]:
         """Generate a title from a file's content using the LLM.
@@ -994,7 +1000,7 @@ class Producer:
         # Read a reasonable chunk of the file for title generation.
         content = path.read_text(encoding="utf-8", errors="replace")[:8000]
         filename = _sanitize_filename(path.name)
-        return self.generate_title(content, filename=filename)
+        return self.generate_title(content, filename=filename, filepath=str(filepath))
 
     def _write_metadata(self, metadata: Metadata, source_path: str) -> None:
         """Write a metadata JSON file adjacent to the source file.
