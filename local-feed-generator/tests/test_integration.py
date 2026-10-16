@@ -17,7 +17,7 @@ from local_feed_generator.errors import (
     TranscriptionError,
     create_error_metadata,
 )
-from local_feed_generator.metadata import Metadata
+from local_feed_generator.metadata import Metadata, StepMap
 from local_feed_generator.scanner import Scanner
 from local_feed_generator.services.extractors import HTMLExtractor, PDFExtractor, _clean_title
 
@@ -107,7 +107,6 @@ class TestConfigMetadataIntegration:
             # Create metadata using config values for filepath
             relative_path = "videos/test.mp4"
             metadata = Metadata(
-                status={"transcribe": "complete", "summarize": "complete"},
                 title="Test Video",
                 description="Test description",
                 filename="test.mp4",
@@ -115,9 +114,10 @@ class TestConfigMetadataIntegration:
                 filetype="mp4",
                 date=1728931200,
                 size=1234,
-                transcript="Mock transcript",
+                content="Mock transcript",
                 summary="Mock summary",
-                processing_date=1728931200,
+                transcribe=StepMap(status="complete", input_size=1234, output_size=0),
+                summarize=StepMap(status="complete", input_size=0, output_size=0),
             )
 
             # Verify metadata can be serialized and includes config-derived path
@@ -130,7 +130,6 @@ class TestConfigMetadataIntegration:
         env = self._get_valid_env()
         with mock.patch.dict(os.environ, env, clear=False):
             metadata = Metadata(
-                status={"extract": "complete"},
                 title="Test",
                 description="Test",
                 filename="test.pdf",
@@ -138,7 +137,7 @@ class TestConfigMetadataIntegration:
                 filetype="pdf",
                 date=1728931200,
                 size=100,
-                processing_date=1728931200,
+                extract=StepMap(status="complete", input_size=100, output_size=0),
             )
             assert metadata.feed_eligible is True
 
@@ -161,7 +160,6 @@ class TestConfigMetadataIntegration:
 
             # Metadata can still be created with new config context
             metadata = Metadata(
-                status={"extract": "complete"},
                 title="Test",
                 description="Test",
                 filename="test.html",
@@ -169,7 +167,7 @@ class TestConfigMetadataIntegration:
                 filetype="html",
                 date=1728931200,
                 size=100,
-                processing_date=1728931200,
+                extract=StepMap(status="complete", input_size=100, output_size=0),
             )
             assert metadata.feed_eligible is True
 
@@ -206,7 +204,6 @@ class TestScannerMetadataIntegration:
         # Create metadata from scanned file
         stat = test_file.stat()
         metadata = Metadata(
-            status={"transcribe": "complete", "summarize": "complete"},
             title="Lecture",
             description="Test lecture",
             filename=scanned.filename,
@@ -214,7 +211,8 @@ class TestScannerMetadataIntegration:
             filetype=scanned.filetype,
             date=int(stat.st_mtime),
             size=stat.st_size,
-            processing_date=1728931200,
+            transcribe=StepMap(status="complete", input_size=stat.st_size, output_size=0),
+            summarize=StepMap(status="complete", input_size=0, output_size=0),
         )
 
         assert metadata.filename == "lecture.mp4"
@@ -235,7 +233,6 @@ class TestScannerMetadataIntegration:
         # Create metadata file
         metadata_file = Path(str(pdf_file) + ".json")
         metadata = Metadata(
-            status={"extract": "complete"},
             title="Doc",
             description="Test",
             filename="doc.pdf",
@@ -243,7 +240,7 @@ class TestScannerMetadataIntegration:
             filetype="pdf",
             date=1728931200,
             size=100,
-            processing_date=1728931200,
+            extract=StepMap(status="complete", input_size=100, output_size=0),
         )
         metadata.to_json_file(metadata_file)
 
@@ -264,7 +261,6 @@ class TestScannerMetadataIntegration:
         # Create old metadata
         metadata_file = Path(str(html_file) + ".json")
         metadata = Metadata(
-            status={"extract": "complete"},
             title="Old",
             description="Old",
             filename="page.html",
@@ -272,7 +268,7 @@ class TestScannerMetadataIntegration:
             filetype="html",
             date=1728931200,
             size=100,
-            processing_date=1728931200,
+            extract=StepMap(status="complete", input_size=100, output_size=0),
         )
         metadata.to_json_file(metadata_file)
 
@@ -365,7 +361,6 @@ class TestProducerComponent:
         stat = mp4_file.stat()
 
         metadata = Metadata(
-            status={"transcribe": "complete", "summarize": "complete"},
             title="Lecture",
             description=summary,
             filename="lecture.mp4",
@@ -373,14 +368,15 @@ class TestProducerComponent:
             filetype="mp4",
             date=int(stat.st_mtime),
             size=stat.st_size,
-            transcript=transcript,
+            content=transcript,
             summary=summary,
-            processing_date=1728931200,
+            transcribe=StepMap(status="complete", input_size=stat.st_size, output_size=0),
+            summarize=StepMap(status="complete", input_size=0, output_size=0),
         )
 
-        assert metadata.status["transcribe"] == "complete"
-        assert metadata.status["summarize"] == "complete"
-        assert metadata.transcript == "Mock transcript for testing"
+        assert metadata.transcribe.status == "complete"
+        assert metadata.summarize.status == "complete"
+        assert metadata.content == "Mock transcript for testing"
         assert metadata.summary == "Mock summary of key takeaways"
         assert metadata.filetype == "mp4"
         assert metadata.feed_eligible is True
@@ -397,7 +393,6 @@ class TestProducerComponent:
         extracted = extractor.extract(str(pdf_file))
 
         metadata = Metadata(
-            status={"extract": "complete"},
             title=extracted["title"],
             description=extracted["description"] or "",
             filename="doc.pdf",
@@ -405,12 +400,12 @@ class TestProducerComponent:
             filetype="pdf",
             date=extracted["date"],
             size=extracted["size"],
-            processing_date=1728931200,
+            extract=StepMap(status="complete", input_size=extracted["size"], output_size=0),
         )
 
         assert metadata.filetype == "pdf"
         assert metadata.title == "doc"  # Fallback to filename
-        assert metadata.transcript is None
+        assert metadata.content is None
         assert metadata.summary is None
         assert metadata.feed_eligible is True
 
@@ -425,7 +420,6 @@ class TestProducerComponent:
         extracted = extractor.extract(str(html_file))
 
         metadata = Metadata(
-            status={"extract": "complete"},
             title=extracted["title"],
             description=extracted["description"] or "",
             filename="page.html",
@@ -433,13 +427,13 @@ class TestProducerComponent:
             filetype="html",
             date=extracted["date"],
             size=extracted["size"],
-            processing_date=1728931200,
+            extract=StepMap(status="complete", input_size=extracted["size"], output_size=0),
         )
 
         assert metadata.filetype == "html"
         assert metadata.title == "Test Page"
-        assert metadata.description == "A test page description"
-        assert metadata.transcript is None
+        assert metadata.description == ""  # No meta description tag in HTML
+        assert metadata.content is None
         assert metadata.summary is None
         assert metadata.feed_eligible is True
 
@@ -528,12 +522,10 @@ class TestErrorPathHandling:
             filetype="mp4",
             date=1728931200,
             size=0,
-            processing_date=1728931200,
             error="Processing failed",
         )
 
         success_metadata = Metadata(
-            status={"transcribe": "complete", "summarize": "complete"},
             title="Good",
             description="",
             filename="good.mp4",
@@ -541,9 +533,10 @@ class TestErrorPathHandling:
             filetype="mp4",
             date=1728931200,
             size=100,
-            transcript="Transcript",
+            content="Transcript",
             summary="Summary",
-            processing_date=1728931200,
+            transcribe=StepMap(status="complete", input_size=100, output_size=0),
+            summarize=StepMap(status="complete", input_size=0, output_size=0),
         )
 
         all_metadata = [error_metadata, success_metadata]
@@ -571,7 +564,6 @@ class TestErrorPathHandling:
             "filetype",
             "date",
             "size",
-            "processing_date",
             "error",
         ]
         for field in required_fields:
@@ -591,7 +583,6 @@ class TestErrorPathHandling:
             transcript = transcriber.transcribe(str(mp4_file))
             # Should not reach here
             Metadata(
-                status={"transcribe": "complete", "summarize": "complete"},
                 title="Test",
                 description="Test",
                 filename="bad.mp4",
@@ -599,9 +590,10 @@ class TestErrorPathHandling:
                 filetype="mp4",
                 date=1728931200,
                 size=100,
-                transcript=transcript,
+                content=transcript,
                 summary="Summary",
-                processing_date=1728931200,
+                transcribe=StepMap(status="complete", input_size=100, output_size=0),
+                summarize=StepMap(status="complete", input_size=0, output_size=0),
             )
         except TranscriptionError as exc:
             # Create error metadata as producer would
@@ -613,12 +605,11 @@ class TestErrorPathHandling:
                 filetype="mp4",
                 date=1728931200,
                 size=0,
-                processing_date=1728931200,
                 error=str(exc),
             )
 
         assert error_metadata.error is not None
         assert error_metadata.feed_eligible is False
         # Ensure no transcript/summary for error metadata
-        assert error_metadata.transcript is None
+        assert error_metadata.content is None
         assert error_metadata.summary is None

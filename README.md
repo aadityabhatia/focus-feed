@@ -206,7 +206,7 @@ uv run local-feed-generator validate --data-dir ./data
 
 ```bash
 # Step 1: Extract metadata (title, description, date)
-uv run local-feed-generator extract-metadata --data-dir ./data
+uv run local-feed-generator extract --data-dir ./data
 
 # Step 2: Validate and finalize metadata (JSON finalization happens here)
 uv run local-feed-generator validate --data-dir ./data
@@ -225,7 +225,7 @@ The granular processing pipeline works as follows:
 1. **scan** → The scanner discovers MP4, PDF, and HTML files in your data directory
 2. **transcribe** → MP4 files are transcribed to markdown text using local AI
 3. **summarize** → Transcripts are summarized by the LLM to produce key takeaways
-4. **extract-metadata** → PDF/HTML files have their metadata (title, description) extracted
+4. **extract** → PDF/HTML files have their metadata (title, description) extracted
 5. **feeds** → All valid metadata is aggregated into `podcast.xml` and `articles.xml`
 
 #### Using `--file` and `--force`
@@ -244,8 +244,8 @@ uv run local-feed-generator transcribe --data-dir ./data --dry-run
 ```
 
 - **`--file <path>`**: Process only the specified file instead of scanning the entire directory. The path can be relative to the data directory or absolute.
-- **`--force`**: Run the step even if it appears to already be complete. For example, `--force` on `transcribe` will re-transcribe files that already have `status["transcribe"]="complete"`.
-- **`--dry-run`**: Available on `transcribe`, `summarize`, and `extract-metadata`. Shows which files would be processed without making any changes.
+- **`--force`**: Run the step even if it appears to already be complete. For example, `--force` on `transcribe` will re-transcribe files that already have `transcribe.status="complete"`.
+- **`--dry-run`**: Available on `transcribe`, `summarize`, and `extract`. Shows which files would be processed without making any changes.
 
 All subcommands also support `--config-file` to specify a custom `.env`-style configuration file.
 
@@ -254,7 +254,7 @@ All subcommands also support `--config-file` to specify a custom `.env`-style co
 The `local-feed-generator` CLI provides the following subcommands. All commands
 support `--data-dir` (optional, defaults to `DATA_DIR` from configuration),
 `--config-file`, `--file`, and `--force`. The `--dry-run` flag is available on
-granular commands (`transcribe`, `summarize`, `extract-metadata`).
+granular commands (`transcribe`, `summarize`, `extract`).
 
 ### `process`
 
@@ -325,7 +325,7 @@ uv run local-feed-generator feeds --data-dir ./data --file videos/lecture.mp4 --
 
 Validate all metadata files and finalize incomplete ones. Scans for all JSON
 metadata files, validates each against the schema, checks for orphaned JSON
-files, checks for special characters in filenames, and **finalizes JSON metadata** by setting step completion statuses in the unified status map and computing feed eligibility.
+files, checks for special characters in filenames, and **finalizes JSON metadata** by setting step completion statuses in the step maps and computing feed eligibility.
 
 **Flags:**
 - `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
@@ -345,14 +345,14 @@ uv run local-feed-generator validate --data-dir ./data --file videos/lecture.mp4
 ### `transcribe`
 
 Transcribe MP4 files to markdown text. Scans for MP4 files that do not yet have
-a complete transcript, transcribes each using the faster-whisper model, and
-writes the transcript to the adjacent JSON metadata file.
+`transcribe.status="complete"`, transcribes each using the faster-whisper model (or remote API
+when configured), and writes the transcript to the `content` field in the adjacent JSON metadata file.
 
 **Flags:**
 - `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
 - `--config-file <path>` — Path to a `.env`-style configuration file
 - `--file <path>` — Transcribe only the specified MP4 file
-  - `--force` — Re-transcribe even if `status["transcribe"]` is already `"complete"`
+  - `--force` — Re-transcribe even if `transcribe.status` is already `"complete"`
 - `--dry-run` — Preview which files would be transcribed without making changes
 
 **Examples:**
@@ -374,13 +374,13 @@ uv run local-feed-generator transcribe --data-dir ./data --dry-run
 
 Generate summaries from existing transcripts. Scans for MP4 files that have a
 transcript but no summary, generates key takeaways via the LLM, and writes the
-summary to the adjacent JSON metadata file.
+summary to the `summary` field in the adjacent JSON metadata file.
 
 **Flags:**
 - `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
 - `--config-file <path>` — Path to a `.env`-style configuration file
 - `--file <path>` — Summarize only the specified MP4 file
-  - `--force` — Re-summarize even if `status["summarize"]` is already `"complete"`
+  - `--force` — Re-summarize even if `summarize.status` is already `"complete"`
 - `--dry-run` — Preview which files would be summarized without making changes
 
 **Examples:**
@@ -398,7 +398,7 @@ uv run local-feed-generator summarize --data-dir ./data --file videos/lecture.mp
 uv run local-feed-generator summarize --data-dir ./data --dry-run
 ```
 
-### `extract-metadata`
+### `extract`
 
 Extract metadata from PDF/HTML files. Scans for PDF and HTML files that do not
 yet have complete metadata extraction, extracts title, description, date, and
@@ -409,22 +409,22 @@ JSON metadata file.
 - `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
 - `--config-file <path>` — Path to a `.env`-style configuration file
 - `--file <path>` — Extract metadata from only the specified PDF/HTML file
-  - `--force` — Re-extract even if `status["extract"]` is already `"complete"`
+  - `--force` — Re-extract even if `extract.status` is already `"complete"`
 - `--dry-run` — Preview which files would be processed without making changes
 
 **Examples:**
 ```bash
 # Extract metadata from all PDF/HTML files that need it
-uv run local-feed-generator extract-metadata --data-dir ./data
+uv run local-feed-generator extract --data-dir ./data
 
 # Extract metadata from a single file
-uv run local-feed-generator extract-metadata --data-dir ./data --file documents/report.pdf
+uv run local-feed-generator extract --data-dir ./data --file documents/report.pdf
 
 # Force re-extraction
-uv run local-feed-generator extract-metadata --data-dir ./data --file documents/report.pdf --force
+uv run local-feed-generator extract --data-dir ./data --file documents/report.pdf --force
 
 # Preview files that would be processed
-uv run local-feed-generator extract-metadata --data-dir ./data --dry-run
+uv run local-feed-generator extract --data-dir ./data --dry-run
 ```
 
 ### Shared Flags
@@ -433,7 +433,7 @@ uv run local-feed-generator extract-metadata --data-dir ./data --dry-run
 - **`--config-file <path>`**: All commands. Path to a `.env`-style configuration file.
 - **`--file <path>`**: All commands. Process only the specified file instead of scanning the directory. Takes precedence over `--data-dir` for file selection.
 - **`--force`**: All commands. Force execution even if the step appears already complete.
-- **`--dry-run`**: transcribe, summarize, extract-metadata. Show which files would be processed without making any changes.
+- **`--dry-run`**: transcribe, summarize, extract. Show which files would be processed without making any changes.
 
 ## Directory Structure
 
@@ -454,8 +454,11 @@ data/
 Each processed file gets a companion `.json` file containing:
 - Extracted title and description (underscores in titles are replaced with spaces)
 - File metadata (type, size, date as UNIX epoch timestamps)
-- For audio: markdown transcript and LLM-generated summary
-- Processing status map tracking transcription, summarization, and extraction steps
+- For MP4 files: `description` is blank, `summary` contains LLM-generated key takeaways, `content` contains the full transcript
+- For PDF/HTML files: `description` contains extracted metadata, `summary` and `content` are null
+- Step maps (`transcribe`, `summarize`, `extract`) tracking processing progress with detailed timing and metrics
+- `duration` field for MP4 files
+- `creation_time` field in ISO8601 format
 
 ## Features
 
@@ -467,8 +470,8 @@ Each processed file gets a companion `.json` file containing:
 ### Audio Processing
 - **GPU-accelerated**: Uses `faster-whisper` with CUDA for efficient transcription
 - **High quality**: Recommended model for best results
-- **Markdown output**: Clean transcripts without timestamps
-- **Summaries**: LLM-generated key takeaways become podcast descriptions
+- **Markdown output**: Clean transcripts without timestamps stored in `content` field
+- **Summaries**: LLM-generated key takeaways stored in `summary` field become podcast descriptions
 
 ### Feed Generation
 - **Two separate feeds**: Podcast (audio) and Articles (text)
@@ -483,18 +486,20 @@ Each processed file gets a companion `.json` file containing:
 
 ## File Types Supported
 
-- **MP4 (audio)**: Transcribed + summarized (Feed: Podcast feed)
-- **PDF**: Metadata extracted (Feed: Articles feed)
-- **HTML**: Metadata extracted (Feed: Articles feed)
+- **MP4 (audio)**: Transcribed + summarized (Feed: Podcast feed). Fields: `description=""`, `summary`=LLM key takeaways, `content`=full transcript, `duration`=audio length in seconds
+- **PDF**: Metadata extracted (Feed: Articles feed). Fields: `description`=extracted metadata, `summary`=null, `content`=null
+- **HTML**: Metadata extracted (Feed: Articles feed). Fields: `description`=extracted metadata, `summary`=null, `content`=null
 
 ## How It Works
 
 1. **Scanning**: The scanner discovers MP4, PDF, and HTML files in your data directory
 2. **Processing**: 
-   - Audio files → transcribed to markdown → summarized by LLM
-   - Documents → metadata extracted (title, author) → LLM generates title if missing
-3. **Metadata**: JSON file created alongside each source file with all extracted information
+   - Audio files → transcribed to markdown → summarized by LLM → stored in `content` and `summary` fields
+   - Documents → metadata extracted (title, author) → stored in `description` field → LLM generates title if missing
+3. **Metadata**: JSON file created alongside each source file with all extracted information including step maps
 4. **Feed Generation**: All valid JSON files aggregated into two feeds (podcast and articles)
+   - Podcast feed uses `summary` field for descriptions
+   - Articles feed uses `description` field for descriptions
 5. **Serving**: Your existing web server serves the `data` directory, making feeds accessible
 
 ## Tips

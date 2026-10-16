@@ -9,7 +9,7 @@ each step of the processing pipeline:
 - ``validate``         — Validate all JSON metadata files.
 - ``transcribe``       — Transcribe MP4 files to markdown text.
 - ``summarize``        — Generate summaries from existing transcripts.
-- ``extract-metadata`` — Extract metadata from PDF/HTML files.
+- ``extract``          — Extract metadata from PDF/HTML files.
 - ``title``            — Generate titles for files that lack proper titles.
 
 Shared options (``--data-dir``, ``--config-file``, ``--file``, ``--force``,
@@ -268,9 +268,8 @@ def _find_files_needing_transcription(data_dir: Path, force: bool = False) -> li
 
     A file needs transcription when:
     - No JSON metadata file exists, **or**
-    - The JSON metadata file exists but ``status["transcribe"]`` is not
-      ``"complete"`` (using ``status`` dict, with fallback to legacy
-      ``transcribe_status`` field for old JSON files).
+    - The JSON metadata file exists but the ``transcribe`` step map's
+      ``status`` is not ``"complete"``.
 
     When *force* is ``True``, all MP4 files are returned regardless of
     their current transcription status.
@@ -290,9 +289,8 @@ def _find_files_needing_summary(data_dir: Path, force: bool = False) -> list[Pat
 
     A file needs summarization when:
     - The JSON metadata file exists, **and**
-    - It has a non-empty ``transcript`` field, **and**
-    - ``status["summarize"]`` is not ``"complete"`` (using ``status`` dict,
-      with fallback to legacy ``summarize_status`` field for old JSON files).
+    - It has a non-empty ``content`` field (the transcript), **and**
+    - The ``summarize`` step map's ``status`` is not ``"complete"``.
 
     When *force* is ``True``, all MP4 files with a transcript are returned
     regardless of their current summarization status.
@@ -304,7 +302,7 @@ def _find_files_needing_summary(data_dir: Path, force: bool = False) -> list[Pat
         metadata = _get_json_metadata(json_path)
         if metadata is None:
             continue
-        transcript = metadata.get("transcript")
+        transcript = metadata.get("content")
         if not transcript:
             continue
         if force or not _is_step_complete(metadata, "summarize"):
@@ -317,10 +315,8 @@ def _find_files_needing_metadata_extraction(data_dir: Path, force: bool = False)
 
     A file needs metadata extraction when:
     - No JSON metadata file exists, **or**
-    - The JSON metadata file exists but ``status["extract"]`` is not
-      ``"complete"`` (using ``status`` dict, with fallback to legacy
-      ``extract_status`` field for old JSON files), or it is missing a
-      ``title`` field.
+    - The JSON metadata file exists but the ``extract`` step map's
+      ``status`` is not ``"complete"``, or it is missing a ``title`` field.
 
     When *force* is ``True``, all PDF/HTML files are returned regardless
     of their current extraction status.
@@ -343,7 +339,7 @@ def _find_files_needing_json_generation(data_dir: Path, force: bool = False) -> 
     A file needs JSON generation when:
     - No JSON metadata file exists, **or**
     - The JSON metadata file exists but the file is not feed-eligible
-      (i.e. not all applicable step statuses are "complete").
+      (i.e. not all applicable step maps have ``status == "complete"``).
 
     When *force* is ``True``, all source files are returned regardless
     of their current step statuses.
@@ -404,7 +400,7 @@ def _find_files_needing_title(data_dir: Path, force: bool = False) -> list[Path]
 def _get_content_for_title(file_path: Path, metadata_dict: dict[str, Any]) -> str:
     """Get content for title generation based on file type.
 
-    For MP4 files, uses the transcript from the metadata dict.
+    For MP4 files, uses the content (transcript) from the metadata dict.
     For PDF/HTML files, reads the first 8000 characters of the file content.
 
     Args:
@@ -417,7 +413,7 @@ def _get_content_for_title(file_path: Path, metadata_dict: dict[str, Any]) -> st
     """
     ext = file_path.suffix.lower()
     if ext == ".mp4":
-        return str(metadata_dict.get("transcript", ""))
+        return str(metadata_dict.get("content", ""))
     if ext in (".pdf", ".html"):
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")
@@ -430,53 +426,49 @@ def _get_content_for_title(file_path: Path, metadata_dict: dict[str, Any]) -> st
 def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
     """Check if a raw metadata dict indicates the file is feed-eligible.
 
-    Mirrors :meth:`Scanner._is_feed_eligible_dict` for use in the CLI.
-    Supports both the new unified ``status`` dict and the legacy individual
-    status fields for backward compatibility with old JSON files.
+    A file is feed-eligible when all applicable step maps have
+    ``status == "complete"`` and there is no error field.
+
+    - **MP4**: ``transcribe`` step map exists with ``status == "complete"``
+      and ``summarize`` step map exists with ``status == "complete"``.
+    - **PDF/HTML**: ``extract`` step map exists with ``status == "complete"``.
     """
     if metadata.get("error"):
         return False
-    # New unified status dict approach
-    status = metadata.get("status")
-    if isinstance(status, dict):
-        if filetype == "mp4":
-            return (
-                status.get("transcribe") == "complete"
-                and status.get("summarize") == "complete"
-            )
-        if filetype in ("pdf", "html"):
-            return status.get("extract") == "complete"
-        return False
-    # Legacy fallback: individual status fields
     if filetype == "mp4":
+        transcribe = metadata.get("transcribe")
+        summarize = metadata.get("summarize")
         return (
-            metadata.get("transcribe_status") == "complete"
-            and metadata.get("summarize_status") == "complete"
+            isinstance(transcribe, dict)
+            and transcribe.get("status") == "complete"
+            and isinstance(summarize, dict)
+            and summarize.get("status") == "complete"
         )
     if filetype in ("pdf", "html"):
-        return metadata.get("extract_status") == "complete"
+        extract = metadata.get("extract")
+        return (
+            isinstance(extract, dict)
+            and extract.get("status") == "complete"
+        )
     return False
 
 
 def _is_step_complete(metadata: dict[str, Any], step: str) -> bool:
     """Check if a specific step is complete in a raw metadata dict.
 
-    Supports both the new unified ``status`` dict and the legacy individual
-    status fields for backward compatibility with old JSON files.
+    Checks the step map (``transcribe``, ``summarize``, or ``extract``)
+    for the given step name.
 
     Args:
         metadata: The parsed JSON metadata dictionary.
         step: The step name ("transcribe", "summarize", or "extract").
-            For legacy fallback, this maps to ``{step}_status``.
 
     Returns:
-        ``True`` if the step is marked as ``"complete"``, ``False`` otherwise.
+        ``True`` if the step map exists and its ``status`` is ``"complete"``,
+        ``False`` otherwise.
     """
-    status = metadata.get("status")
-    if isinstance(status, dict):
-        return status.get(step) == "complete"
-    # Legacy fallback: individual status field
-    return metadata.get(f"{step}_status") == "complete"
+    step_map = metadata.get(step)
+    return isinstance(step_map, dict) and step_map.get("status") == "complete"
 
 
 def _resolve_file_path(data_dir: Path, file_arg: str | None) -> Path | None:
@@ -1264,7 +1256,7 @@ def transcribe(
     transcript, transcribes each one using the faster-whisper model, and
     writes the transcript to the adjacent JSON metadata file.
 
-    Files that already have ``status["transcribe"]="complete"`` are skipped
+    Files that already have ``transcribe.status="complete"`` are skipped
     unless ``--force`` is specified.  Use ``--dry-run`` to preview which
     files would be processed without making any changes.
 
@@ -1317,32 +1309,39 @@ def transcribe(
         relative_path = source_file.relative_to(data_dir_path)
         click.echo(f"[{i}/{len(files)}] Transcribing {relative_path}...")
         try:
-            # Set status to in_progress and write before transcription begins.
+            # Set transcribe step to in_progress and write before transcription begins.
             json_path = source_file.with_name(source_file.name + ".json")
             metadata = _get_json_metadata(json_path) or {}
             now = datetime.now(UTC)
-            # Initialize or update status dict
-            status = metadata.get("status") or {}
-            status["transcribe"] = "in_progress"
+            # Initialize or update transcribe step map
+            transcribe_step = metadata.get("transcribe") or {}
+            transcribe_step["status"] = "in_progress"
+            transcribe_step["start_time"] = int(now.timestamp())
+            transcribe_step["input_size"] = source_file.stat().st_size
+            metadata["transcribe"] = transcribe_step
             metadata.update(
                 {
-                    "status": status,
                     "filename": source_file.name,
                     "filepath": str(relative_path),
                     "filetype": "mp4",
-                    "started_at": metadata.get("started_at") or int(now.timestamp()),
-                    "processing_date": int(now.timestamp()),
                 }
             )
             _write_json_metadata(metadata, source_file)
 
             transcript = transcriber.transcribe(str(source_file))
 
-            # Update status to complete after successful transcription.
-            status["transcribe"] = "complete"
-            metadata["transcript"] = transcript
-            metadata["status"] = status
-            metadata["completed_at"] = int(now.timestamp())
+            # Update transcribe step to complete after successful transcription.
+            transcribe_step["status"] = "complete"
+            transcribe_step["end_time"] = int(now.timestamp())
+            transcribe_step["output_size"] = len(transcript.encode("utf-8")) if transcript else 0
+            transcribe_step["words"] = len(transcript.split()) if transcript else 0
+            transcribe_step["model"] = (
+                config.transcription_remote_model or "remote"
+                if config.transcription_endpoint
+                else config.transcription_model
+            )
+            metadata["transcribe"] = transcribe_step
+            metadata["content"] = transcript
             _write_json_metadata(metadata, source_file)
 
             success_count += 1
@@ -1378,11 +1377,11 @@ def summarize(
 ) -> None:
     """Generate summaries from existing transcripts.
 
-    Scans the data directory for MP4 files that have a transcript but no
-    summary, generates a key-takeaways summary via the LLM, and writes
-    the summary to the adjacent JSON metadata file.
+    Scans the data directory for MP4 files that have a transcript (content)
+    but no summary, generates a key-takeaways summary via the LLM, and
+    writes the summary to the adjacent JSON metadata file.
 
-    Files with ``status["summarize"]="complete"`` are skipped unless
+    Files with ``summarize.status="complete"`` are skipped unless
     ``--force`` is specified.  Use ``--dry-run`` to preview which files
     would be processed without making any changes.
 
@@ -1432,32 +1431,35 @@ def summarize(
                 error_count += 1
                 continue
 
-            transcript = metadata.get("transcript") or ""
+            transcript = metadata.get("content") or ""
             if not transcript.strip():
                 click.echo(f"  WARNING: No transcript found for {relative_path}; skipping.")
                 error_count += 1
                 continue
 
-            # Set status to in_progress and write before summarization begins.
+            # Set summarize step to in_progress and write before summarization begins.
             now = datetime.now(UTC)
-            status = metadata.get("status") or {}
-            status["summarize"] = "in_progress"
-            metadata["status"] = status
-            metadata["processing_date"] = int(now.timestamp())
+            config = get_config()
+            summarize_step = metadata.get("summarize") or {}
+            summarize_step["status"] = "in_progress"
+            summarize_step["start_time"] = int(now.timestamp())
+            summarize_step["input_size"] = len(transcript.encode("utf-8")) if transcript else 0
+            metadata["summarize"] = summarize_step
             _write_json_metadata(metadata, source_file)
 
             summary, prompt_tokens, completion_tokens = summarizer.summarize(transcript)
 
-            # Update status to complete after successful summarization.
-            status["summarize"] = "complete"
-            metadata.update(
-                {
-                    "status": status,
-                    "summary": summary,
-                    "description": summary,
-                    "processing_date": int(now.timestamp()),
-                }
-            )
+            # Update summarize step to complete after successful summarization.
+            summarize_step["status"] = "complete"
+            summarize_step["end_time"] = int(now.timestamp())
+            summarize_step["output_size"] = len(summary.encode("utf-8")) if summary else 0
+            summarize_step["words"] = len(summary.split()) if summary else 0
+            summarize_step["model"] = config.llm_model
+            summarize_step["input_tokens"] = prompt_tokens
+            summarize_step["output_tokens"] = completion_tokens
+            metadata["summarize"] = summarize_step
+            metadata["summary"] = summary
+            metadata["description"] = ""  # MP4: leave description blank, use summary instead
             _write_json_metadata(metadata, source_file)
 
             success_count += 1
@@ -1475,31 +1477,31 @@ def summarize(
 
 
 # ---------------------------------------------------------------------------
-# Granular subcommand: extract-metadata  (T5.9)
+# Granular subcommand: extract  (T5.9)
 # ---------------------------------------------------------------------------
 
 
-@app.command("extract-metadata")
+@app.command("extract")
 @_data_dir_option_optional
 @_config_file_option
 @_file_option
 @_force_option
 @_dry_run_option
-def extract_metadata(
+def extract(
     data_dir: str | None,
     config_file: str | None,
     file_path: str | None,
     force: bool,
     dry_run: bool,
 ) -> None:
-    """Extract metadata from PDF/HTML files.
+    """Extract from PDF/HTML files.
 
     Scans the data directory for PDF and HTML files that do not yet have
     a complete metadata extraction, extracts metadata (title, description,
     date, size) using pypdf or BeautifulSoup, and writes the extracted data
     to the adjacent JSON metadata file.
 
-    Files with ``status["extract"]="complete"`` are skipped unless ``--force``
+    Files with ``extract.status="complete"`` are skipped unless ``--force``
     is specified.  Use ``--dry-run`` to preview which files would be
     processed without making any changes.
 
@@ -1553,19 +1555,21 @@ def extract_metadata(
                 error_count += 1
                 continue
 
-            # Set status to in_progress and write before extraction completes.
+            # Set extract step to in_progress and write before extraction completes.
             json_path = source_file.with_name(source_file.name + ".json")
             metadata = _get_json_metadata(json_path) or {}
             now = datetime.now(UTC)
             title = extracted.get("title") or source_file.stem
             if not title.strip():
                 title = source_file.stem
-            # Initialize or update status dict
-            status = metadata.get("status") or {}
-            status["extract"] = "in_progress"
+            # Initialize or update extract step map
+            extract_step = metadata.get("extract") or {}
+            extract_step["status"] = "in_progress"
+            extract_step["start_time"] = int(now.timestamp())
+            extract_step["input_size"] = source_file.stat().st_size
+            metadata["extract"] = extract_step
             metadata.update(
                 {
-                    "status": status,
                     "filename": source_file.name,
                     "filepath": str(relative_path),
                     "filetype": filetype,
@@ -1573,16 +1577,18 @@ def extract_metadata(
                     "description": extracted.get("description") or "",
                     "date": extracted.get("date", 0),
                     "size": extracted.get("size", 0),
-                    "started_at": metadata.get("started_at") or int(now.timestamp()),
-                    "processing_date": int(now.timestamp()),
                 }
             )
             _write_json_metadata(metadata, source_file)
 
-            # Update status to complete after successful extraction.
-            status["extract"] = "complete"
-            metadata["status"] = status
-            metadata["completed_at"] = int(now.timestamp())
+            # Update extract step to complete after successful extraction.
+            extract_step["status"] = "complete"
+            extract_step["end_time"] = int(now.timestamp())
+            content = extracted.get("content")
+            extract_step["output_size"] = len(content.encode("utf-8")) if content else 0
+            extract_step["words"] = len(content.split()) if content else 0
+            metadata["extract"] = extract_step
+            metadata["content"] = content
             _write_json_metadata(metadata, source_file)
 
             success_count += 1
@@ -1719,15 +1725,13 @@ def _finalize_incomplete_json(
     """Finalize incomplete JSON metadata files in the data directory.
 
     Finds source files (MP4, PDF, HTML) that have incomplete JSON metadata
-    (i.e., not all applicable step statuses are ``"complete"``) and
+    (i.e., not all applicable step maps have ``status == "complete"``) and
     assembles the final metadata by:
 
     - Filling in all required fields, using existing values from intermediate
       JSON, file system statistics, or LLM-generated titles as fallbacks.
-    - Setting all applicable step statuses to ``"complete"`` in the ``status``
-      dict.
-    - Adding ``completed_at`` timestamps.
-    - Preserving existing ``transcript`` and ``summary`` fields for MP4 files.
+    - Setting all applicable step maps to ``"complete"`` status.
+    - Preserving existing ``content`` (transcript for MP4) fields.
 
     This makes files feed-eligible so they appear in generated feeds.
 
@@ -1766,6 +1770,10 @@ def _finalize_incomplete_json(
             json_path = source_file.with_name(source_file.name + ".json")
             metadata = _get_json_metadata(json_path) or {}
 
+            # Skip files with errors — they should not be finalized.
+            if metadata.get("error"):
+                continue
+
             filetype = source_file.suffix.lower().lstrip(".")
             stat_result = source_file.stat()
             file_size = stat_result.st_size
@@ -1777,15 +1785,16 @@ def _finalize_incomplete_json(
             title = metadata.get("title") or ""
             if not title.strip():
                 if filetype == "mp4":
-                    transcript = metadata.get("transcript") or ""
-                    if transcript.strip():
-                        title, _, _ = summarizer.generate_title(transcript)
+                    content = metadata.get("content") or ""
+                    if content.strip():
+                        title, _, _ = summarizer.generate_title(content)
                     else:
                         title = source_file.stem
                 else:
                     title = source_file.stem
 
-            description = metadata.get("description") or metadata.get("summary") or ""
+            description = metadata.get("description")
+            summary = metadata.get("summary")
 
             # Build the final metadata dict.
             final_metadata: dict[str, Any] = {
@@ -1796,19 +1805,44 @@ def _finalize_incomplete_json(
                 "filetype": filetype,
                 "date": metadata.get("date") or file_mtime,
                 "size": metadata.get("size") or file_size,
-                "processing_date": int(now.timestamp()),
-                "started_at": metadata.get("started_at"),
-                "completed_at": int(now.timestamp()),
             }
 
-            # Set step statuses to complete and include type-specific fields.
+            # Set step maps to complete and include type-specific fields.
+            now_ts = int(now.timestamp())
             if filetype == "mp4":
-                final_metadata["status"] = {"transcribe": "complete", "summarize": "complete"}
-                final_metadata["transcript"] = metadata.get("transcript") or ""
-                final_metadata["summary"] = metadata.get("summary") or ""
-                final_metadata["transcription_model"] = config.transcription_model
+                # For MP4 files, description is left blank and summary holds
+                # the LLM-generated key takeaways.
+                final_metadata["description"] = ""
+                final_metadata["summary"] = summary or ""
+                final_metadata["transcribe"] = {
+                    "status": "complete",
+                    "start_time": now_ts,
+                    "end_time": now_ts,
+                    "input_size": file_size,
+                    "output_size": len((metadata.get("content") or "").encode("utf-8")),
+                    "words": len((metadata.get("content") or "").split()),
+                    "model": config.transcription_model,
+                }
+                final_metadata["summarize"] = {
+                    "status": "complete",
+                    "start_time": now_ts,
+                    "end_time": now_ts,
+                    "input_size": len((metadata.get("content") or "").encode("utf-8")),
+                    "output_size": len((summary or "").encode("utf-8")),
+                    "words": len((summary or "").split()),
+                    "model": config.llm_model,
+                }
+                final_metadata["content"] = metadata.get("content") or ""
             elif filetype in ("pdf", "html"):
-                final_metadata["status"] = {"extract": "complete"}
+                final_metadata["extract"] = {
+                    "status": "complete",
+                    "start_time": now_ts,
+                    "end_time": now_ts,
+                    "input_size": file_size,
+                    "output_size": len((metadata.get("content") or "").encode("utf-8")),
+                    "words": len((metadata.get("content") or "").split()),
+                }
+                final_metadata["content"] = metadata.get("content")
 
             _write_json_metadata(final_metadata, source_file)
 

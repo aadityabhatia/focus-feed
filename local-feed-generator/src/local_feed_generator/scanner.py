@@ -12,15 +12,13 @@ Scanning logic (design doc section 5.2, tasks.md T2.3):
     * No matching ``.json`` file exists, **or**
     * The ``.json`` file exists but is older than the source file
       (source was modified after metadata was written), **or**
-    * The ``.json`` file has step statuses that indicate incomplete
-      processing (e.g. ``status["transcribe"]`` is not ``"complete"`` for
-      MP4 files, or ``status["extract"]`` is not ``"complete"`` for
-      PDF/HTML). Legacy individual status fields (``transcribe_status``,
-      ``summarize_status``, ``extract_status``) are also checked for
-      backward compatibility with old JSON files.
+    * The ``.json`` file has step maps that indicate incomplete
+      processing (e.g. ``transcribe.status`` is not ``"complete"`` for
+      MP4 files, or ``extract.status`` is not ``"complete"`` for
+      PDF/HTML).
 - A source file is **skipped** (not returned) when:
     * The ``.json`` file exists, is newer than or equal to the source file,
-      **and** all applicable step statuses are ``"complete"`` (i.e. the file
+      **and** all applicable step maps are ``"complete"`` (i.e. the file
       is feed-eligible).
 - Files with an ``error`` field are reprocessed only when the source file is
   newer than the JSON (i.e., the user has modified the source to fix the
@@ -69,10 +67,10 @@ _IN_PROGRESS_STEP_STATUS: str = "in_progress"
 # JSON field that indicates a previous processing attempt failed.
 _ERROR_FIELD: str = "error"
 
-# File types that use transcribe_status and summarize_status.
+# File types that use transcribe and summarize step maps.
 _MP4_FILETYPE: str = "mp4"
 
-# File types that use extract_status.
+# File types that use extract step map.
 _DOC_FILETYPES: frozenset[str] = frozenset({"pdf", "html"})
 
 
@@ -174,12 +172,12 @@ class Scanner:
         - Its adjacent ``.json`` metadata file is missing, **or**
         - The ``.json`` file exists but is older than the source file
           (source was modified after metadata was written), **or**
-        - The ``.json`` file has step statuses indicating incomplete
-          processing (e.g. ``transcribe_status`` is not ``"complete"`` for
-          MP4 files, or ``extract_status`` is not ``"complete"`` for
+        - The ``.json`` file has step maps indicating incomplete
+          processing (e.g. ``transcribe.status`` is not ``"complete"`` for
+          MP4 files, or ``extract.status`` is not ``"complete"`` for
           PDF/HTML files).
 
-        Files with all applicable step statuses set to ``"complete"`` and a
+        Files with all applicable step maps set to ``"complete"`` and a
         fresh JSON file are skipped. Files with an ``error`` field are
         reprocessed only when the source file is newer than the JSON (user
         may have fixed the source).
@@ -309,15 +307,17 @@ class Scanner:
         A file is feed-eligible when all applicable steps are
         ``"complete"`` and there is no error field.
 
-        Supports both the new unified ``status`` dict and the legacy
-        individual status fields (``transcribe_status``, ``summarize_status``,
-        ``extract_status``) for backward compatibility with old JSON files.
+        Checks the separate step maps (``transcribe``, ``summarize``,
+        ``extract``) for step completion status.
 
-        - **MP4**: ``status.get("transcribe") == "complete"`` and
-          ``status.get("summarize") == "complete"``, or legacy
-          ``transcribe_status == "complete" and summarize_status == "complete"``.
-        - **PDF/HTML**: ``status.get("extract") == "complete"``, or legacy
-          ``extract_status == "complete"``.
+        - **MP4**: ``transcribe`` step map exists and
+          ``transcribe.status == "complete"`` and ``summarize`` step map
+          exists and ``summarize.status == "complete"``.
+        - **PDF/HTML**: ``extract`` step map exists and
+          ``extract.status == "complete"``.
+
+        Legacy fields (``transcribe_status``, ``summarize_status``,
+        ``extract_status``) are also supported for backward compatibility.
 
         Args:
             metadata: The parsed JSON metadata dictionary.
@@ -328,32 +328,42 @@ class Scanner:
         """
         if metadata.get(_ERROR_FIELD):
             return False
-        # New unified status dict approach
-        status = metadata.get("status")
-        if isinstance(status, dict):
-            if filetype == _MP4_FILETYPE:
-                return (
-                    status.get("transcribe") == _COMPLETED_STEP_STATUS
-                    and status.get("summarize") == _COMPLETED_STEP_STATUS
-                )
-            if filetype in _DOC_FILETYPES:
-                return status.get("extract") == _COMPLETED_STEP_STATUS
-            return False
-        # Legacy fallback: individual status fields
         if filetype == _MP4_FILETYPE:
-            return (
-                metadata.get("transcribe_status") == _COMPLETED_STEP_STATUS
-                and metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
+            # New schema: step maps
+            transcribe = metadata.get("transcribe")
+            summarize = metadata.get("summarize")
+            transcribe_complete = (
+                isinstance(transcribe, dict)
+                and transcribe.get("status") == _COMPLETED_STEP_STATUS
             )
+            summarize_complete = (
+                isinstance(summarize, dict)
+                and summarize.get("status") == _COMPLETED_STEP_STATUS
+            )
+            # Legacy schema support
+            if not transcribe_complete:
+                transcribe_complete = metadata.get("transcribe_status") == _COMPLETED_STEP_STATUS
+            if not summarize_complete:
+                summarize_complete = metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
+            return transcribe_complete and summarize_complete
         if filetype in _DOC_FILETYPES:
-            return metadata.get("extract_status") == _COMPLETED_STEP_STATUS
+            # New schema
+            extract = metadata.get("extract")
+            extract_complete = (
+                isinstance(extract, dict)
+                and extract.get("status") == _COMPLETED_STEP_STATUS
+            )
+            # Legacy schema support
+            if not extract_complete:
+                extract_complete = metadata.get("extract_status") == _COMPLETED_STEP_STATUS
+            return extract_complete
         return False
 
     def _evaluate_json_status(self, source_path: Path) -> tuple[bool, str | None, bool]:
         """Determine if *source_path* needs processing based on its JSON metadata.
 
         This method reads the adjacent ``.json`` metadata file (if it exists)
-        and evaluates the step status fields along with file freshness to
+        and evaluates the step map status fields along with file freshness to
         decide whether the source file should be returned for processing.
 
         Decision logic:

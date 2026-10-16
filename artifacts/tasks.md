@@ -1,7 +1,7 @@
 # Local Feed Generator - Implementation Plan
 
 **Project:** `local-feed-generator`  
-**Date:** 2026-10-14  
+**Date:** 2026-10-15  
 **Python:** 3.14+  
 **Dependency Manager:** uv  
 
@@ -93,21 +93,25 @@ Implement the foundational modules for configuration, file scanning, and metadat
   - All values from design doc section 3.2 are supported
 
 - [x] T2.2: Implement Metadata Model
-- **Description:** Create metadata.py with Pydantic models for JSON schema
+- **Description:** Create metadata.py with Pydantic models for JSON schema (Version 2.0)
 - **File:** `src/local_feed_generator/metadata.py`
 - **Actions:**
   - Create `Metadata` dataclass/model matching schema from design doc section 3.3
-  - Include all fields: `title`, `description`, `filename`, `filepath`, `filetype`, `date`, `size`, `transcript`, `summary`, `processing_date`, `transcribe_status`, `summarize_status`, `extract_status`, `feed_eligible`, `error`
+  - Include all fields: `version`, `title`, `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date`, `duration`, `creation_time`, `size`, `transcribe`, `summarize`, `extract`, `feed_eligible`, `error`
+  - `transcribe`, `summarize`, `extract` are step maps with fields: `status` (null | "in_progress" | "complete"), `start_time`, `end_time`, `input_size`, `output_size`, `words`, `model`, `input_tokens`, `output_tokens`
   - Add validation: `filetype` must be "mp4", "pdf", or "html"
   - Add validation: `error` field is optional
+  - Add field usage validation: MP4 files should have blank `description`, PDF/HTML files should have null `summary` and `content`
   - Implement serialization/deserialization methods
   - Add method to write metadata to JSON file
   - Add method to read metadata from JSON file
+  - Add backwards compatibility: warn and ignore deprecated fields (`transcript`, `transcribe_status`, `summarize_status`, `extract_status`, `stage`, `status` dict, `processing_date`, `completed_at`, `started_at`)
 - **Completion Criteria:**
   - Model validates correctly for valid inputs
   - Model rejects invalid inputs with appropriate errors
   - Model can serialize to/from JSON matching the exact schema
   - Error metadata can be created and validated
+  - Deprecated fields trigger warnings when loaded
 
 - [x] T2.3: Implement File Scanner (Batch Mode)
 - **Description:** Create scanner.py with directory scanning functionality
@@ -155,9 +159,9 @@ Implement the file processing pipeline including transcription, summarization, a
   - Create `process_file()` method that:
     - Determines file type from extension
     - Dispatches to appropriate processing path
-    - For MP4: call Transcriber, then Summarizer, then generate metadata
-    - For PDF/HTML: call appropriate extractor, then generate metadata
-    - Writes JSON metadata file adjacent to source file
+    - For MP4: call Transcriber (stores result in `content` field), then Summarizer (stores result in `summary` field), sets `description` to blank, then generate metadata
+    - For PDF/HTML: call appropriate extractor (stores result in `description` field), set `summary` and `content` to null, then generate metadata
+    - Writes JSON metadata file adjacent to source file with step maps
     - Handles errors and writes error metadata
   - Implement `process_all()` method for batch processing
   - Create `generate_title()` helper method that uses LLM if source metadata unavailable
@@ -167,8 +171,9 @@ Implement the file processing pipeline including transcription, summarization, a
   - T2.1 (Config)
 - **Completion Criteria:**
   - Producer can process MP4, PDF, and HTML files through appropriate paths
-  - JSON metadata files are created correctly
+  - JSON metadata files are created correctly with all new fields
   - Error handling writes error metadata with appropriate error details
+  - Step maps are properly populated for each processing step
 
 - [x] T3.2: Implement Transcription Service
 - **Description:** Create transcriber.py for GPU-accelerated audio transcription
@@ -183,6 +188,7 @@ Implement the file processing pipeline including transcription, summarization, a
   - Implement `transcribe()` method that:
     - Accepts file path as input
     - Returns markdown transcript without timestamps
+    - Tracks processing in transcribe step map with timing and metrics
     - Handles errors gracefully
   - Add resource cleanup method for model unloading
 - **Dependencies:**
@@ -193,6 +199,7 @@ Implement the file processing pipeline including transcription, summarization, a
   - Transcription produces clean markdown output without timestamps
   - Model is loaded only once and reused
   - Errors are handled and propagated appropriately
+  - Step map is populated with status, timing, and metrics
 
 - [x] T3.3: Implement Summarization Service
 - **Description:** Create summarizer.py for LLM-based summarization
@@ -208,6 +215,7 @@ Implement the file processing pipeline including transcription, summarization, a
     - Accepts transcript text as input
     - Returns key takeaways as string
     - Uses the system prompt from configuration
+    - Tracks processing in summarize step map with timing and metrics
     - Handles API errors with retry logic (exponential backoff)
   - Implement `generate_title()` method for generating titles from content
 - **Dependencies:**
@@ -218,6 +226,7 @@ Implement the file processing pipeline including transcription, summarization, a
   - Summarization produces concise key takeaways
   - Title generation works for files without metadata
   - Retry logic handles transient errors
+  - Step map is populated with status, timing, and metrics
 
 - [x] T3.4: Implement PDF Metadata Extractor
 - **Description:** Create extractor for PDF files
@@ -226,7 +235,10 @@ Implement the file processing pipeline including transcription, summarization, a
   - Implement `PDFExtractor` class (or add to services package)
   - Extract metadata from PDF files using `pypdf`
   - Extract: title, author, creation date, file size
+  - Store extracted metadata in `description` field
+  - Set `summary` and `content` to null for PDF files
   - Implement fallback to filename if no title found
+  - Track processing in extract step map with timing and metrics
   - Return structured data compatible with Metadata model
 - **Dependencies:**
   - T2.2 (Metadata model)
@@ -236,6 +248,7 @@ Implement the file processing pipeline including transcription, summarization, a
   - Title generation fallback works for files without metadata
   - Date is extracted in ISO8601 format
   - File size is calculated correctly
+  - Step map is populated with status, timing, and metrics
 
 - [x] T3.5: Implement HTML Metadata Extractor
 - **Description:** Create extractor for HTML files
@@ -244,7 +257,10 @@ Implement the file processing pipeline including transcription, summarization, a
   - Implement `HTMLExtractor` class
   - Extract title from `<title>` tag using BeautifulSoup
   - Extract other metadata if available (description meta tags, etc.)
+  - Store extracted metadata in `description` field
+  - Set `summary` and `content` to null for HTML files
   - Implement fallback to filename if no title found
+  - Track processing in extract step map with timing and metrics
   - Return structured data compatible with Metadata model
 - **Dependencies:**
   - T2.2 (Metadata model)
@@ -254,6 +270,7 @@ Implement the file processing pipeline including transcription, summarization, a
   - Title generation fallback works for files without title
   - Date is extracted or uses file modification time
   - File size is calculated correctly
+  - Step map is populated with status, timing, and metrics
 
 ---
 
@@ -271,9 +288,9 @@ Implement RSS feed generation for podcast and articles feeds.
   - Implement `FeedGenerator` class
   - Accept `DATA_DIR` and `BASE_URL` from configuration
   - Scan `DATA_DIR` recursively for all `*.json` files
-  - Filter entries by `feed_eligible` computed property
+  - Filter entries by `feed_eligible` computed property (which checks step map statuses: MP4 needs transcribe.status="complete" AND summarize.status="complete", PDF/HTML needs extract.status="complete")
   - Implement sorting: folder name (ascending), then filename (ascending)
-  - Calculate absolute URLs: `BASE_URL + filepath`
+  - Calculate absolute URLs: `BASE_URL` + `filepath`
 - **Dependencies:**
   - T2.1 (Config)
   - T2.2 (Metadata model)
@@ -283,6 +300,7 @@ Implement RSS feed generation for podcast and articles feeds.
   - Error entries are excluded from feeds
   - Items are sorted correctly by folder then filename
   - URLs are computed correctly from BASE_URL + filepath
+  - Feed eligibility computed from step map statuses
 
 - [x] T4.2: Implement Podcast Feed Generation
 - **Description:** Create podcast.xml feed generation
@@ -290,22 +308,23 @@ Implement RSS feed generation for podcast and articles feeds.
 - **Actions:**
   - Implement `generate_podcast_feed()` method
   - Use `feedgen` library with podcast extension
-  - Include all MP4 files from metadata
+  - Include all MP4 files with `feed_eligible = true` from metadata
   - For each item:
-    - Title from metadata
-    - Description from summary (from LLM)
+    - Title from metadata `title` field
+    - Description from `summary` field (LLM-generated key takeaways)
     - Link: absolute URL to source file
-    - Enclosure with URL, type="audio/mp4", length (file size)
-    - Publication date from metadata
+    - Enclosure with URL, type="audio/mp4", length (file size from `size` field)
+    - Publication date from metadata `date` field
     - GUID based on filepath
   - Write feed to `DATA_DIR/podcast.xml`
 - **Dependencies:**
   - T4.1 (Feed generator base)
 - **Completion Criteria:**
   - Podcast feed is valid RSS with podcast extensions
-  - All MP4 files are included in feed
+  - All MP4 files with complete step maps are included in feed
   - Enclosure tags have correct URLs, types, and lengths
   - Feed is written to `DATA_DIR/podcast.xml`
+  - Descriptions come from `summary` field
 
 - [x] T4.3: Implement Articles Feed Generation
 - **Description:** Create articles.xml feed generation
@@ -313,20 +332,21 @@ Implement RSS feed generation for podcast and articles feeds.
 - **Actions:**
   - Implement `generate_articles_feed()` method
   - Use `feedgen` library for RSS
-  - Include all PDF/HTML files from metadata
+  - Include all PDF/HTML files with `feed_eligible = true` from metadata
   - For each item:
-    - Title from metadata
-    - Description from transcript or summary (if available) or empty
+    - Title from metadata `title` field
+    - Description from `description` field (extracted metadata)
     - Link: absolute URL to source file
-    - Publication date from metadata
+    - Publication date from metadata `date` field
     - GUID based on filepath
   - Write feed to `DATA_DIR/articles.xml`
 - **Dependencies:**
   - T4.1 (Feed generator base)
 - **Completion Criteria:**
   - Articles feed is valid RSS
-  - All PDF/HTML files are included in feed
+  - All PDF/HTML files with complete step maps are included in feed
   - Feed is written to `DATA_DIR/articles.xml`
+  - Descriptions come from `description` field
 
 - [x] T4.4: Implement Feed Generation Method
 - **Description:** Create main method to generate both feeds
@@ -417,6 +437,7 @@ Implement command-line interface for all processing modes.
   - Skip file processing
   - Read all existing JSON metadata files
   - Generate both feeds (podcast.xml, articles.xml)
+  - Finalize JSON metadata by computing feed eligibility from step maps
   - Output summary of feeds generated
 - **Dependencies:**
   - T2.2 (Metadata model)
@@ -424,6 +445,7 @@ Implement command-line interface for all processing modes.
 - **Completion Criteria:**
   - Command generates feeds without processing files
   - Existing JSON metadata is used
+  - Feed eligibility computed from step map statuses
   - Summary shows items in each feed
 
 - [x] T5.5: Implement Validate Command
@@ -432,16 +454,20 @@ Implement command-line interface for all processing modes.
 - **Actions:**
   - Implement `validate` command with required `--data-dir` option
   - Scan for all JSON metadata files
-  - Validate each against the schema
+  - Validate each against the schema (including new fields: version, duration, creation_time, content, step maps)
+  - Check for deprecated field usage (warn on transcript, status dict, transcribe_status, etc.)
   - Check for orphaned JSON files
   - Check for special characters in filenames
+  - Finalize JSON metadata by setting step completion statuses and computing feed eligibility
   - Output validation report with errors and warnings
   - Exit code: 0 for all valid, 1 for errors found
 - **Completion Criteria:**
-  - Command validates all JSON metadata files
-  - Schema validation works correctly
+  - Command validates all JSON metadata files against new schema
+  - Schema validation works correctly for version 2.0
+  - Deprecated field warnings are shown
   - Orphaned JSON files are detected
   - Special character warnings are shown
+  - Feed eligibility computed from step map statuses
   - Exit code reflects validation status
 
 - [x] T5.6: Package Entry Point Configuration
@@ -471,6 +497,7 @@ Enhance and test the incremental processing mode with robust file watching.
 - **Actions:**
   - Implement `initial_scan()` method for watch mode
   - Process all files without JSON metadata on startup
+  - Finalize JSON metadata by computing feed eligibility from step maps
   - Generate feeds after initial scan
   - Track processed files to avoid re-processing on first event
 - **Dependencies:**
@@ -481,6 +508,7 @@ Enhance and test the incremental processing mode with robust file watching.
   - Initial scan processes all unprocessed files
   - Feeds are generated after initial scan
   - No duplicate processing on startup
+  - Feed eligibility computed from step maps
 
 - [x] T6.2: Implement Event Debouncing
 - **Description:** Prevent rapid successive events from triggering multiple processes
@@ -536,15 +564,19 @@ Implement comprehensive validation and robust error handling throughout the syst
 - **Description:** Ensure all metadata files conform to schema
 - **File:** `src/local_feed_generator/metadata.py`
 - **Actions:**
-  - Validate required fields for each filetype
-  - Validate field types and formats (ISO8601 dates, etc.)
-  - Add validation for conditional fields (transcript/summary only for MP4)
+  - Validate required fields for each filetype (version, title, filename, filepath, filetype, date)
+  - Validate field types and formats (UNIX epoch for date, float for duration, ISO8601 for creation_time)
+  - Validate conditional fields (content/summary only for MP4, description for PDF/HTML)
+  - Validate step map structure (transcribe, summarize, extract objects with proper fields)
+  - Add validation for MP4: description should be blank, summary and content should be present
+  - Add validation for PDF/HTML: description should be present, summary and content should be null
 - **Dependencies:**
   - T2.2 (Metadata model)
 - **Completion Criteria:**
   - Invalid metadata files are rejected
   - Validation provides clear error messages
   - All required fields are validated
+  - Filetype-specific field usage is validated
 
 - [x] T7.2: Implement XML Feed Validation
 - **Description:** Validate generated RSS feeds
@@ -554,10 +586,13 @@ Implement comprehensive validation and robust error handling throughout the syst
   - Validate RSS compliance
   - Validate podcast enclosure tags
   - Check for proper XML escaping of special characters
+  - Verify podcast feed uses summary field for descriptions
+  - Verify articles feed uses description field for descriptions
 - **Completion Criteria:**
   - Generated feeds are valid XML
   - RSS compliance is verified
-  - Special characters in filenames/f puissante are properly escaped
+  - Special characters in filenames and content are properly escaped
+  - Feed descriptions come from correct fields
 
 - [x] T7.3: Implement End-to-End Error Handling
 - **Description:** Comprehensive error handling across all modules
@@ -565,12 +600,12 @@ Implement comprehensive validation and robust error handling throughout the syst
 - **Actions:**
   - Review all error paths in each module
   - Ensure errors are caught and logged appropriately
-  - Ensure error metadata is written for all processing errors
+  - Ensure error metadata is written for all processing errors with step map status set to null
   - Ensure no unhandled exceptions reach CLI
   - Implement appropriate exit codes for CLI
 - **Completion Criteria:**
   - All errors are caught and logged
-  - Error metadata is written for all processing failures
+  - Error metadata is written for all processing failures with step map status = null
   - CLI returns appropriate exit codes
   - No unhandled exceptions in normal operation
 
@@ -584,10 +619,13 @@ Implement comprehensive validation and robust error handling throughout the syst
   - Create test for error handling
   - Create test for special character handling
   - Create test for orphaned JSON detection
+  - Create test for new schema fields (version, duration, creation_time, content, step maps)
+  - Create test for field usage by filetype (MP4 vs PDF/HTML)
 - **Completion Criteria:**
   - Integration tests cover critical workflows
   - Tests can be run with `python -m pytest`
   - Tests verify correct behavior for all scenarios
+  - Tests verify new schema fields are present and validated
 
 - [x] T7.5: Create Validation Scripts
 - **Description:** Scripts for manual validation and testing
@@ -597,9 +635,11 @@ Implement comprehensive validation and robust error handling throughout the syst
   - Create script to test all CLI commands
   - Create script to verify feed validity
   - Create script to generate sample test files
+  - Create script to verify new schema fields
 - **Completion Criteria:**
   - Validation scripts can be run manually
   - Scripts provide clear output for verification
+  - Scripts verify new schema fields
 
 ---
 
@@ -624,20 +664,22 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
 
 - [x] T8.2: Create RemoteTranscriber class for API-based transcription
 - **Description:** Implement RemoteTranscriber class that calls OpenAI-compatible API
-- **File:** `src/local_feed_generator/remote_transcriber.py` (new file)
+- **File:** `src/local_feed_generator/services/transcriber.py`
 - **Actions:**
   - Implement HTTP client for API communication
   - Implement audio file upload and transcription request
   - Handle API response parsing
   - Implement error handling for API failures
+  - Track processing in transcribe step map with timing and metrics
 - **Completion Criteria:**
   - RemoteTranscriber class can transcribe audio files
   - API errors are handled gracefully
   - Response is parsed into text format
+  - Step map is populated with status, timing, and metrics
 
 - [x] T8.3: Update Transcriber to support dual-mode (local/remote) transcription
 - **Description:** Modify Transcriber to select between local and remote transcription
-- **File:** `src/local_feed_generator/transcriber.py`
+- **File:** `src/local_feed_generator/services/transcriber.py`
 - **Actions:**
   - Add mode detection based on configuration
   - Integrate RemoteTranscriber for remote mode
@@ -647,18 +689,19 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
   - Transcriber selects correct mode based on config
   - Both local and remote modes work
   - Fallback behavior is implemented
+  - Step map is populated correctly for both modes
 
 - [x] T8.4: Update Producer to track remote transcription in metadata
 - **Description:** Ensure metadata tracks which transcription method was used
 - **File:** `src/local_feed_generator/producer.py`
 - **Actions:**
-  - Add transcription_method field to metadata
-  - Track whether local or remote transcription was used
-  - Include transcription model info in metadata
+  - Add transcription_method field to metadata step maps (optional enhancement)
+  - Track whether local or remote transcription was used in model field
+  - Include transcription model info in metadata step map
 - **Completion Criteria:**
-  - Metadata includes transcription_method field
+  - Metadata includes transcription method info in model field
   - Both local and remote transcriptions are tracked
-  - Model information is recorded
+  - Model information is recorded in step map
 
 - [x] T8.5: Update documentation (design.md, specs.md, README.md)
 - **Description:** Update project documentation to reflect remote transcription feature
@@ -667,10 +710,12 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
   - Document remote transcription feature in design
   - Update specifications with new configuration options
   - Update README with usage instructions for remote transcription
+  - Update all documentation to reference new schema (step maps, content, duration, creation_time)
 - **Completion Criteria:**
   - Design document describes remote transcription architecture
   - Specs document includes new configuration variables
   - README includes usage examples
+  - All documentation references new schema fields
 
 - [x] T8.6: Add comprehensive tests for RemoteTranscriber
 - **Description:** Create unit and integration tests for RemoteTranscriber
@@ -680,25 +725,27 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
   - Test successful transcription requests
   - Test error handling scenarios
   - Test configuration integration
+  - Test step map population
 - **Completion Criteria:**
   - All RemoteTranscriber functionality is tested
   - Tests cover success and error cases
+  - Tests verify step map is populated correctly
   - Tests pass with mock API
 
- - [x] T8.7: Verify integration with existing pipeline
-   - **Description:** Ensure remote transcription works end-to-end
-   - **Files:** All pipeline modules
-   - **Actions:**
-     - Test complete pipeline with remote transcription enabled
-     - Verify metadata is correctly populated
-     - Verify feeds are generated correctly
-     - Test fallback to local transcription
-   - **Completion Criteria:**
-     - End-to-end pipeline works with remote transcription
-     - Metadata is correctly updated
-     - Feeds are valid
-     - Fallback works as expected
-   - **Status:** COMPLETED - Remote transcription feature fully tested and verified working. Successful end-to-end test: `c100/c107.mp4` (828.5s, 10.1MB) transcribed successfully with 2,220 words of plain text output. Client correctly uses OpenAI-compatible remote endpoint when TRANSCRIPTION_ENDPOINT is configured.
+- [x] T8.7: Verify integration with existing pipeline
+  - **Description:** Ensure remote transcription works end-to-end
+  - **Files:** All pipeline modules
+  - **Actions:**
+    - Test complete pipeline with remote transcription enabled
+    - Verify metadata is correctly populated with new schema
+    - Verify feeds are generated correctly
+    - Test fallback to local transcription
+  - **Completion Criteria:**
+    - End-to-end pipeline works with remote transcription
+    - Metadata is correctly updated with new schema fields
+    - Feeds are valid
+    - Fallback works as expected
+  - **Status:** COMPLETED - Remote transcription feature fully tested and verified working. Successful end-to-end test: `c100/c107.mp4` (828.5s, 10.1MB) transcribed successfully with 2,220 words of plain text output. Client correctly uses OpenAI-compatible remote endpoint when TRANSCRIPTION_ENDPOINT is configured.
 
 - [x] T8.8: Document vLLM server configuration requirement
   - **Description:** Document server-side VLLM_MAX_AUDIO_DECODE_DURATION_S requirement for handling longer audio files
@@ -708,25 +755,27 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
     - Document configuration requirement in README Configuration section
     - Update design.md with server-side requirements
     - Update specs.md with server-side configuration needs
+    - Update tasks.md to reference new schema fields
     - Mark remote transcription testing tasks as complete
   - **Completion Criteria:**
     - All documentation reflects the remote transcription feature and its requirements
     - Users understand the vLLM server configuration needed for longer audio files
     - Testing status is updated in tasks.md
+    - All documentation references new schema
   - **Status:** COMPLETED
 
- - [x] T8.9: Create integration test for vLLM server with VLLM_MAX_AUDIO_DECODE_DURATION_S
-   - **Description:** Create a test that verifies the system correctly handles longer audio files when the vLLM server is properly configured
-   - **File:** tests/test_remote_transcription_duration.py (new)
-   - **Actions:**
-     - Create a long audio file (> default vLLM limit) for testing
-     - Set up vLLM server with VLLM_MAX_AUDIO_DECODE_DURATION_S configured
-     - Verify transcription succeeds with proper configuration
-     - Verify error is properly handled when duration exceeds configured limit
-   - **Completion Criteria:**
-     - Test verifies long audio file transcription works with proper server configuration
-     - Test verifies error handling when audio exceeds configured duration limit
-   - **Status:** COMPLETED - Verified with vLLM server configured with `VLLM_MAX_AUDIO_DECODE_DURATION_S=3600`. Successfully transcribed `c100/c107.mp4` (828.5s, 10.1MB) with 2,220 words of plain text output.
+- [x] T8.9: Create integration test for vLLM server with VLLM_MAX_AUDIO_DECODE_DURATION_S
+  - **Description:** Create a test that verifies the system correctly handles longer audio files when the vLLM server is properly configured
+  - **File:** tests/test_remote_transcription_duration.py (new)
+  - **Actions:**
+    - Create a long audio file (> default vLLM limit) for testing
+    - Set up vLLM server with VLLM_MAX_AUDIO_DECODE_DURATION_S configured
+    - Verify transcription succeeds with proper configuration
+    - Verify error is properly handled when duration exceeds configured limit
+  - **Completion Criteria:**
+    - Test verifies long audio file transcription works with proper server configuration
+    - Test verifies error handling when audio exceeds configured duration limit
+  - **Status:** COMPLETED - Verified with vLLM server configured with `VLLM_MAX_AUDIO_DECODE_DURATION_S=3600`. Successfully transcribed `c100/c107.mp4` (828.5s, 10.1MB) with 2,220 words of plain text output.
 
 ---
 
@@ -785,6 +834,8 @@ The following tasks can be worked on concurrently:
 
 **Phase 7:** Mostly sequential validation tasks
 
+**Phase 8:** T8.1, T8.2 can be parallel; T8.3 depends on T8.1 and T8.2; T8.4 depends on T8.3
+
 ---
 
 ## Execution Guidelines
@@ -811,6 +862,16 @@ The following tasks can be worked on concurrently:
 
 ## Key Constraints Reminders
 
+### Schema Requirements (Version 2.0)
+1. **Version field**: All JSON metadata must include `version: "2.0"`
+2. **Content field**: MP4 files use `content` for full transcript (replaces old `transcript` field)
+3. **Step maps**: Processing tracked via `transcribe`, `summarize`, `extract` objects (not unified `status` dict)
+4. **Description behavior**: MP4 files have blank `description`, PDF/HTML have extracted metadata in `description`
+5. **Summary behavior**: MP4 files have key takeaways in `summary`, PDF/HTML have null `summary`
+6. **New fields**: `duration` (float, MP4 only), `creation_time` (ISO8601)
+7. **Backwards compatibility**: Warn and ignore deprecated fields
+
+### Other Constraints
 1. **Dependencies:** Use uv for all dependency management
 2. **Python:** Target Python 3.14 or later
 3. **Transcription:** Use faster-whisper with large-v3-turbo, CUDA, float16
@@ -819,7 +880,7 @@ The following tasks can be worked on concurrently:
 6. **System Prompt:** Use exact prompt from design doc
 7. **Feed Format:** RSS (not Atom)
 8. **URLs:** Absolute URLs = BASE_URL + filepath
-9. **Errors:** Status="error" in JSON, excluded from feeds
+9. **Errors:** Error state written to JSON with step map status = null, excluded from feeds
 10. **Directory Structure:** Follow design doc section 5.1
 
 ---
@@ -838,3 +899,7 @@ The following tasks can be worked on concurrently:
 - [x] Special characters handled correctly (warnings only, no modification)
 - [x] Orphaned JSON files detected and logged
 - [x] All environment variables from design doc are supported
+- [x] New schema fields (version, duration, creation_time, content, step maps) implemented and validated
+- [x] Field usage by filetype validated (MP4 vs PDF/HTML)
+- [x] Feed eligibility computed from step map statuses
+- [x] Backwards compatibility for deprecated fields implemented with warnings

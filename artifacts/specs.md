@@ -39,29 +39,56 @@ This system processes education content files in the `data` directory and genera
 
 **FR-008**: JSON metadata files SHALL be placed in the same directory as their source files
 
-**FR-009**: JSON metadata SHALL include fields required to generate RSS/Atom feed items. All date fields (date, processing_date, completed_at, started_at) SHALL be stored as UNIX epoch timestamps (integer seconds since 1970-01-01T00:00:00Z).
+**FR-009**: JSON metadata SHALL include fields required to generate RSS/Atom feed items. All date fields (date, creation_time) SHALL be stored as UNIX epoch timestamps (integer seconds since 1970-01-01T00:00:00Z). The `duration` field SHALL be stored as a float or integer representing seconds.
 
 **FR-010**: JSON metadata SHALL contain at minimum:
 ```json
 {
+  "version": "2.0",
   "title": "string",           // Human-readable title (derived or from file)
-  "description": "string",    // Summary/description for feed item
+  "description": "string",    // For MP4: blank; For PDF/HTML: extracted metadata
+  "summary": "string",        // For MP4: Key takeaways (populated by LLM); For PDF/HTML: null
+  "content": "string",        // For MP4: Full transcript; For PDF/HTML: null
   "filename": "string",       // Original filename with extension
   "filepath": "string",       // Relative path from data directory root
   "filetype": "pdf|html|mp4", // Source file type
   "date": 1710000000,          // Publication/creation date (UNIX epoch seconds)
-  "size": number,             // File size in bytes (for podcast enclosure length)
-  "transcript": "string",     // OPTIONAL: For audio files, the markdown transcript
-  "summary": "string",        // OPTIONAL: Key takeaways (populated for audio)
-  "processing_date": 1710000000, // When the file was processed (UNIX epoch seconds)
-  "completed_at": 1710000000,  // When processing was completed (UNIX epoch seconds, OPTIONAL)
-  "started_at": 1710000000,    // When processing was started (UNIX epoch seconds, OPTIONAL)
+  "duration": 45.5,          // For MP4: duration in seconds (float)
+  "creation_time": "2024-01-01T00:00:00Z", // ISO8601 creation timestamp
+  "size": 12345678,          // File size in bytes (for podcast enclosure length)
   
-  // Step tracking field - unified status map
-  "status": {
-    "transcribe": null | "in_progress" | "complete",  // MP4: transcription progress
-    "summarize": null | "in_progress" | "complete",  // MP4: summarization progress
-    "extract": null | "in_progress" | "complete"    // PDF/HTML: metadata extraction progress
+  // Step maps tracking processing steps
+  "transcribe": {
+    "status": null | "in_progress" | "complete",
+    "start_time": 1710000000,    // UNIX epoch seconds
+    "end_time": 1710000005,      // UNIX epoch seconds
+    "input_size": 12345678,     // Input file size in bytes
+    "output_size": 456789,       // Output transcript size in bytes
+    "words": 452,                // Number of words in transcript
+    "model": "large-v3-turbo",  // Model used for transcription
+    "input_tokens": null,        // Input tokens (optional, for API-based transcription)
+    "output_tokens": null        // Output tokens (optional, for API-based transcription)
+  },
+  
+  "summarize": {
+    "status": null | "in_progress" | "complete",
+    "start_time": 1710000005,    // UNIX epoch seconds
+    "end_time": 1710000010,      // UNIX epoch seconds
+    "input_size": 456789,        // Input transcript size in bytes
+    "output_size": 1997,         // Output summary size in bytes
+    "words": 345,                // Number of words in summary
+    "model": "mistralai/Mistral-7B-Instruct", // Model used for summarization
+    "input_tokens": 890,         // Input tokens
+    "output_tokens": 123         // Output tokens
+  },
+  
+  "extract": null | {
+    "status": null | "in_progress" | "complete",
+    "start_time": 1710000000,    // UNIX epoch seconds
+    "end_time": 1710000005,      // UNIX epoch seconds
+    "input_size": 12345678,     // Input file size in bytes
+    "output_size": 456789,       // Output metadata size in bytes
+    "model": "pypdf"            // Extraction method used
   },
   
   // Computed field for feed inclusion
@@ -72,16 +99,18 @@ This system processes education content files in the `data` directory and genera
 ```
 
 **Feed Eligibility Rules:**
-- **MP4 files**: `feed_eligible = (status["transcribe"] == "complete" AND status["summarize"] == "complete")`
-- **PDF/HTML files**: `feed_eligible = (status["extract"] == "complete")`
+- **MP4 files**: `feed_eligible = (transcribe.status == "complete" AND summarize.status == "complete")`
+- **PDF/HTML files**: `feed_eligible = (extract.status == "complete")`
 - Items with `feed_eligible = false` are excluded from feeds
-- Items with processing errors will have the respective status map entry as `null` and `feed_eligible = false`
+- Items with processing errors will have the respective step map entry as `null` and `feed_eligible = false`
 
-**FR-010a**: The system SHALL use a unified status map to track processing steps (transcribe, summarize, extract) instead of individual status fields, enabling partial progress visibility and better error recovery
+**FR-010a**: The system SHALL use step maps (transcribe, summarize, extract) to track processing steps instead of a unified status map, enabling detailed progress visibility and better error recovery
 
-**FR-010b**: When loading JSON metadata containing deprecated fields (`transcribe_status`, `summarize_status`, `extract_status`, `stage`, or string `status`), the system SHALL print a warning to stderr. Deprecated fields SHALL be ignored (not migrated).
+**FR-010b**: When loading JSON metadata containing deprecated fields (`transcribe_status`, `summarize_status`, `extract_status`, `stage`, `status` dict, `transcript`, `processing_date`, `completed_at`, `started_at`), the system SHALL print a warning to stderr. Deprecated fields SHALL be ignored (not migrated).
 
 **FR-010c**: The system SHALL replace underscores in extracted titles with spaces (e.g., "my_document" → "my document") during metadata finalization.
+
+**FR-010d**: The system SHALL ensure MP4 files have blank `description` field and PDF/HTML files have extracted metadata in `description` field. The `summary` field SHALL contain key takeaways for MP4 files and be null for PDF/HTML files.
 
 ### Audio Processing
 
@@ -91,7 +120,7 @@ This system processes education content files in the `data` directory and genera
 
 **FR-013**: The system SHALL feed the **entire transcript** to the LLM for summarization
 
-**FR-014**: Audio file summaries SHALL be used as the `description` field in the podcast feed
+**FR-014**: Audio file summaries SHALL be used as the `summary` field in the JSON metadata (not as description for MP4 files)
 
 **FR-015**: Audio transcripts SHALL NOT include timestamps
 
@@ -119,7 +148,7 @@ This system processes education content files in the `data` directory and genera
 
 **FR-020**: Each feed item SHALL include:
 - Title (from JSON metadata)
-- Description (from JSON metadata or audio summary)
+- Description (from JSON metadata: blank for MP4, extracted metadata for PDF/HTML)
 - Link to the source file (computed as BASE_URL + filepath)
 - Publication date (from JSON metadata)
 - Unique identifier (file path)
@@ -158,7 +187,7 @@ This system processes education content files in the `data` directory and genera
 - `watch`: Watch data directory for changes
 - `transcribe`: Transcribe audio files
 - `summarize`: Generate summaries
-- `extract-metadata`: Extract metadata from PDF/HTML files
+- `extract`: Extract metadata from PDF/HTML files
 - `feeds`: Generate RSS/Atom feeds and finalize JSON metadata by computing feed eligibility
 - `validate`: Validate all metadata files and finalize JSON by setting step completion statuses
 
@@ -168,12 +197,12 @@ This system processes education content files in the `data` directory and genera
 - `--file <path>`: Process a single specific file instead of scanning the entire directory. Takes precedence over `--data-dir`. Enables targeted processing for debugging, retries, and manual intervention.
 - `--force`: Force execution even if step appears complete. Overrides step completion checks to enable reprocessing. Applies to all processing steps.
 
-**FR-026a**: The `--dry-run` flag SHALL be available on `transcribe`, `summarize`, and `extract-metadata` commands. It SHALL show which files would be processed without making any changes.
+**FR-026a**: The `--dry-run` flag SHALL be available on `transcribe`, `summarize`, and `extract` commands. It SHALL show which files would be processed without making any changes.
 
 **FR-027**: The `--force` flag behavior SHALL be:
-- For `transcribe`: Re-transcribe even if `status["transcribe"] == "complete"`
-- For `summarize`: Re-summarize even if `status["summarize"] == "complete"`
-- For `extract-metadata`: Re-extract even if `status["extract"] == "complete"`
+- For `transcribe`: Re-transcribe even if `transcribe.status == "complete"`
+- For `summarize`: Re-summarize even if `summarize.status == "complete"`
+- For `extract`: Re-extract even if `extract.status == "complete"`
 - For `process`: Re-process all steps even if `feed_eligible == true`
 - For `feeds`: Always regenerate feeds regardless of state
 - For `validate`: Perform validation regardless of previous validation state
@@ -378,10 +407,10 @@ local-feed-generator summarize --data-dir ./data
 local-feed-generator summarize --file ./data/videos/lecture.mp4 --force
 
 # Extract metadata from PDF/HTML files
-local-feed-generator extract-metadata --data-dir ./data
+local-feed-generator extract --data-dir ./data
 
 # Extract metadata from a specific file
-local-feed-generator extract-metadata --file ./data/documents/report.pdf --force
+local-feed-generator extract --file ./data/documents/report.pdf --force
 
 # Generate feeds only (no processing); finalizes JSON metadata
 local-feed-generator feeds --data-dir ./data
@@ -397,8 +426,8 @@ local-feed-generator validate --data-dir ./data
 | `--file <path>` | All commands | Process only the specified file | Highest (overrides --data-dir) |
 | `--config-file <path>` | All commands | Path to a .env-style configuration file | Medium |
 | `--data-dir <path>` | All commands | Path to the data directory. Defaults to `DATA_DIR` from configuration. | Medium |
-| `--force` | process, watch, transcribe, summarize, extract-metadata, feeds, validate | Force execution even if step appears complete | Medium |
-| `--dry-run` | transcribe, summarize, extract-metadata | Show which files would be processed without making changes | Low |
+| `--force` | process, watch, transcribe, summarize, extract, feeds, validate | Force execution even if step appears complete | Medium |
+| `--dry-run` | transcribe, summarize, extract | Show which files would be processed without making changes | Low |
 
 ### Precedence Rules
 
@@ -414,7 +443,7 @@ local-feed-generator validate --data-dir ./data
 
 #### Overview
 
-This section documents the evolution of the JSON metadata schema from individual status fields to a unified status map with UNIX epoch date formatting.
+This section documents the evolution of the JSON metadata schema through multiple versions to the current step map-based format.
 
 #### Legacy Schema (Deprecated)
 
@@ -436,7 +465,7 @@ This section documents the evolution of the JSON metadata schema from individual
 
 **Note:** This schema is deprecated. Files with this schema will trigger warnings when loaded.
 
-#### Intermediate Schema ( Deprecated)
+#### Intermediate Schema (Deprecated)
 
 ```json
 {
@@ -461,7 +490,7 @@ This section documents the evolution of the JSON metadata schema from individual
 
 **Note:** This schema is deprecated. Files with individual status fields will trigger warnings when loaded.
 
-#### Current Schema (Active)
+#### Previous Schema with Unified Status Map (Deprecated)
 
 ```json
 {
@@ -489,23 +518,73 @@ This section documents the evolution of the JSON metadata schema from individual
 }
 ```
 
+**Note:** This schema is deprecated. Files with unified status map will trigger warnings when loaded.
+
+#### Current Schema (Active - Version 2.0)
+
+```json
+{
+  "version": "2.0",
+  "title": "My Audio File",
+  "description": "",
+  "summary": "Key takeaways from LLM...", 
+  "content": "Full transcript...",
+  "filename": "lecture.mp4",
+  "filepath": "c100/lecture.mp4",
+  "filetype": "mp4",
+  "date": 1710000000,
+  "duration": 45.5,
+  "creation_time": "2024-01-01T00:00:00Z",
+  "size": 12345678,
+  "transcribe": {
+    "status": "complete",
+    "start_time": 1710000000,
+    "end_time": 1710000005,
+    "input_size": 12345678,
+    "output_size": 456789,
+    "words": 452,
+    "model": "large-v3-turbo",
+    "input_tokens": null,
+    "output_tokens": null
+  },
+  "summarize": {
+    "status": "complete",
+    "start_time": 1710000005,
+    "end_time": 1710000010,
+    "input_size": 456789,
+    "output_size": 1997,
+    "words": 345,
+    "model": "mistralai/Mistral-7B-Instruct",
+    "input_tokens": 890,
+    "output_tokens": 123
+  },
+  "extract": null
+}
+```
+
 **Feed Inclusion Rule:**
-- **MP4 files**: `feed_eligible = (status["transcribe"] == "complete" AND status["summarize"] == "complete")`
-- **PDF/HTML files**: `feed_eligible = (status["extract"] == "complete")`
+- **MP4 files**: `feed_eligible = (transcribe.status == "complete" AND summarize.status == "complete")`
+- **PDF/HTML files**: `feed_eligible = (extract.status == "complete")`
+
+**Field Usage by Filetype:**
+- **MP4**: `description = ""`, `summary` = LLM-generated key takeaways, `content` = full transcript
+- **PDF/HTML**: `description` = extracted metadata, `summary` = null, `content` = null
 
 #### Schema Changes Summary
 
-| Version | Status Fields | Date Format | Title Cleanup |
-|---------|---------------|-------------|---------------|
-| Legacy | Single `status` string | ISO8601 strings | No |
-| Intermediate | Individual fields (`transcribe_status`, etc.) | ISO8601 strings | No |
-| **Current** | **Unified `status` map** | **UNIX epoch integers** | **Underscores replaced with spaces** |
+| Version | Status Fields | Date Format | Fields | Title Cleanup |
+|---------|---------------|-------------|--------|---------------|
+| Legacy | Single `status` string | ISO8601 strings | Basic | No |
+| Intermediate | Individual fields (`transcribe_status`, etc.) | ISO8601 strings | Basic | No |
+| Previous | Unified `status` map | UNIX epoch integers | Basic + timestamps | Yes |
+| **Current** | **Step maps (transcribe, summarize, extract objects)** | **UNIX epoch + ISO8601 creation_time** | **version, duration, creation_time, content** | **Yes** |
 
 #### Migration and Compatibility
 
 - **No backwards migration**: Old fields are ignored, not converted
 - **Warning system**: Loading deprecated fields triggers stderr warnings
 - **Title cleanup**: Underscores in titles automatically replaced with spaces
+- **Field mapping**: `transcript` field maps to `content` field for backwards compatibility (with warning)
 
 ### Appendix B: Environment Variable Standardization
 
@@ -572,22 +651,22 @@ Benefit: Granular control over each processing step
 
 ### Appendix D: Feed Eligibility Logic
 
-The `feed_eligible` field is a computed boolean that determines whether an item should appear in the generated feeds. This field is **not** stored in the JSON file but is computed at feed generation time based on the step tracking fields.
+The `feed_eligible` field is a computed boolean that determines whether an item should appear in the generated feeds. This field is **not** stored in the JSON file but is computed at feed generation time based on the step map fields.
 
 **Computation Algorithm:**
 
 ```
-def compute_feed_eligible(filetype, transcribe_status, summarize_status, extract_status):
+def compute_feed_eligible(filetype, transcribe, summarize, extract):
     if filetype == "mp4":
-        return (transcribe_status == "complete" and summarize_status == "complete")
+        return (transcribe.status == "complete" and summarize.status == "complete")
     elif filetype in ["pdf", "html"]:
-        return (extract_status == "complete")
+        return (extract.status == "complete")
     return False
 ```
 
 **State Matrix for MP4 Files:**
 
-| transcribe_status | summarize_status | feed_eligible | Feed Inclusion |
+| transcribe.status | summarize.status | feed_eligible | Feed Inclusion |
 |-------------------|------------------|---------------|----------------|
 | null | null | false | ❌ Excluded |
 | in_progress | null | false | ❌ Excluded |
@@ -598,7 +677,7 @@ def compute_feed_eligible(filetype, transcribe_status, summarize_status, extract
 
 **State Matrix for PDF/HTML Files:**
 
-| extract_status | feed_eligible | Feed Inclusion |
+| extract.status | feed_eligible | Feed Inclusion |
 |----------------|---------------|----------------|
 | null | false | ❌ Excluded |
 | in_progress | false | ❌ Excluded |

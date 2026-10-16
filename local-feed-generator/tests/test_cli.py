@@ -129,9 +129,9 @@ def _make_valid_metadata(
 ) -> dict:
     """Create a valid metadata dictionary for testing.
 
-    Creates metadata with all applicable step statuses set to "complete"
-    in the status dict. If ``error`` is provided, the error field is set
-    and step statuses are left as None (making the file not feed-eligible).
+    Creates metadata with all applicable step maps set to "complete".
+    If ``error`` is provided, the error field is set and step maps are
+    not included (making the file not feed-eligible).
     """
     meta: dict = {
         "title": "Test Title",
@@ -141,17 +141,29 @@ def _make_valid_metadata(
         "filetype": filetype,
         "date": 1728931200,
         "size": 12345,
-        "processing_date": 1728931200,
     }
     if error:
         meta["error"] = error
     else:
         if filetype == "mp4":
-            meta["status"] = {"transcribe": "complete", "summarize": "complete"}
-            meta["transcript"] = "Test transcript"
+            meta["transcribe"] = {
+                "status": "complete",
+                "input_size": 0,
+                "output_size": 0,
+            }
+            meta["summarize"] = {
+                "status": "complete",
+                "input_size": 0,
+                "output_size": 0,
+            }
+            meta["content"] = "Test transcript"
             meta["summary"] = "Test summary"
         else:
-            meta["status"] = {"extract": "complete"}
+            meta["extract"] = {
+                "status": "complete",
+                "input_size": 0,
+                "output_size": 0,
+            }
     return meta
 
 
@@ -1305,10 +1317,9 @@ class TestFeedsCommand:
         )
         # Error metadata
         (tmp_data_dir / "bad.mp4").write_bytes(b"video")
-        error_meta = _make_valid_metadata(filepath="bad.mp4", filename="bad.mp4", filetype="mp4")
-        error_meta["error"] = "Processing failed"
-        # Remove status since this is an error
-        error_meta.pop("status", None)
+        error_meta = _make_valid_metadata(
+            filepath="bad.mp4", filename="bad.mp4", filetype="mp4", error="Processing failed"
+        )
         (tmp_data_dir / "bad.mp4.json").write_text(json.dumps(error_meta))
 
         with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
@@ -1354,7 +1365,12 @@ class TestValidateCommand:
         (tmp_data_dir / "bad.pdf").write_bytes(b"pdf")
         # Invalid JSON - missing required fields
         (tmp_data_dir / "bad.pdf.json").write_text(
-            json.dumps({"status": {"extract": "complete"}, "title": "Missing fields"})
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "Missing fields",
+                }
+            )
         )
 
         result = runner.invoke(
@@ -1415,7 +1431,12 @@ class TestValidateCommand:
         """Validate should exit 1 when errors are found."""
         (tmp_data_dir / "bad.pdf").write_bytes(b"pdf")
         (tmp_data_dir / "bad.pdf.json").write_text(
-            json.dumps({"transcribe_status": "complete", "title": "Missing fields"})
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "Missing fields",
+                }
+            )
         )
 
         result = runner.invoke(
@@ -1501,11 +1522,21 @@ class TestValidateCommand:
         """Validate should report all errors."""
         (tmp_data_dir / "bad1.pdf").write_bytes(b"pdf1")
         (tmp_data_dir / "bad1.pdf.json").write_text(
-            json.dumps({"status": {"extract": "complete"}, "title": "Missing fields"})
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "Missing fields",
+                }
+            )
         )
         (tmp_data_dir / "bad2.html").write_bytes(b"html2")
         (tmp_data_dir / "bad2.html.json").write_text(
-            json.dumps({"status": {"extract": "complete"}, "title": "Missing fields"})
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "Missing fields",
+                }
+            )
         )
 
         result = runner.invoke(
@@ -1552,7 +1583,7 @@ class TestEntryPoint:
             "validate",
             "transcribe",
             "summarize",
-            "extract-metadata",
+            "extract",
             "title",
         }
         assert expected.issubset(result_commands)
@@ -1694,13 +1725,14 @@ class TestTranscribeCommand:
         mock_transcriber.transcribe.assert_not_called()
 
     def test_transcribe_skips_files_with_transcript(self, runner, valid_env, tmp_data_dir):
-        """Transcribe should skip MP4 files that already have status['transcribe']='complete'."""
+        """Transcribe should skip MP4 files that already have transcribe status='complete'."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
-        # Create JSON with existing transcript and status with transcribe complete
+        # Create JSON with existing transcript and transcribe step complete
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "title": "Test",
                     "description": "",
                     "filename": "lecture.mp4",
@@ -1708,8 +1740,7 @@ class TestTranscribeCommand:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "Existing transcript",
-                    "processing_date": 1728931200,
+                    "content": "Existing transcript",
                 }
             )
         )
@@ -1757,8 +1788,8 @@ class TestTranscribeCommand:
         json_path = tmp_data_dir / "lecture.mp4.json"
         assert json_path.exists()
         data = json.loads(json_path.read_text())
-        assert data["transcript"] == "This is a transcript."
-        assert data["status"]["transcribe"] == "complete"
+        assert data["content"] == "This is a transcript."
+        assert data["transcribe"]["status"] == "complete"
 
     def test_transcribe_uses_data_dir_from_config(
         self, runner, valid_env, tmp_data_dir, monkeypatch
@@ -1815,13 +1846,14 @@ class TestTranscribeCommand:
         assert result.exit_code == 0
 
     def test_transcribe_force_flag_reprocesses_complete_files(self, runner, valid_env, tmp_data_dir):
-        """Transcribe --force should re-transcribe files with status['transcribe']='complete'."""
+        """Transcribe --force should re-transcribe files with transcribe status='complete'."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
-        # Create JSON with status with transcribe complete
+        # Create JSON with transcribe step complete
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "title": "Test",
                     "description": "",
                     "filename": "lecture.mp4",
@@ -1829,8 +1861,7 @@ class TestTranscribeCommand:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "Existing transcript",
-                    "processing_date": 1728931200,
+                    "content": "Existing transcript",
                 }
             )
         )
@@ -1895,7 +1926,7 @@ class TestTranscribeCommand:
         written_statuses: list[str] = []
 
         def track_write(data, source_path):
-            written_statuses.append(data.get("status", {}).get("transcribe"))
+            written_statuses.append(data.get("transcribe", {}).get("status"))
             # Call the real implementation to actually write the file
             json_path = source_path.with_name(source_path.name + ".json")
             json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1923,9 +1954,9 @@ class TestTranscribeCommand:
         # Verify final JSON state
         json_path = tmp_data_dir / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert data["status"]["transcribe"] == "complete"
-        assert data["transcript"] == "This is a transcript."
-        assert "completed_at" in data
+        assert data["transcribe"]["status"] == "complete"
+        assert data["content"] == "This is a transcript."
+        assert data["transcribe"]["end_time"] is not None
 
 
 class TestSummarizeCommand:
@@ -1956,7 +1987,8 @@ class TestSummarizeCommand:
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "title": "Test",
                     "description": "",
                     "filename": "lecture.mp4",
@@ -1964,8 +1996,7 @@ class TestSummarizeCommand:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "Existing transcript",
-                    "processing_date": 1728931200,
+                    "content": "Existing transcript",
                 }
             )
         )
@@ -1990,7 +2021,8 @@ class TestSummarizeCommand:
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "title": "Test",
                     "description": "",
                     "filename": "lecture.mp4",
@@ -1998,8 +2030,7 @@ class TestSummarizeCommand:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "Existing transcript",
-                    "processing_date": 1728931200,
+                    "content": "Existing transcript",
                 }
             )
         )
@@ -2024,7 +2055,8 @@ class TestSummarizeCommand:
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "title": "Test",
                     "description": "",
                     "filename": "lecture.mp4",
@@ -2032,8 +2064,7 @@ class TestSummarizeCommand:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "",
-                    "processing_date": 1728931200,
+                    "content": "",
                 }
             )
         )
@@ -2051,7 +2082,8 @@ class TestSummarizeCommand:
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "title": "Test",
                     "description": "",
                     "filename": "lecture.mp4",
@@ -2059,8 +2091,7 @@ class TestSummarizeCommand:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "Existing transcript",
-                    "processing_date": 1728931200,
+                    "content": "Existing transcript",
                 }
             )
         )
@@ -2079,8 +2110,8 @@ class TestSummarizeCommand:
         json_path = tmp_data_dir / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
         assert data["summary"] == "Key takeaways."
-        assert data["description"] == "Key takeaways."
-        assert data["status"]["summarize"] == "complete"
+        assert data["description"] == ""  # MP4: description stays blank
+        assert data["summarize"]["status"] == "complete"
 
     def test_summarize_force_flag_resummarizes_complete_files(self, runner, valid_env, tmp_data_dir):
         """Summarize --force should re-summarize files with status['summarize']='complete'."""
@@ -2088,17 +2119,17 @@ class TestSummarizeCommand:
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": "complete"},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "Test",
-                    "description": "Old summary",
+                    "description": "",
                     "filename": "lecture.mp4",
                     "filepath": "lecture.mp4",
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "Existing transcript",
+                    "content": "Existing transcript",
                     "summary": "Old summary",
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2125,7 +2156,8 @@ class TestSummarizeCommand:
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "title": "Test",
                     "description": "",
                     "filename": "lecture.mp4",
@@ -2133,8 +2165,7 @@ class TestSummarizeCommand:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "Existing transcript",
-                    "processing_date": 1728931200,
+                    "content": "Existing transcript",
                 }
             )
         )
@@ -2143,7 +2174,7 @@ class TestSummarizeCommand:
         written_statuses: list[str] = []
 
         def track_write(data, source_path):
-            written_statuses.append(data.get("status", {}).get("summarize"))
+            written_statuses.append(data.get("summarize", {}).get("status"))
             # Call the real implementation to actually write the file
             json_path = source_path.with_name(source_path.name + ".json")
             json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2171,9 +2202,9 @@ class TestSummarizeCommand:
         # Verify final JSON state
         json_path = tmp_data_dir / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert data["status"]["summarize"] == "complete"
+        assert data["summarize"]["status"] == "complete"
         assert data["summary"] == "Key takeaways."
-        assert data["description"] == "Key takeaways."
+        assert data["description"] == ""  # MP4: description stays blank
 
     def test_summarize_outputs_token_counts(self, runner, valid_env, tmp_data_dir):
         """Summarize command should output token counts from the LLM response."""
@@ -2181,7 +2212,8 @@ class TestSummarizeCommand:
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "title": "Test",
                     "description": "",
                     "filename": "lecture.mp4",
@@ -2189,8 +2221,7 @@ class TestSummarizeCommand:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "Existing transcript",
-                    "processing_date": 1728931200,
+                    "content": "Existing transcript",
                 }
             )
         )
@@ -2218,7 +2249,8 @@ class TestSummarizeCommand:
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "title": "Test",
                     "description": "",
                     "filename": "lecture.mp4",
@@ -2226,8 +2258,7 @@ class TestSummarizeCommand:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "Existing transcript",
-                    "processing_date": 1728931200,
+                    "content": "Existing transcript",
                 }
             )
         )
@@ -2251,12 +2282,12 @@ class TestSummarizeCommand:
         assert "Summarized 5 words." in result.output
 
 
-class TestExtractMetadataCommand:
-    """Tests for the extract-metadata command (T5.9)."""
+class TestExtractCommand:
+    """Tests for the extract command (T5.9)."""
 
-    def test_extract_metadata_help(self, runner):
-        """The extract-metadata command should have help text."""
-        result = runner.invoke(app, ["extract-metadata", "--help"])
+    def test_extract_help(self, runner):
+        """The extract command should have help text."""
+        result = runner.invoke(app, ["extract", "--help"])
         assert result.exit_code == 0
         assert "--data-dir" in result.output
         assert "--dry-run" in result.output
@@ -2264,17 +2295,17 @@ class TestExtractMetadataCommand:
         assert "--file" in result.output
         assert "--force" in result.output
 
-    def test_extract_metadata_no_files(self, runner, valid_env, tmp_data_dir):
-        """Extract-metadata should report no files when directory is empty."""
+    def test_extract_no_files(self, runner, valid_env, tmp_data_dir):
+        """Extract should report no files when directory is empty."""
         result = runner.invoke(
             app,
-            ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+            ["extract", "--data-dir", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
         assert "No PDF/HTML files need metadata extraction." in result.output
 
-    def test_extract_metadata_dry_run(self, runner, valid_env, tmp_data_dir):
-        """Extract-metadata --dry-run should list files without processing."""
+    def test_extract_dry_run(self, runner, valid_env, tmp_data_dir):
+        """Extract --dry-run should list files without processing."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
 
         with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
@@ -2283,7 +2314,7 @@ class TestExtractMetadataCommand:
 
             result = runner.invoke(
                 app,
-                ["extract-metadata", "--data-dir", str(tmp_data_dir), "--dry-run"],
+                ["extract", "--data-dir", str(tmp_data_dir), "--dry-run"],
             )
 
         assert result.exit_code == 0
@@ -2291,8 +2322,8 @@ class TestExtractMetadataCommand:
         assert "doc.pdf" in result.output
         mock_extractor.extract.assert_not_called()
 
-    def test_extract_metadata_processes_pdf(self, runner, valid_env, tmp_data_dir):
-        """Extract-metadata should process PDF files without status['extract']='complete'."""
+    def test_extract_processes_pdf(self, runner, valid_env, tmp_data_dir):
+        """Extract should process PDF files without status['extract']='complete'."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
 
         with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
@@ -2308,15 +2339,15 @@ class TestExtractMetadataCommand:
 
             result = runner.invoke(
                 app,
-                ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+                ["extract", "--data-dir", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
         assert "Found 1 PDF/HTML file(s)" in result.output
         mock_extractor.extract.assert_called_once()
 
-    def test_extract_metadata_processes_html(self, runner, valid_env, tmp_data_dir):
-        """Extract-metadata should process HTML files without status['extract']='complete'."""
+    def test_extract_processes_html(self, runner, valid_env, tmp_data_dir):
+        """Extract should process HTML files without status['extract']='complete'."""
         (tmp_data_dir / "page.html").write_bytes(b"<html><title>Test</title></html>")
 
         with mock.patch("local_feed_generator.services.extractors.HTMLExtractor") as MockExtractor:
@@ -2332,20 +2363,20 @@ class TestExtractMetadataCommand:
 
             result = runner.invoke(
                 app,
-                ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+                ["extract", "--data-dir", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
         assert "Found 1 PDF/HTML file(s)" in result.output
         mock_extractor.extract.assert_called_once()
 
-    def test_extract_metadata_skips_files_with_title(self, runner, valid_env, tmp_data_dir):
-        """Extract-metadata should skip files that already have status['extract']='complete'."""
+    def test_extract_skips_files_with_title(self, runner, valid_env, tmp_data_dir):
+        """Extract should skip files that already have extract status='complete'."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "Existing Title",
                     "description": "",
                     "filename": "doc.pdf",
@@ -2353,20 +2384,19 @@ class TestExtractMetadataCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
 
         result = runner.invoke(
             app,
-            ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+            ["extract", "--data-dir", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
         assert "No PDF/HTML files need metadata extraction." in result.output
 
-    def test_extract_metadata_writes_to_json(self, runner, valid_env, tmp_data_dir):
-        """Extract-metadata should write extracted data to JSON metadata."""
+    def test_extract_writes_to_json(self, runner, valid_env, tmp_data_dir):
+        """Extract should write extracted data to JSON metadata."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
 
         with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
@@ -2382,7 +2412,7 @@ class TestExtractMetadataCommand:
 
             result = runner.invoke(
                 app,
-                ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+                ["extract", "--data-dir", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -2392,15 +2422,15 @@ class TestExtractMetadataCommand:
         assert data["title"] == "PDF Title"
         assert data["description"] == "PDF Description"
         assert data["filetype"] == "pdf"
-        assert data["status"]["extract"] == "complete"
+        assert data["extract"]["status"] == "complete"
 
-    def test_extract_metadata_force_flag_reprocesses_complete_files(self, runner, valid_env, tmp_data_dir):
-        """Extract-metadata --force should re-extract files with status['extract']='complete'."""
+    def test_extract_force_flag_reprocesses_complete_files(self, runner, valid_env, tmp_data_dir):
+        """Extract --force should re-extract files with extract status='complete'."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "Existing Title",
                     "description": "",
                     "filename": "doc.pdf",
@@ -2408,7 +2438,6 @@ class TestExtractMetadataCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2426,24 +2455,24 @@ class TestExtractMetadataCommand:
 
             result = runner.invoke(
                 app,
-                ["extract-metadata", "--data-dir", str(tmp_data_dir), "--force"],
+                ["extract", "--data-dir", str(tmp_data_dir), "--force"],
             )
 
         assert result.exit_code == 0
         assert "Found 1 PDF/HTML file(s)" in result.output
         mock_extractor.extract.assert_called_once()
 
-    def test_extract_metadata_sets_in_progress_before_and_complete_after(
+    def test_extract_sets_in_progress_before_and_complete_after(
         self, runner, valid_env, tmp_data_dir
     ):
-        """Extract-metadata should set status to 'in_progress' before extraction, then 'complete' after."""
+        """Extract should set status to 'in_progress' before extraction, then 'complete' after."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
 
         # Track the status values written at each _write_json_metadata call.
         written_statuses: list[str] = []
 
         def track_write(data, source_path):
-            written_statuses.append(data.get("status", {}).get("extract"))
+            written_statuses.append(data.get("extract", {}).get("status"))
             # Call the real implementation to actually write the file
             json_path = source_path.with_name(source_path.name + ".json")
             json_path.parent.mkdir(parents=True, exist_ok=True)
@@ -2465,7 +2494,7 @@ class TestExtractMetadataCommand:
             with mock.patch("local_feed_generator.cli._write_json_metadata", side_effect=track_write):
                 result = runner.invoke(
                     app,
-                    ["extract-metadata", "--data-dir", str(tmp_data_dir)],
+                    ["extract", "--data-dir", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 0
@@ -2477,9 +2506,9 @@ class TestExtractMetadataCommand:
         # Verify final JSON state
         json_path = tmp_data_dir / "doc.pdf.json"
         data = json.loads(json_path.read_text())
-        assert data["status"]["extract"] == "complete"
+        assert data["extract"]["status"] == "complete"
         assert data["title"] == "PDF Title"
-        assert "completed_at" in data
+        assert data["extract"]["end_time"] is not None
 
 
 class TestJsonFinalizationIntegration:
@@ -2491,7 +2520,7 @@ class TestJsonFinalizationIntegration:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "in_progress"},
+                    "extract": {"status": "in_progress", "input_size": 0, "output_size": 0},
                     "title": "PDF Title",
                     "description": "PDF Description",
                     "filename": "doc.pdf",
@@ -2499,7 +2528,6 @@ class TestJsonFinalizationIntegration:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2512,8 +2540,8 @@ class TestJsonFinalizationIntegration:
         assert result.exit_code == 0
         json_path = tmp_data_dir / "doc.pdf.json"
         data = json.loads(json_path.read_text())
-        assert data["status"]["extract"] == "complete"
-        assert "completed_at" in data
+        assert data["extract"]["status"] == "complete"
+        assert data["extract"]["end_time"] is not None
 
     def test_feeds_finalizes_incomplete_mp4_metadata(self, runner, valid_env, tmp_data_dir):
         """Feeds should finalize incomplete MP4 metadata before generating feeds."""
@@ -2521,7 +2549,8 @@ class TestJsonFinalizationIntegration:
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "title": "Test",
                     "description": "",
                     "filename": "lecture.mp4",
@@ -2529,9 +2558,8 @@ class TestJsonFinalizationIntegration:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "Some transcript content",
+                    "content": "Some transcript content",
                     "summary": "Some summary",
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2549,9 +2577,9 @@ class TestJsonFinalizationIntegration:
         assert result.exit_code == 0
         json_path = tmp_data_dir / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert data["status"]["transcribe"] == "complete"
-        assert data["status"]["summarize"] == "complete"
-        assert "completed_at" in data
+        assert data["transcribe"]["status"] == "complete"
+        assert data["summarize"]["status"] == "complete"
+        assert data["summarize"]["end_time"] is not None
 
     def test_feeds_skips_finalization_for_complete_files(self, runner, valid_env, tmp_data_dir):
         """Feeds should not re-finalize files that are already feed-eligible."""
@@ -2560,7 +2588,7 @@ class TestJsonFinalizationIntegration:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "Existing Title",
                     "description": "Existing Description",
                     "filename": "doc.pdf",
@@ -2568,7 +2596,6 @@ class TestJsonFinalizationIntegration:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2587,7 +2614,7 @@ class TestJsonFinalizationIntegration:
         # File should still be valid and feed-eligible
         json_path = tmp_data_dir / "doc.pdf.json"
         data = json.loads(json_path.read_text())
-        assert data["status"]["extract"] == "complete"
+        assert data["extract"]["status"] == "complete"
 
     def test_feeds_generates_title_for_mp4_without_title(self, runner, valid_env, tmp_data_dir):
         """Feeds finalization should generate a title for MP4 files when missing."""
@@ -2595,7 +2622,8 @@ class TestJsonFinalizationIntegration:
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "lecture.mp4",
@@ -2603,9 +2631,8 @@ class TestJsonFinalizationIntegration:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "Some transcript content",
+                    "content": "Some transcript content",
                     "summary": "Some summary",
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2637,7 +2664,7 @@ class TestJsonFinalizationIntegration:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "in_progress"},
+                    "extract": {"status": "in_progress", "input_size": 0, "output_size": 0},
                     "title": "PDF Title",
                     "description": "PDF Description",
                     "filename": "doc.pdf",
@@ -2645,7 +2672,6 @@ class TestJsonFinalizationIntegration:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2683,7 +2709,7 @@ class TestTitleCommand:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "Proper Title",
                     "description": "Desc",
                     "filename": "doc.pdf",
@@ -2691,7 +2717,6 @@ class TestTitleCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2709,7 +2734,7 @@ class TestTitleCommand:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "doc.pdf",
@@ -2717,7 +2742,6 @@ class TestTitleCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2742,7 +2766,7 @@ class TestTitleCommand:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "doc.pdf",
@@ -2750,7 +2774,6 @@ class TestTitleCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2775,7 +2798,7 @@ class TestTitleCommand:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "doc.pdf",
@@ -2783,7 +2806,6 @@ class TestTitleCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2809,7 +2831,7 @@ class TestTitleCommand:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "A Proper Title",
                     "description": "",
                     "filename": "doc.pdf",
@@ -2817,7 +2839,6 @@ class TestTitleCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2843,7 +2864,7 @@ class TestTitleCommand:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "Existing Title",
                     "description": "",
                     "filename": "doc.pdf",
@@ -2851,7 +2872,6 @@ class TestTitleCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2876,7 +2896,8 @@ class TestTitleCommand:
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": "complete"},
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "Summary",
                     "filename": "lecture.mp4",
@@ -2884,9 +2905,8 @@ class TestTitleCommand:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1024,
-                    "transcript": "This is the transcript content.",
+                    "content": "This is the transcript content.",
                     "summary": "Summary",
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2913,7 +2933,7 @@ class TestTitleCommand:
         (tmp_data_dir / "page.html.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "page.html",
@@ -2921,7 +2941,6 @@ class TestTitleCommand:
                     "filetype": "html",
                     "date": 1728931200,
                     "size": 512,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2945,7 +2964,7 @@ class TestTitleCommand:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "doc.pdf",
@@ -2953,7 +2972,6 @@ class TestTitleCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -2961,7 +2979,7 @@ class TestTitleCommand:
         (tmp_data_dir / "other.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "other.pdf",
@@ -2969,7 +2987,6 @@ class TestTitleCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -3003,7 +3020,7 @@ class TestTitleCommand:
         (tmp_data_dir / "my_document.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "my document",  # filename stem with underscores replaced
                     "description": "",
                     "filename": "my_document.pdf",
@@ -3011,7 +3028,6 @@ class TestTitleCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -3047,7 +3063,7 @@ class TestTitleCommand:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "doc.pdf",
@@ -3055,7 +3071,6 @@ class TestTitleCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -3079,7 +3094,7 @@ class TestTitleCommand:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "doc.pdf",
@@ -3087,7 +3102,6 @@ class TestTitleCommand:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -3115,7 +3129,7 @@ class TestFindFilesNeedingTitle:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "doc.pdf",
@@ -3123,7 +3137,6 @@ class TestFindFilesNeedingTitle:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -3140,7 +3153,7 @@ class TestFindFilesNeedingTitle:
         (tmp_data_dir / "my_doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "my doc",  # filename stem with underscores replaced
                     "description": "",
                     "filename": "my_doc.pdf",
@@ -3148,7 +3161,6 @@ class TestFindFilesNeedingTitle:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -3164,7 +3176,7 @@ class TestFindFilesNeedingTitle:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "A Proper Title",
                     "description": "",
                     "filename": "doc.pdf",
@@ -3172,7 +3184,6 @@ class TestFindFilesNeedingTitle:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -3190,7 +3201,7 @@ class TestFindFilesNeedingTitle:
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "A Proper Title",
                     "description": "",
                     "filename": "doc.pdf",
@@ -3198,7 +3209,6 @@ class TestFindFilesNeedingTitle:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -3213,7 +3223,7 @@ class TestFindFilesNeedingTitle:
         (tmp_data_dir / "orphan.pdf.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "orphan.pdf",
@@ -3221,7 +3231,6 @@ class TestFindFilesNeedingTitle:
                     "filetype": "pdf",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -3237,7 +3246,7 @@ class TestFindFilesNeedingTitle:
         (tmp_data_dir / "podcast.xml.json").write_text(
             json.dumps(
                 {
-                    "status": {"extract": "complete"},
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "",
                     "description": "",
                     "filename": "podcast.xml",
@@ -3245,7 +3254,6 @@ class TestFindFilesNeedingTitle:
                     "filetype": "html",
                     "date": 1728931200,
                     "size": 1024,
-                    "processing_date": 1728931200,
                 }
             )
         )
@@ -3260,11 +3268,11 @@ class TestGetContentForTitle:
     """Tests for the _get_content_for_title helper function."""
 
     def test_get_content_for_title_mp4_uses_transcript(self, valid_env):
-        """Should use transcript from metadata for MP4 files."""
+        """Should use content from metadata for MP4 files."""
         from local_feed_generator.cli import _get_content_for_title
 
         file_path = Path("/fake/path/lecture.mp4")
-        metadata_dict = {"transcript": "This is the transcript."}
+        metadata_dict = {"content": "This is the transcript."}
         result = _get_content_for_title(file_path, metadata_dict)
         assert result == "This is the transcript."
 

@@ -122,7 +122,7 @@ uv run local-feed-generator transcribe --data-dir ./data --dry-run
 uv run local-feed-generator summarize --data-dir ./data
 
 # Extract metadata from PDF/HTML files
-uv run local-feed-generator extract-metadata --data-dir ./data
+uv run local-feed-generator extract --data-dir ./data
 ```
 
 #### Subcommands
@@ -131,9 +131,9 @@ uv run local-feed-generator extract-metadata --data-dir ./data
 - **`watch`**: Watch for changes and process incrementally
 - **`feeds`**: Generate RSS/Atom feeds from existing JSON metadata; finalizes JSON by computing feed eligibility
 - **`validate`**: Validate all metadata files and finalize incomplete ones by setting step completion statuses
-- **`transcribe`**: Transcribe MP4 files to markdown text
+- **`transcribe`**: Transcribe MP4 files using local or remote mode
 - **`summarize`**: Generate summaries from existing transcripts
-- **`extract-metadata`**: Extract metadata from PDF/HTML files
+- **`extract`**: Extract metadata from PDF/HTML files
 
 #### Flags
 
@@ -141,7 +141,7 @@ uv run local-feed-generator extract-metadata --data-dir ./data
 - **`--config-file <path>`** (All commands): Path to a `.env`-style configuration file.
 - **`--file <path>`** (All commands): Process only the specified file instead of scanning the entire directory. Takes precedence over `--data-dir`.
 - **`--force`** (All commands): Force execution even if the step appears already complete.
-- **`--dry-run`** (transcribe, summarize, extract-metadata): Show which files would be processed without making any changes.
+- **`--dry-run`** (transcribe, summarize, extract): Show which files would be processed without making any changes.
 
 ### 3.2 Environment Configuration
 
@@ -180,48 +180,94 @@ Each processed file has a corresponding `.json` file with the same name in the s
 
 ```json
 {
-  "title": "string",
-  "description": "string",
+  "version": "2.0",
+  "title": "My Audio File",
+  "description": "",
+  "summary": "Key takeaways from LLM...",
+  "content": "Full transcript...",
   "filename": "lecture.mp4",
   "filepath": "videos/lecture.mp4",
   "filetype": "mp4|pdf|html",
   "date": 1710000000,
+  "duration": 45.5,
+  "creation_time": "2024-01-01T00:00:00Z",
   "size": 12345678,
-  "transcript": "Markdown transcript...",
-  "summary": "Key takeaways...",
-  "processing_date": 1710000000,
-  "completed_at": 1710000000,
-  "started_at": 1710000000,
-  "status": {
-    "transcribe": null | "in_progress" | "complete",
-    "summarize": null | "in_progress" | "complete",
-    "extract": null | "in_progress" | "complete"
+  
+  "transcribe": {
+    "status": null | "in_progress" | "complete",
+    "start_time": 1710000000,
+    "end_time": 1710000005,
+    "input_size": 12345678,
+    "output_size": 456789,
+    "words": 452,
+    "model": "large-v3-turbo",
+    "input_tokens": null,
+    "output_tokens": null
   },
-  "feed_eligible": true | false,  // computed
+  
+  "summarize": {
+    "status": null | "in_progress" | "complete",
+    "start_time": 1710000005,
+    "end_time": 1710000010,
+    "input_size": 456789,
+    "output_size": 1997,
+    "words": 345,
+    "model": "mistralai/Mistral-7B-Instruct",
+    "input_tokens": 890,
+    "output_tokens": 123
+  },
+  
+  "extract": null | {
+    "status": null | "in_progress" | "complete",
+    "start_time": 1710000000,
+    "end_time": 1710000005,
+    "input_size": 12345678,
+    "output_size": 456789,
+    "model": "pypdf"
+  },
+  
+  "feed_eligible": true | false,
   "error": "string (optional)"
 }
 ```
 
 **Field Descriptions:**
-- `status`: Unified map tracking processing steps; entries with all required steps complete are feed eligible. Keys: "transcribe" (MP4), "summarize" (MP4), "extract" (PDF/HTML). Values: null, "in_progress", or "complete".
+- `transcribe`, `summarize`, `extract`: Step maps tracking processing steps. Each contains a `status` field (null, "in_progress", "complete") and detailed timing/metrics. For MP4 files, `transcribe` and `summarize` are populated; for PDF/HTML files, `extract` is populated.
 - `title`: Human-readable title (LLM-generated if not in source metadata). Underscores are automatically replaced with spaces.
-- `description`: For audio files, this is the LLM-generated summary
+- `description`: For MP4 files, this is blank. For PDF/HTML files, this contains extracted metadata.
+- `summary`: For MP4 files, this contains LLM-generated key takeaways. For PDF/HTML files, this is null.
+- `content`: For MP4 files, this contains the full transcript. For PDF/HTML files, this is null.
 - `filepath`: Relative path from `data/` directory root
-- `date`, `processing_date`, `completed_at`, `started_at`: All stored as UNIX epoch timestamps (integer seconds since 1970-01-01T00:00:00Z)
+- `date`: Publication/creation date stored as UNIX epoch timestamp (integer seconds since 1970-01-01T00:00:00Z)
+- `creation_time`: ISO8601 formatted creation timestamp
+- `duration`: For MP4 files, duration in seconds (float). Not applicable for PDF/HTML files.
 - `size`: File size in bytes (for podcast enclosure `length`)
-- `transcript`: Only for MP4 files; markdown format, no timestamps
-- `summary`: Only for MP4 files; key takeaways from LLM
 - `error`: Optional; contains error message if any step failed
+- `version`: Schema version identifier (currently "2.0")
 
 **Note:** The absolute URL for feed enclosures is computed when generating feeds by combining `BASE_URL` + `filepath`.
 
-**Backwards Compatibility:** When loading JSON files with deprecated fields (`transcribe_status`, `summarize_status`, `extract_status`, `stage`, or string `status`), a warning is printed to stderr. Deprecated fields are ignored (not migrated).
+**Feed Eligibility Rules:**
+- **MP4 files**: `feed_eligible = (transcribe.status == "complete" AND summarize.status == "complete")`
+- **PDF/HTML files**: `feed_eligible = (extract.status == "complete")`
+- Items with `feed_eligible = false` are excluded from feeds
+
+**Backwards Compatibility:** When loading JSON files with deprecated fields (`transcribe_status`, `summarize_status`, `extract_status`, `stage`, string `status`, `transcript`, `processing_date`, `completed_at`, `started_at`), a warning is printed to stderr. Deprecated fields are ignored (not migrated).
 
 ### 3.4 Feed Output
 
 Two feed files are generated in the `data/` directory root:
 - `podcast.xml` (or `podcast.atom`) - Contains all MP4 files with enclosures
 - `articles.xml` (or `articles.atom`) - Contains all PDF/HTML files
+
+For podcast feed items:
+- Title from metadata
+- Description from `summary` field (LLM-generated key takeaways)
+- Enclosure: URL, type="audio/mp4", length (file size from `size` field)
+
+For articles feed items:
+- Title from metadata
+- Description from `description` field (extracted metadata)
 
 **Feed Item Sorting:** Folder name (ascending), then filename (ascending)
 
@@ -442,15 +488,25 @@ data/
 - Converts MP4 audio to markdown text
 - Uses faster-whisper with CUDA GPU acceleration for highest quality
 - No timestamps in output (clean transcript only)
+- Tracks processing in the `transcribe` step map
 
 #### Summarization Service
 - Generates key takeaways from audio transcripts
 - Uses configured OpenAI-compatible LLM endpoint
 - Can generate titles when source metadata is unavailable
+- Tracks processing in the `summarize` step map
+
+#### Extractors Service
+- Extracts metadata from PDF files using PyPDF
+- Extracts metadata from HTML files using BeautifulSoup
+- Generates titles from content using LLM if metadata unavailable
+- Tracks processing in the `extract` step map
 
 #### Feed Generator
 - Reads all JSON metadata files from data directory
-- Filters entries by feed_eligible computed property (which checks the unified status map)
+- Filters entries by feed_eligible computed property (which checks the step map status values)
+- For MP4: Uses `summary` field for feed item descriptions
+- For PDF/HTML: Uses `description` field for feed item descriptions
 - Generates podcast feed for MP4 files with enclosures
 - Generates articles feed for PDF/HTML files
 - Sorts items by folder name, then filename
@@ -475,26 +531,33 @@ flowchart TD
     F --> G{File Type?}
 
      G -->|MP4| H1[Transcribe to markdown\n(local or remote)]
-     H1 --> I1[Summarize transcript]
-    I1 --> J1[Extract/Generate title]
+     H1 --> I1[Store transcript in content field]
+     I1 --> J1[Summarize transcript]
+     J1 --> K1[Store summary in summary field]
+     K1 --> L1[Set description to blank]
+     L1 --> M1[Extract/Generate title]
 
     G -->|PDF| H2[Extract title from metadata]
     H2 -->|No title| J2[Generate title via LLM]
+    H2 --> K2[Store metadata in description field]
+    K2 --> L2[Set summary and content to null]
 
     G -->|HTML| H3[Extract title from HTML]
     H3 -->|No title| J3[Generate title via LLM]
+    H3 --> K3[Store metadata in description field]
+    K3 --> L3[Set summary and content to null]
 
-    J1 --> K[Generate JSON metadata]
-    J2 --> K
-    J3 --> K
+    M1 --> N[Generate JSON metadata with step maps]
+    L2 --> N
+    L3 --> N
 
-    K --> L[Write .json file]
+    N --> O[Write .json file]
 
-    F -->|Error| M[Write error state to .json]
+    F -->|Error| P[Write error state to .json]
 
-    L --> N[Feed Generator rebuilds feeds]
-    M --> N
-    N --> O[podcast.xml & articles.xml updated]
+    O --> Q[Feed Generator rebuilds feeds]
+    P --> Q
+    Q --> R[podcast.xml & articles.xml updated]
 ```
 
 ### 6.2 Incremental Processing Flow

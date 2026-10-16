@@ -121,11 +121,10 @@ class TestCreateErrorMetadata:
         assert metadata["error"] == "disk full"
 
     def test_includes_processing_date(self):
-        """Error metadata should include a processing_date timestamp."""
+        """Error metadata should not include processing_date field (removed in schema)."""
         exc = ProcessingError("failed")
         metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
-        assert "processing_date" in metadata
-        assert metadata["processing_date"] is not None
+        assert "processing_date" not in metadata
 
     def test_includes_date(self):
         """Error metadata should include a date timestamp."""
@@ -183,7 +182,6 @@ class TestCreateErrorMetadata:
         exc = ProcessingError("failed")
         metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
         expected_fields = {
-            "status",
             "title",
             "description",
             "filename",
@@ -191,10 +189,12 @@ class TestCreateErrorMetadata:
             "filetype",
             "date",
             "size",
-            "processing_date",
             "error",
         }
         assert expected_fields.issubset(set(metadata.keys()))
+        # Ensure status and processing_date are not present (removed from schema)
+        assert "status" not in metadata
+        assert "processing_date" not in metadata
 
 
 class TestLogError:

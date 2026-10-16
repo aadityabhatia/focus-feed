@@ -1,11 +1,19 @@
-"""Tests for the PDF and HTML metadata extractors."""
+"""Tests for the PDF, HTML, and audio metadata extractors."""
 
 from datetime import UTC, datetime
 import json
 from pathlib import Path
+import subprocess
 from typing import Any
+from unittest import mock
 
-from local_feed_generator.services.extractors import HTMLExtractor, PDFExtractor, _clean_title
+from local_feed_generator.services.extractors import (
+    HTMLExtractor,
+    PDFExtractor,
+    _clean_title,
+    _sanitize_content,
+    get_audio_metadata,
+)
 from pypdf import PdfWriter
 
 # ---------------------------------------------------------------------------
@@ -40,6 +48,67 @@ def create_test_pdf(
         # PDF date format: D:YYYYMMDDHHMMSS
         metadata["/CreationDate"] = creation_date.strftime("D:%Y%m%d%H%M%S")
 
+    if metadata:
+        writer.add_metadata(metadata)
+
+    with open(path, "wb") as f:
+        writer.write(f)
+
+
+def create_test_pdf_with_text(
+    path: Path,
+    text: str,
+    title: str | None = "Test PDF Title",
+    author: str | None = "Test Author",
+) -> None:
+    """Create a PDF file with text content and optional metadata.
+
+    Uses pypdf's PdfWriter to create a page with a content stream
+    containing the given text so that ``extract_text()`` can read it back.
+
+    Args:
+        path: Where to write the PDF file.
+        text: The text content to embed in the PDF page.
+        title: Title to embed in PDF metadata, or None to omit.
+        author: Author to embed in PDF metadata, or None to omit.
+    """
+    from pypdf import PageObject
+    from pypdf.generic import (
+        DecodedStreamObject,
+        DictionaryObject,
+        NameObject,
+    )
+
+    writer = PdfWriter()
+    page = PageObject.create_blank_page(width=200, height=200)
+
+    # Build a minimal content stream with the text.
+    content = f"BT /F1 12 Tf 50 700 Td ({text}) Tj ET".encode("latin-1")
+    stream = DecodedStreamObject()
+    stream.set_data(content)
+    page[NameObject("/Contents")] = stream
+
+    # Add a Helvetica font resource so text is extractable.
+    font_dict = DictionaryObject({
+        NameObject("/Type"): NameObject("/Font"),
+        NameObject("/Subtype"): NameObject("/Type1"),
+        NameObject("/BaseFont"): NameObject("/Helvetica"),
+    })
+    font_indirect = writer._add_object(font_dict)
+    resources = DictionaryObject({
+        NameObject("/Font"): DictionaryObject({
+            NameObject("/F1"): font_indirect,
+        }),
+    })
+    page[NameObject("/Resources")] = resources
+
+    writer.add_page(page)
+
+    metadata: dict[str, Any] = {}
+    if title is not None:
+        metadata["/Title"] = title
+    if author is not None:
+        metadata["/Author"] = author
     if metadata:
         writer.add_metadata(metadata)
 
@@ -127,6 +196,53 @@ class TestCleanTitle:
     def test_clean_title_only_underscores(self):
         """String of only underscores should become spaces."""
         assert _clean_title("___") == "   "
+
+
+class TestSanitizeContent:
+    """Tests for the _sanitize_content helper function."""
+
+    def test_sanitize_removes_null_bytes(self):
+        """Null bytes should be removed from content."""
+        assert _sanitize_content("hello\x00world") == "helloworld"
+
+    def test_sanitize_removes_control_chars(self):
+        """Control characters (except tab/newline/CR) should be removed."""
+        # 0x01 (SOH), 0x1d (GS), 0x03 (ETX) should be removed
+        assert _sanitize_content("hello\x01world\x1dtest\x03") == "helloworldtest"
+
+    def test_sanitize_preserves_tab_newline_cr(self):
+        """Tab, newline, and carriage return should be preserved."""
+        assert _sanitize_content("hello\tworld\nfoo\rbar") == "hello\tworld\nfoo\rbar"
+
+    def test_sanitize_removes_del_char(self):
+        """DEL character (0x7f) should be removed."""
+        assert _sanitize_content("hello\x7fworld") == "helloworld"
+
+    def test_sanitize_none_returns_none(self):
+        """None input should return None."""
+        assert _sanitize_content(None) is None
+
+    def test_sanitize_empty_string(self):
+        """Empty string should return empty string."""
+        assert _sanitize_content("") == ""
+
+    def test_sanitize_no_control_chars(self):
+        """Normal text should be unchanged."""
+        assert _sanitize_content("Hello, World! This is a test.") == "Hello, World! This is a test."
+
+    def test_sanitize_preserves_unicode(self):
+        """Unicode characters should be preserved."""
+        assert _sanitize_content("Hello \u2014 World \u00e9") == "Hello \u2014 World \u00e9"
+
+    def test_sanitize_real_pdf_binary_content(self):
+        """Content with binary garbage from PDFs should be cleaned."""
+        # Simulate the binary content found in C102RF_FM_5-0 PDF
+        dirty = "solved.\nPIN\x1d 082115\x10000\x03"
+        result = _sanitize_content(dirty)
+        assert "\x1d" not in result
+        assert "\x10" not in result
+        assert "\x03" not in result
+        assert result == "solved.\nPIN 082115000"
 
 
 # ---------------------------------------------------------------------------
@@ -264,7 +380,7 @@ class TestPDFExtractor:
         extractor = PDFExtractor()
         result = extractor.extract(pdf_path)
 
-        required_keys = {"title", "description", "date", "size", "filetype"}
+        required_keys = {"title", "description", "date", "size", "filetype", "content"}
         assert required_keys.issubset(set(result.keys()))
 
     def test_extract_description_is_none_when_no_author(self, tmp_path):
@@ -296,6 +412,37 @@ class TestPDFExtractor:
         result = extractor.extract(pdf_path)
 
         assert result["title"] == "my document"
+
+    def test_extract_content_from_pdf_with_text(self, tmp_path):
+        """PDF with text content should extract plaintext into the content field."""
+        pdf_path = tmp_path / "with_text.pdf"
+        create_test_pdf_with_text(pdf_path, text="Hello World from PDF")
+
+        extractor = PDFExtractor()
+        result = extractor.extract(pdf_path)
+
+        assert result["content"] is not None
+        assert "Hello World from PDF" in result["content"]
+
+    def test_extract_content_is_none_for_pdf_without_text(self, tmp_path):
+        """PDF with no text content should have content=None."""
+        pdf_path = tmp_path / "no_text.pdf"
+        create_test_pdf(pdf_path, title="No Text")
+
+        extractor = PDFExtractor()
+        result = extractor.extract(pdf_path)
+
+        assert result["content"] is None
+
+    def test_extract_content_is_none_for_corrupted_pdf(self, tmp_path):
+        """Corrupted PDF should have content=None (graceful fallback)."""
+        pdf_path = tmp_path / "corrupted.pdf"
+        pdf_path.write_bytes(b"not a real pdf file content")
+
+        extractor = PDFExtractor()
+        result = extractor.extract(pdf_path)
+
+        assert result["content"] is None
 
 
 # ---------------------------------------------------------------------------
@@ -406,6 +553,33 @@ class TestHTMLExtractor:
 
         assert result["description"] is None
 
+    def test_extract_returns_all_required_keys(self, tmp_path):
+        """Result dict should contain all required keys."""
+        html_path = tmp_path / "keys.html"
+        create_test_html(html_path, title="Keys Test")
+
+        extractor = HTMLExtractor()
+        result = extractor.extract(html_path)
+
+        required_keys = {"title", "description", "date", "size", "filetype", "content"}
+        assert required_keys.issubset(set(result.keys()))
+
+    def test_extract_minimal_html(self, tmp_path):
+        """Minimal HTML with only a title should work correctly."""
+        html_path = tmp_path / "minimal.html"
+        html_path.write_text(
+            "<!DOCTYPE html><html><head><title>Minimal</title></head><body></body></html>",
+            encoding="utf-8",
+        )
+
+        extractor = HTMLExtractor()
+        result = extractor.extract(html_path)
+
+        assert result["title"] == "Minimal"
+        assert result["description"] is None
+        assert result["filetype"] == "html"
+        assert result["size"] > 0
+
     def test_extract_date_from_pubdate_meta(self, tmp_path):
         """Date should be extracted from <meta name='pubdate'> when present."""
         html_path = tmp_path / "pubdate.html"
@@ -419,7 +593,7 @@ class TestHTMLExtractor:
         extractor = HTMLExtractor()
         result = extractor.extract(html_path)
 
-        parsed = datetime.fromisoformat(result["date"])
+        parsed = datetime.fromtimestamp(result["date"], tz=UTC)
         assert parsed.year == 2026
         assert parsed.month == 9
         assert parsed.day == 1
@@ -437,7 +611,7 @@ class TestHTMLExtractor:
         extractor = HTMLExtractor()
         result = extractor.extract(html_path)
 
-        parsed = datetime.fromisoformat(result["date"])
+        parsed = datetime.fromtimestamp(result["date"], tz=UTC)
         assert parsed.year == 2026
         assert parsed.month == 8
         assert parsed.day == 20
@@ -481,33 +655,6 @@ class TestHTMLExtractor:
         assert result["title"] == "String Path Test"
         assert result["filetype"] == "html"
 
-    def test_extract_returns_all_required_keys(self, tmp_path):
-        """Result dict should contain all required keys."""
-        html_path = tmp_path / "keys.html"
-        create_test_html(html_path, title="Keys Test")
-
-        extractor = HTMLExtractor()
-        result = extractor.extract(html_path)
-
-        required_keys = {"title", "description", "date", "size", "filetype"}
-        assert required_keys.issubset(set(result.keys()))
-
-    def test_extract_minimal_html(self, tmp_path):
-        """Minimal HTML with only a title should work correctly."""
-        html_path = tmp_path / "minimal.html"
-        html_path.write_text(
-            "<!DOCTYPE html><html><head><title>Minimal</title></head><body></body></html>",
-            encoding="utf-8",
-        )
-
-        extractor = HTMLExtractor()
-        result = extractor.extract(html_path)
-
-        assert result["title"] == "Minimal"
-        assert result["description"] is None
-        assert result["filetype"] == "html"
-        assert result["size"] > 0
-
     def test_extract_date_date_only_format(self, tmp_path):
         """Date in YYYY-MM-DD format should be parsed correctly."""
         html_path = tmp_path / "date_only.html"
@@ -520,7 +667,7 @@ class TestHTMLExtractor:
         extractor = HTMLExtractor()
         result = extractor.extract(html_path)
 
-        parsed = datetime.fromisoformat(result["date"])
+        parsed = datetime.fromtimestamp(result["date"], tz=UTC)
         assert parsed.year == 2026
         assert parsed.month == 10
         assert parsed.day == 14
@@ -537,7 +684,7 @@ class TestHTMLExtractor:
         extractor = HTMLExtractor()
         result = extractor.extract(html_path)
 
-        parsed = datetime.fromisoformat(result["date"])
+        parsed = datetime.fromtimestamp(result["date"], tz=UTC)
         assert parsed.year == 2026
         assert parsed.month == 10
         assert parsed.day == 14
@@ -569,6 +716,40 @@ class TestHTMLExtractor:
         result = extractor.extract(html_path)
 
         assert result["title"] == "my page"
+
+    def test_extract_content_from_html(self, tmp_path):
+        """HTML content should be extracted as plaintext (tags removed)."""
+        html_path = tmp_path / "content.html"
+        html_path.write_text(
+            "<html><head><title>Test</title></head>"
+            "<body><h1>Heading</h1><p>This is a paragraph.</p></body></html>",
+            encoding="utf-8",
+        )
+
+        extractor = HTMLExtractor()
+        result = extractor.extract(html_path)
+
+        assert result["content"] is not None
+        assert "Heading" in result["content"]
+        assert "This is a paragraph." in result["content"]
+        # Tags should be stripped
+        assert "<h1>" not in result["content"]
+        assert "<p>" not in result["content"]
+
+    def test_extract_content_none_for_malformed_html(self, tmp_path):
+        """Malformed HTML should still extract content if possible."""
+        html_path = tmp_path / "malformed.html"
+        html_path.write_text(
+            "<html><head><title>Broken",
+            encoding="utf-8",
+        )
+
+        extractor = HTMLExtractor()
+        result = extractor.extract(html_path)
+
+        # BeautifulSoup should still extract whatever text it can
+        assert result["content"] is not None
+        assert "Broken" in result["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -652,7 +833,7 @@ class TestMetadataCompatibility:
 
     def test_pdf_result_compatible_with_metadata(self, tmp_path):
         """PDF extractor output should be usable to create a Metadata object."""
-        from local_feed_generator.metadata import Metadata
+        from local_feed_generator.metadata import Metadata, StepMap
 
         pdf_path = tmp_path / "doc.pdf"
         create_test_pdf(pdf_path, title="Test Doc", author="Author Name")
@@ -661,7 +842,15 @@ class TestMetadataCompatibility:
         extracted = extractor.extract(pdf_path)
 
         metadata = Metadata(
-            extract_status="complete",
+            extract=StepMap(
+                status="complete",
+                input_size=extracted["size"],
+                output_size=(
+                    len(extracted["content"].encode("utf-8"))
+                    if extracted["content"]
+                    else 0
+                ),
+            ),
             title=extracted["title"],
             description=extracted["description"] or "",
             filename=pdf_path.name,
@@ -669,17 +858,18 @@ class TestMetadataCompatibility:
             filetype=extracted["filetype"],
             date=extracted["date"],
             size=extracted["size"],
-            processing_date=datetime.now(UTC),
+            content=extracted["content"],
         )
 
         assert metadata.title == "Test Doc"
         assert metadata.filetype == "pdf"
         assert metadata.size == extracted["size"]
+        assert metadata.content == extracted["content"]
         assert metadata.feed_eligible is True
 
     def test_html_result_compatible_with_metadata(self, tmp_path):
         """HTML extractor output should be usable to create a Metadata object."""
-        from local_feed_generator.metadata import Metadata
+        from local_feed_generator.metadata import Metadata, StepMap
 
         html_path = tmp_path / "page.html"
         create_test_html(
@@ -692,7 +882,15 @@ class TestMetadataCompatibility:
         extracted = extractor.extract(html_path)
 
         metadata = Metadata(
-            extract_status="complete",
+            extract=StepMap(
+                status="complete",
+                input_size=extracted["size"],
+                output_size=(
+                    len(extracted["content"].encode("utf-8"))
+                    if extracted["content"]
+                    else 0
+                ),
+            ),
             title=extracted["title"],
             description=extracted["description"] or "",
             filename=html_path.name,
@@ -700,12 +898,13 @@ class TestMetadataCompatibility:
             filetype=extracted["filetype"],
             date=extracted["date"],
             size=extracted["size"],
-            processing_date=datetime.now(UTC),
+            content=extracted["content"],
         )
 
         assert metadata.title == "Test Page"
         assert metadata.filetype == "html"
         assert metadata.description == "A test page description"
+        assert metadata.content == extracted["content"]
         assert metadata.feed_eligible is True
 
     def test_pdf_result_serializes_to_json(self, tmp_path):
@@ -735,3 +934,335 @@ class TestMetadataCompatibility:
         restored = json.loads(json_str)
         assert restored["title"] == "Serialize Test"
         assert restored["filetype"] == "html"
+
+
+# ---------------------------------------------------------------------------
+# get_audio_metadata tests
+# ---------------------------------------------------------------------------
+
+
+class TestGetAudioMetadata:
+    """Tests for the get_audio_metadata function."""
+
+    def test_returns_none_when_ffprobe_not_found(self, tmp_path):
+        """Should return None when ffprobe is not on PATH."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        with mock.patch("shutil.which", return_value=None):
+            result = get_audio_metadata(audio_path)
+
+        assert result is None
+
+    def test_returns_metadata_dict_when_ffprobe_succeeds(self, tmp_path):
+        """Should return a dict with expected keys when ffprobe succeeds."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        mock_probe_output = {
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "duration": "3600.500000",
+                "bit_rate": "128000",
+                "tags": {
+                    "creation_time": "2024-01-15T10:30:00.000000Z",
+                },
+            },
+            "streams": [
+                {
+                    "codec_type": "audio",
+                    "duration": "3600.500000",
+                    "bit_rate": "128000",
+                }
+            ],
+        }
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.Mock(
+                stdout=json.dumps(mock_probe_output),
+                stderr="",
+                returncode=0,
+            )
+            result = get_audio_metadata(audio_path)
+
+        assert result is not None
+        assert result["type"] == "mov,mp4,m4a,3gp,3g2,mj2"
+        assert result["duration"] == 3600.5
+        assert result["creation_time"] == "2024-01-15T10:30:00.000000Z"
+        assert result["bit_rate"] == 128000
+
+    def test_returns_none_on_subprocess_error(self, tmp_path):
+        """Should return None when ffprobe command fails."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.side_effect = subprocess.CalledProcessError(1, "ffprobe")
+            result = get_audio_metadata(audio_path)
+
+        assert result is None
+
+    def test_returns_none_on_json_decode_error(self, tmp_path):
+        """Should return None when ffprobe output is not valid JSON."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.Mock(
+                stdout="not valid json",
+                stderr="",
+                returncode=0,
+            )
+            result = get_audio_metadata(audio_path)
+
+        assert result is None
+
+    def test_returns_none_on_os_error(self, tmp_path):
+        """Should return None when subprocess raises OSError."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.side_effect = OSError("command not found")
+            result = get_audio_metadata(audio_path)
+
+        assert result is None
+
+    def test_handles_missing_creation_time(self, tmp_path):
+        """Should return None for creation_time when tag is absent."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        mock_probe_output = {
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "duration": "120.000000",
+                "tags": {},
+            },
+            "streams": [
+                {
+                    "codec_type": "audio",
+                    "duration": "120.000000",
+                }
+            ],
+        }
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.Mock(
+                stdout=json.dumps(mock_probe_output),
+                stderr="",
+                returncode=0,
+            )
+            result = get_audio_metadata(audio_path)
+
+        assert result is not None
+        assert result["creation_time"] is None
+        assert result["duration"] == 120.0
+        assert result["bit_rate"] is None
+
+    def test_falls_back_to_format_duration_when_no_audio_stream(self, tmp_path):
+        """Should use format-level duration when no audio stream exists."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        mock_probe_output = {
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "duration": "600.000000",
+                "bit_rate": "256000",
+                "tags": {
+                    "creation_time": "2023-06-01T08:00:00Z",
+                },
+            },
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "duration": "600.000000",
+                }
+            ],
+        }
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.Mock(
+                stdout=json.dumps(mock_probe_output),
+                stderr="",
+                returncode=0,
+            )
+            result = get_audio_metadata(audio_path)
+
+        assert result is not None
+        assert result["duration"] == 600.0
+        assert result["bit_rate"] == 256000
+        assert result["creation_time"] == "2023-06-01T08:00:00Z"
+
+    def test_handles_empty_streams_list(self, tmp_path):
+        """Should return 0 duration when no streams and no format duration."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        mock_probe_output = {
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "tags": {},
+            },
+            "streams": [],
+        }
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.Mock(
+                stdout=json.dumps(mock_probe_output),
+                stderr="",
+                returncode=0,
+            )
+            result = get_audio_metadata(audio_path)
+
+        assert result is not None
+        assert result["duration"] == 0.0
+        assert result["creation_time"] is None
+        assert result["bit_rate"] is None
+
+    def test_accepts_string_path(self, tmp_path):
+        """Should accept a string path, not just Path."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        mock_probe_output = {
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "duration": "100.0",
+                "tags": {},
+            },
+            "streams": [],
+        }
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.Mock(
+                stdout=json.dumps(mock_probe_output),
+                stderr="",
+                returncode=0,
+            )
+            result = get_audio_metadata(str(audio_path))
+
+        assert result is not None
+        assert result["type"] == "mov,mp4,m4a,3gp,3g2,mj2"
+        # Verify the path was passed to ffprobe as a string
+        call_args = mock_run.call_args
+        assert str(audio_path) in call_args[0][0]
+
+    def test_returns_all_required_keys(self, tmp_path):
+        """Result dict should contain all required keys."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        mock_probe_output = {
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "duration": "100.0",
+                "bit_rate": "128000",
+                "tags": {
+                    "creation_time": "2024-01-15T10:30:00.000000Z",
+                },
+            },
+            "streams": [
+                {
+                    "codec_type": "audio",
+                    "duration": "100.0",
+                }
+            ],
+        }
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.Mock(
+                stdout=json.dumps(mock_probe_output),
+                stderr="",
+                returncode=0,
+            )
+            result = get_audio_metadata(audio_path)
+
+        required_keys = {"type", "duration", "creation_time", "bit_rate"}
+        assert required_keys.issubset(set(result.keys()))
+
+    def test_duration_is_float(self, tmp_path):
+        """Duration should be a float."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        mock_probe_output = {
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "duration": "180.5",
+                "tags": {},
+            },
+            "streams": [],
+        }
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.Mock(
+                stdout=json.dumps(mock_probe_output),
+                stderr="",
+                returncode=0,
+            )
+            result = get_audio_metadata(audio_path)
+
+        assert result is not None
+        assert isinstance(result["duration"], float)
+        assert result["duration"] == 180.5
+
+    def test_bit_rate_is_int(self, tmp_path):
+        """Bit rate should be an int."""
+        audio_path = tmp_path / "test.mp4"
+        audio_path.write_bytes(b"fake audio data")
+
+        mock_probe_output = {
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "bit_rate": "320000",
+                "tags": {},
+            },
+            "streams": [],
+        }
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.Mock(
+                stdout=json.dumps(mock_probe_output),
+                stderr="",
+                returncode=0,
+            )
+            result = get_audio_metadata(audio_path)
+
+        assert result is not None
+        assert isinstance(result["bit_rate"], int)
+        assert result["bit_rate"] == 320000

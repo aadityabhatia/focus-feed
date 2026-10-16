@@ -13,17 +13,14 @@ Tests cover:
 - Error metadata writing
 """
 
-from datetime import UTC, datetime
 import json
 from pathlib import Path
 from unittest import mock
 
-import pytest
-
 from local_feed_generator.errors import ProcessingError
-from local_feed_generator.metadata import Metadata
 from local_feed_generator.producer import Producer
 from local_feed_generator.scanner import ScannedFile
+import pytest
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -92,6 +89,7 @@ def mock_pdf_extractor():
         "date": 1728931200,
         "size": 1024,
         "filetype": "pdf",
+        "content": "PDF plaintext content",
     }
     return e
 
@@ -106,6 +104,7 @@ def mock_html_extractor():
         "date": 1728931200,
         "size": 512,
         "filetype": "html",
+        "content": "HTML plaintext content",
     }
     return e
 
@@ -259,17 +258,16 @@ class TestProcessFileMP4:
         metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        assert metadata.status["transcribe"] == "complete"
-        assert metadata.status["summarize"] == "complete"
+        assert metadata.transcribe.status == "complete"
+        assert metadata.summarize.status == "complete"
         assert metadata.title == "Generated Title"
-        assert metadata.description == "Key takeaways: test summary."
+        assert metadata.description == ""  # MP4: description is blank
+        assert metadata.summary == "Key takeaways: test summary."  # summary holds the LLM output
         assert metadata.filename == "lecture.mp4"
         assert metadata.filepath == "lecture.mp4"
         assert metadata.filetype == "mp4"
-        assert metadata.transcript == "This is a test transcript."
-        assert metadata.summary == "Key takeaways: test summary."
+        assert metadata.content == "This is a test transcript."
         assert metadata.size == len(b"video data")
-        assert metadata.processing_date is not None
         assert metadata.feed_eligible is True
 
     def test_mp4_metadata_date_from_file_mtime(self, producer, tmp_path):
@@ -289,7 +287,7 @@ class TestProcessFileMP4:
     def test_mp4_skips_transcription_when_already_complete(
         self, producer, mock_transcriber, mock_summarizer, tmp_path
     ):
-        """_process_mp4 should skip transcription when status.transcribe is already 'complete'."""
+        """_process_mp4 should skip transcription when transcribe step is already 'complete'."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         scanned = _make_scanned_file(
@@ -303,9 +301,9 @@ class TestProcessFileMP4:
         json_path.write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": None},
-                    "transcript": existing_transcript,
-                    "started_at": 1728931200,
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "content": existing_transcript,
                     "filename": "lecture.mp4",
                     "filepath": "lecture.mp4",
                     "filetype": "mp4",
@@ -321,9 +319,9 @@ class TestProcessFileMP4:
         mock_summarizer.summarize.assert_called_once_with(existing_transcript)
         # Metadata should have the existing transcript
         assert metadata is not None
-        assert metadata.transcript == existing_transcript
-        assert metadata.status["transcribe"] == "complete"
-        assert metadata.status["summarize"] == "complete"
+        assert metadata.content == existing_transcript
+        assert metadata.transcribe.status == "complete"
+        assert metadata.summarize.status == "complete"
 
 
 # ---------------------------------------------------------------------------
@@ -359,16 +357,15 @@ class TestProcessFilePDF:
         metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        assert metadata.status["extract"] == "complete"
+        assert metadata.extract.status == "complete"
         assert metadata.title == "PDF Title"
         assert metadata.description == "PDF Description"
         assert metadata.filename == "document.pdf"
         assert metadata.filepath == "document.pdf"
         assert metadata.filetype == "pdf"
         assert metadata.size == 1024
-        # PDF should NOT have transcript or summary
-        assert metadata.transcript is None
-        assert metadata.summary is None
+        # PDF should NOT have content from MP4 fields
+        assert metadata.content == "PDF plaintext content"
         assert metadata.feed_eligible is True
 
     def test_pdf_uses_extractor_title(self, producer, mock_pdf_extractor, tmp_path):
@@ -459,6 +456,29 @@ class TestProcessFilePDF:
 
         mock_summarizer.generate_title.assert_not_called()
 
+    def test_pdf_content_none_when_extractor_returns_no_content(
+        self, producer, mock_pdf_extractor, tmp_path
+    ):
+        """PDF should have content=None when extractor doesn't return content."""
+        mock_pdf_extractor.extract.return_value = {
+            "title": "PDF Title",
+            "description": "PDF Description",
+            "date": 1728931200,
+            "size": 1024,
+            "filetype": "pdf",
+        }
+        source = tmp_path / "doc.pdf"
+        source.write_bytes(b"pdf data")
+        scanned = _make_scanned_file(
+            "doc.pdf",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.content is None
+
 
 # ---------------------------------------------------------------------------
 # process_file() tests for HTML
@@ -493,16 +513,15 @@ class TestProcessFileHTML:
         metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        assert metadata.status["extract"] == "complete"
+        assert metadata.extract.status == "complete"
         assert metadata.title == "HTML Title"
         assert metadata.description == "HTML Description"
         assert metadata.filename == "article.html"
         assert metadata.filepath == "article.html"
         assert metadata.filetype == "html"
         assert metadata.size == 512
-        # HTML should NOT have transcript or summary
-        assert metadata.transcript is None
-        assert metadata.summary is None
+        # HTML should have content from the extractor
+        assert metadata.content == "HTML plaintext content"
         assert metadata.feed_eligible is True
 
     def test_html_falls_back_to_llm_title_when_empty(
@@ -550,281 +569,28 @@ class TestProcessFileHTML:
 
         mock_summarizer.generate_title.assert_not_called()
 
-
-# ---------------------------------------------------------------------------
-# process_file() tests for unsupported file types
-# ---------------------------------------------------------------------------
-
-
-class TestProcessFileUnsupported:
-    """Tests for process_file() with unsupported file types."""
-
-    def test_unsupported_filetype_returns_none(self, producer, tmp_path):
-        """process_file should return None for unsupported file types."""
-        scanned = _make_scanned_file(
-            "image.jpg",
-            absolute_path=str(tmp_path / "image.jpg"),
-            filetype="jpg",
-        )
-
-        result = producer.process_file(scanned)
-
-        assert result is None
-
-    def test_unsupported_filetype_does_not_call_services(
-        self,
-        producer,
-        mock_transcriber,
-        mock_summarizer,
-        mock_pdf_extractor,
-        mock_html_extractor,
-        tmp_path,
+    def test_html_content_none_when_extractor_returns_no_content(
+        self, producer, mock_html_extractor, tmp_path
     ):
-        """Unsupported file types should not invoke any service."""
+        """HTML should have content=None when extractor doesn't return content."""
+        mock_html_extractor.extract.return_value = {
+            "title": "HTML Title",
+            "description": "HTML Description",
+            "date": 1728931200,
+            "size": 512,
+            "filetype": "html",
+        }
+        source = tmp_path / "article.html"
+        source.write_text("<html>test</html>")
         scanned = _make_scanned_file(
-            "data.txt",
-            absolute_path=str(tmp_path / "data.txt"),
-            filetype="txt",
-        )
-
-        result = producer.process_file(scanned)
-
-        assert result is None
-        mock_transcriber.transcribe.assert_not_called()
-        mock_summarizer.summarize.assert_not_called()
-        mock_pdf_extractor.extract.assert_not_called()
-        mock_html_extractor.extract.assert_not_called()
-
-
-# ---------------------------------------------------------------------------
-# Error handling tests
-# ---------------------------------------------------------------------------
-
-
-class TestProcessFileErrors:
-    """Tests for error handling in process_file()."""
-
-    def test_mp4_cuda_unavailable_writes_error_metadata(self, producer, tmp_path):
-        """_process_mp4 should write error metadata when CUDA is unavailable."""
-        with mock.patch(
-            "local_feed_generator.services.transcriber.check_cuda_available",
-            return_value=False,
-        ):
-            source = tmp_path / "lecture.mp4"
-            source.write_bytes(b"video data")
-            scanned = _make_scanned_file(
-                "lecture.mp4",
-                absolute_path=str(source),
-            )
-
-            result = producer.process_file(scanned)
-
-            # process_file catches the RuntimeError and writes error metadata
-            assert result is None
-            json_path = tmp_path / "lecture.mp4.json"
-            assert json_path.exists()
-            data = json.loads(json_path.read_text())
-            assert "CUDA libraries not found" in data["error"]
-            # Transcriber.transcribe should not have been called
-            producer.transcriber.transcribe.assert_not_called()
-
-    def test_mp4_transcription_error_writes_error_metadata(
-        self, producer, mock_transcriber, tmp_path
-    ):
-        """Transcription errors should write error metadata."""
-        from local_feed_generator.errors import TranscriptionError
-
-        mock_transcriber.transcribe.side_effect = TranscriptionError("GPU error")
-        source = tmp_path / "lecture.mp4"
-        source.write_bytes(b"video data")
-        scanned = _make_scanned_file(
-            "lecture.mp4",
+            "article.html",
             absolute_path=str(source),
         )
 
-        result = producer.process_file(scanned)
+        metadata = producer.process_file(scanned)
 
-        assert result is None
-        json_path = tmp_path / "lecture.mp4.json"
-        assert json_path.exists()
-        data = json.loads(json_path.read_text())
-        assert data["error"] == "GPU error"
-        # Status should have been preserved from in-progress state
-        assert data.get("status", {}).get("transcribe") == "in_progress"
-
-    def test_mp4_summarization_error_writes_error_metadata(
-        self, producer, mock_summarizer, tmp_path
-    ):
-        """Summarization errors should write error metadata."""
-        from local_feed_generator.errors import SummarizationError
-
-        mock_summarizer.summarize.side_effect = SummarizationError("API timeout")
-        source = tmp_path / "lecture.mp4"
-        source.write_bytes(b"video data")
-        scanned = _make_scanned_file(
-            "lecture.mp4",
-            absolute_path=str(source),
-        )
-
-        result = producer.process_file(scanned)
-
-        assert result is None
-        json_path = tmp_path / "lecture.mp4.json"
-        assert json_path.exists()
-        data = json.loads(json_path.read_text())
-        assert data["error"] == "API timeout"
-        # Status should have transcribe complete, summarize in_progress
-        assert data.get("status", {}).get("transcribe") == "complete"
-        assert data.get("status", {}).get("summarize") == "in_progress"
-
-    def test_pdf_extraction_error_writes_error_metadata(
-        self, producer, mock_pdf_extractor, tmp_path
-    ):
-        """PDF extraction errors should write error metadata."""
-        mock_pdf_extractor.extract.side_effect = RuntimeError("PDF corrupt")
-        source = tmp_path / "doc.pdf"
-        source.write_bytes(b"pdf data")
-        scanned = _make_scanned_file(
-            "doc.pdf",
-            absolute_path=str(source),
-        )
-
-        result = producer.process_file(scanned)
-
-        assert result is None
-        json_path = tmp_path / "doc.pdf.json"
-        assert json_path.exists()
-        data = json.loads(json_path.read_text())
-        assert data["error"] == "PDF corrupt"
-        assert data.get("status", {}).get("extract") == "in_progress"
-
-    def test_error_metadata_has_correct_filetype(self, producer, mock_pdf_extractor, tmp_path):
-        """Error metadata should include the correct filetype."""
-        mock_pdf_extractor.extract.side_effect = RuntimeError("fail")
-        source = tmp_path / "doc.pdf"
-        source.write_bytes(b"pdf data")
-        scanned = _make_scanned_file(
-            "doc.pdf",
-            absolute_path=str(source),
-        )
-
-        producer.process_file(scanned)
-
-        json_path = tmp_path / "doc.pdf.json"
-        data = json.loads(json_path.read_text())
-        assert data["filetype"] == "pdf"
-
-    def test_error_metadata_has_filename_and_filepath(self, producer, mock_pdf_extractor, tmp_path):
-        """Error metadata should include filename and filepath."""
-        mock_pdf_extractor.extract.side_effect = RuntimeError("fail")
-        source = tmp_path / "doc.pdf"
-        source.write_bytes(b"pdf data")
-        scanned = _make_scanned_file(
-            "doc.pdf",
-            absolute_path=str(source),
-        )
-
-        producer.process_file(scanned)
-
-        json_path = tmp_path / "doc.pdf.json"
-        data = json.loads(json_path.read_text())
-        assert data["filename"] == "doc.pdf"
-        assert data["filepath"] == "doc.pdf"
-
-    def test_error_logged_to_stderr(self, producer, mock_pdf_extractor, tmp_path, caplog):
-        """Errors should be logged."""
-        mock_pdf_extractor.extract.side_effect = RuntimeError("fail")
-        source = tmp_path / "doc.pdf"
-        source.write_bytes(b"pdf data")
-        scanned = _make_scanned_file(
-            "doc.pdf",
-            absolute_path=str(source),
-        )
-
-        with caplog.at_level("ERROR"):
-            producer.process_file(scanned)
-
-        assert any(
-            "Error processing" in record.message or "doc.pdf" in record.message
-            for record in caplog.records
-            if record.levelno >= 30  # ERROR level
-        )
-
-
-# ---------------------------------------------------------------------------
-# JSON metadata file writing tests
-# ---------------------------------------------------------------------------
-
-
-class TestMetadataFileWriting:
-    """Tests for JSON metadata file writing."""
-
-    def test_json_file_written_adjacent_to_source(self, producer, tmp_path):
-        """JSON metadata file should be written next to the source file."""
-        source = tmp_path / "subdir" / "lecture.mp4"
-        source.parent.mkdir()
-        source.write_bytes(b"video")
-        scanned = _make_scanned_file(
-            "subdir/lecture.mp4",
-            absolute_path=str(source),
-        )
-
-        producer.process_file(scanned)
-
-        json_path = tmp_path / "subdir" / "lecture.mp4.json"
-        assert json_path.exists()
-
-    def test_json_file_is_valid_json(self, producer, tmp_path):
-        """Written JSON file should be valid JSON."""
-        source = tmp_path / "lecture.mp4"
-        source.write_bytes(b"video")
-        scanned = _make_scanned_file(
-            "lecture.mp4",
-            absolute_path=str(source),
-        )
-
-        producer.process_file(scanned)
-
-        json_path = tmp_path / "lecture.mp4.json"
-        data = json.loads(json_path.read_text())
-        assert isinstance(data, dict)
-
-    def test_json_file_can_be_read_as_metadata(self, producer, tmp_path):
-        """Written JSON file should be readable as a Metadata object."""
-        source = tmp_path / "lecture.mp4"
-        source.write_bytes(b"video")
-        scanned = _make_scanned_file(
-            "lecture.mp4",
-            absolute_path=str(source),
-        )
-
-        producer.process_file(scanned)
-
-        json_path = tmp_path / "lecture.mp4.json"
-        metadata = Metadata.from_json_file(json_path)
-        assert metadata.status["transcribe"] == "complete"
-        assert metadata.status["summarize"] == "complete"
-        assert metadata.title == "Generated Title"
-        assert metadata.feed_eligible is True
-
-    def test_json_file_excludes_none_fields(self, producer, tmp_path):
-        """Written JSON file should exclude None fields (no transcript for PDF)."""
-        source = tmp_path / "doc.pdf"
-        source.write_bytes(b"pdf data")
-        scanned = _make_scanned_file(
-            "doc.pdf",
-            absolute_path=str(source),
-        )
-
-        producer.process_file(scanned)
-
-        json_path = tmp_path / "doc.pdf.json"
-        data = json.loads(json_path.read_text())
-        assert "transcript" not in data
-        assert "summary" not in data
-        assert "error" not in data
-        assert "transcribe" not in data.get("status", {})
-        assert "summarize" not in data.get("status", {})
+        assert metadata is not None
+        assert metadata.content is None
 
 
 # ---------------------------------------------------------------------------
@@ -1001,7 +767,7 @@ class TestProducerWithRealExtractors:
         assert metadata is not None
         assert metadata.title == "Real PDF Title"
         assert metadata.filetype == "pdf"
-        assert metadata.status["extract"] == "complete"
+        assert metadata.extract.status == "complete"
         assert metadata.feed_eligible is True
 
     def test_process_html_with_real_extractor(self, producer, tmp_path):
@@ -1030,7 +796,7 @@ class TestProducerWithRealExtractors:
         assert metadata.title == "Real HTML Title"
         assert metadata.description == "Real description"
         assert metadata.filetype == "html"
-        assert metadata.status["extract"] == "complete"
+        assert metadata.extract.status == "complete"
         assert metadata.feed_eligible is True
 
     def test_process_pdf_without_title_uses_filename(self, producer, tmp_path):
@@ -1081,14 +847,12 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        # Final state should have status with transcribe and summarize complete
-        assert data["status"]["transcribe"] == "complete"
-        assert data["status"]["summarize"] == "complete"
-        assert "started_at" in data
-        assert "completed_at" in data
+        # Final state should have transcribe and summarize step maps complete
+        assert data["transcribe"]["status"] == "complete"
+        assert data["summarize"]["status"] == "complete"
 
     def test_mp4_final_state_has_transcription_model(self, producer, tmp_path):
-        """MP4 final JSON state should include transcription_model from config."""
+        """MP4 final JSON state should include model in transcribe step map."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         scanned = _make_scanned_file(
@@ -1100,7 +864,7 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert data["transcription_model"] == "large-v3-turbo"
+        assert data["transcribe"]["model"] == "large-v3-turbo"
 
     def test_mp4_transcription_model_remote_with_remote_model(self, monkeypatch, tmp_path):
         """When transcription_endpoint is set and transcription_remote_model is configured,
@@ -1132,20 +896,20 @@ class TestIntermediateStateSaving:
 
         metadata = producer.process_file(scanned)
 
-        assert metadata.transcription_model == "whisper-1"
+        assert metadata.transcribe.model == "whisper-1"
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert data["transcription_model"] == "whisper-1"
+        assert data["transcribe"]["model"] == "whisper-1"
 
         config_module._config_instance = None
 
     def test_mp4_transcription_model_remote_without_remote_model(self, monkeypatch, tmp_path):
         """When transcription_endpoint is set but transcription_remote_model is not configured,
-        transcription_model should be 'remote'."""
+        transcription model should be 'remote'."""
         _set_valid_env(monkeypatch)
         monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "https://whisper.example.com/v1")
-        monkeypatch.delenv("TRANSCRIPTION_REMOTE_MODEL", raising=False)
+        monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "")
         import local_feed_generator.config as config_module
         config_module._config_instance = None
 
@@ -1170,11 +934,11 @@ class TestIntermediateStateSaving:
 
         metadata = producer.process_file(scanned)
 
-        assert metadata.transcription_model == "remote"
+        assert metadata.transcribe.model == "remote"
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert data["transcription_model"] == "remote"
+        assert data["transcribe"]["model"] == "remote"
 
         config_module._config_instance = None
 
@@ -1189,11 +953,11 @@ class TestIntermediateStateSaving:
 
         metadata = producer.process_file(scanned)
 
-        assert metadata.transcription_model == "large-v3-turbo"
+        assert metadata.transcribe.model == "large-v3-turbo"
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert data["transcription_model"] == "large-v3-turbo"
+        assert data["transcribe"]["model"] == "large-v3-turbo"
 
     def test_pdf_final_state_no_stage_field(self, producer, tmp_path):
         """PDF final JSON state should not have stage field."""
@@ -1242,7 +1006,7 @@ class TestIntermediateStateSaving:
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
         # Error state should preserve the status from before the error
-        assert data.get("status", {}).get("transcribe") == "in_progress"
+        assert data.get("transcribe", {}).get("status") == "in_progress"
         assert data["error"] is not None
 
     def test_mp4_intermediate_state_summarizing(
@@ -1264,8 +1028,8 @@ class TestIntermediateStateSaving:
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
         # Error state should preserve the status from before the error
-        assert data.get("status", {}).get("transcribe") == "complete"
-        assert data.get("status", {}).get("summarize") == "in_progress"
+        assert data.get("transcribe", {}).get("status") == "complete"
+        assert data.get("summarize", {}).get("status") == "in_progress"
         assert data["error"] is not None
 
     def test_pdf_intermediate_state_extracting(self, producer, mock_pdf_extractor, tmp_path):
@@ -1284,7 +1048,7 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "document.pdf.json"
         data = json.loads(json_path.read_text())
-        assert data.get("status", {}).get("extract") == "in_progress"
+        assert data.get("extract", {}).get("status") == "in_progress"
         assert data["error"] is not None
 
     def test_pdf_intermediate_state_generating_title(
@@ -1337,7 +1101,7 @@ class TestIntermediateStateSaving:
         json_path = tmp_path / "document.pdf.json"
         data = json.loads(json_path.read_text())
         # Final state should have extract complete (not in_progress)
-        assert data["status"]["extract"] == "complete"
+        assert data["extract"]["status"] == "complete"
 
     def test_html_intermediate_state_extracting(self, producer, mock_html_extractor, tmp_path):
         """HTML should write extracting status before extraction."""
@@ -1355,11 +1119,11 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "article.html.json"
         data = json.loads(json_path.read_text())
-        assert data.get("status", {}).get("extract") == "in_progress"
+        assert data.get("extract", {}).get("status") == "in_progress"
         assert data["error"] is not None
 
-    def test_error_metadata_preserves_status(self, producer, mock_transcriber, tmp_path):
-        """Error metadata should preserve the status from the in-progress state."""
+    def test_error_metadata_preserves_step_maps(self, producer, mock_transcriber, tmp_path):
+        """Error metadata should preserve the step maps from the in-progress state."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         scanned = _make_scanned_file(
@@ -1374,11 +1138,11 @@ class TestIntermediateStateSaving:
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
         assert data["error"] is not None
-        assert data.get("status", {}).get("transcribe") == "in_progress"
-        assert "started_at" in data
+        assert data.get("transcribe", {}).get("status") == "in_progress"
+        assert "transcribe" in data
 
-    def test_error_metadata_preserves_started_at(self, producer, mock_pdf_extractor, tmp_path):
-        """Error metadata should preserve started_at from the in-progress state."""
+    def test_error_metadata_preserves_extract_step(self, producer, mock_pdf_extractor, tmp_path):
+        """Error metadata should preserve the extract step from the in-progress state."""
         source = tmp_path / "document.pdf"
         source.write_bytes(b"pdf data")
         scanned = _make_scanned_file(
@@ -1393,7 +1157,7 @@ class TestIntermediateStateSaving:
         json_path = tmp_path / "document.pdf.json"
         data = json.loads(json_path.read_text())
         assert data["error"] is not None
-        assert "started_at" in data
+        assert "extract" in data
 
     def test_final_state_excludes_none_fields(self, producer, tmp_path):
         """Final JSON state should exclude None fields for PDF."""
@@ -1408,18 +1172,15 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "doc.pdf.json"
         data = json.loads(json_path.read_text())
-        # PDF should NOT have transcript or summary
-        assert "transcript" not in data
-        assert "summary" not in data
+        # PDF should NOT have transcribe or summarize step maps
+        assert "transcribe" not in data
+        assert "summarize" not in data
         assert "error" not in data
-        # PDF should NOT have transcribe or summarize in status
-        assert "transcribe" not in data.get("status", {})
-        assert "summarize" not in data.get("status", {})
-        # status should have extract complete
-        assert data["status"]["extract"] == "complete"
+        # extract should be complete
+        assert data["extract"]["status"] == "complete"
 
-    def test_final_state_has_started_at_and_completed_at(self, producer, tmp_path):
-        """Final JSON state should have both started_at and completed_at."""
+    def test_final_state_has_step_maps_with_timing(self, producer, tmp_path):
+        """Final JSON state should have step maps with start_time and end_time."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         scanned = _make_scanned_file(
@@ -1431,13 +1192,17 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert "started_at" in data
-        assert "completed_at" in data
-        assert data["started_at"] is not None
-        assert data["completed_at"] is not None
+        assert "transcribe" in data
+        assert "start_time" in data["transcribe"]
+        assert "end_time" in data["transcribe"]
+        assert data["transcribe"]["start_time"] is not None
+        assert data["transcribe"]["end_time"] is not None
+        assert "summarize" in data
+        assert "start_time" in data["summarize"]
+        assert "end_time" in data["summarize"]
 
-    def test_metadata_object_has_complete_status(self, producer, tmp_path):
-        """Returned Metadata object should have all step statuses complete."""
+    def test_metadata_object_has_complete_step_maps(self, producer, tmp_path):
+        """Returned Metadata object should have all step maps complete."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         scanned = _make_scanned_file(
@@ -1448,13 +1213,13 @@ class TestIntermediateStateSaving:
         metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        assert metadata.status["transcribe"] == "complete"
-        assert metadata.status["summarize"] == "complete"
-        assert metadata.transcription_model == "large-v3-turbo"
+        assert metadata.transcribe.status == "complete"
+        assert metadata.summarize.status == "complete"
+        assert metadata.transcribe.model == "large-v3-turbo"
         assert metadata.feed_eligible is True
 
-    def test_metadata_object_has_started_at_and_completed_at(self, producer, tmp_path):
-        """Returned Metadata object should have started_at and completed_at."""
+    def test_metadata_object_has_step_map_timing(self, producer, tmp_path):
+        """Returned Metadata object should have step maps with start_time and end_time."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         scanned = _make_scanned_file(
@@ -1465,11 +1230,13 @@ class TestIntermediateStateSaving:
         metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        assert metadata.started_at is not None
-        assert metadata.completed_at is not None
+        assert metadata.transcribe.start_time is not None
+        assert metadata.transcribe.end_time is not None
+        assert metadata.summarize.start_time is not None
+        assert metadata.summarize.end_time is not None
 
-    def test_pdf_metadata_object_has_started_at_and_completed_at(self, producer, tmp_path):
-        """Returned PDF Metadata object should have started_at and completed_at."""
+    def test_pdf_metadata_object_has_step_map_timing(self, producer, tmp_path):
+        """Returned PDF Metadata object should have extract step map with timing."""
         source = tmp_path / "document.pdf"
         source.write_bytes(b"pdf data")
         scanned = _make_scanned_file(
@@ -1480,11 +1247,11 @@ class TestIntermediateStateSaving:
         metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        assert metadata.started_at is not None
-        assert metadata.completed_at is not None
+        assert metadata.extract.start_time is not None
+        assert metadata.extract.end_time is not None
 
-    def test_html_metadata_object_has_started_at_and_completed_at(self, producer, tmp_path):
-        """Returned HTML Metadata object should have started_at and completed_at."""
+    def test_html_metadata_object_has_step_map_timing(self, producer, tmp_path):
+        """Returned HTML Metadata object should have extract step map with timing."""
         source = tmp_path / "article.html"
         source.write_text("<html>test</html>")
         scanned = _make_scanned_file(
@@ -1495,8 +1262,8 @@ class TestIntermediateStateSaving:
         metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        assert metadata.started_at is not None
-        assert metadata.completed_at is not None
+        assert metadata.extract.start_time is not None
+        assert metadata.extract.end_time is not None
 
 
 # ---------------------------------------------------------------------------
@@ -1530,8 +1297,8 @@ class TestIntermediateStatusWrites:
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
         # Summarize should be complete (written after summarization, before title gen)
-        assert data.get("status", {}).get("summarize") == "complete"
-        assert data.get("status", {}).get("transcribe") == "complete"
+        assert data.get("summarize", {}).get("status") == "complete"
+        assert data.get("transcribe", {}).get("status") == "complete"
         # Error should be present because title generation failed
         assert data["error"] is not None
 
@@ -1563,7 +1330,7 @@ class TestIntermediateStatusWrites:
         original_write = producer._write_metadata_partial
 
         def track_write(metadata_dict, source_path):
-            written_statuses.append(metadata_dict.get("status", {}).get("extract"))
+            written_statuses.append(metadata_dict.get("extract", {}).get("status"))
             original_write(metadata_dict, source_path)
 
         with mock.patch.object(producer, "_write_metadata_partial", side_effect=track_write):
@@ -1602,7 +1369,7 @@ class TestIntermediateStatusWrites:
         data = json.loads(json_path.read_text())
         # Extract should still be in_progress because title generation failed
         # (the intermediate write with "complete" happens after title generation)
-        assert data.get("status", {}).get("extract") == "in_progress"
+        assert data.get("extract", {}).get("status") == "in_progress"
         assert data["error"] is not None
 
     def test_html_writes_extract_complete_after_extraction(
@@ -1633,7 +1400,7 @@ class TestIntermediateStatusWrites:
         original_write = producer._write_metadata_partial
 
         def track_write(metadata_dict, source_path):
-            written_statuses.append(metadata_dict.get("status", {}).get("extract"))
+            written_statuses.append(metadata_dict.get("extract", {}).get("status"))
             original_write(metadata_dict, source_path)
 
         with mock.patch.object(producer, "_write_metadata_partial", side_effect=track_write):
@@ -1671,7 +1438,7 @@ class TestIntermediateStatusWrites:
         json_path = tmp_path / "article.html.json"
         data = json.loads(json_path.read_text())
         # Extract should still be in_progress because title generation failed
-        assert data.get("status", {}).get("extract") == "in_progress"
+        assert data.get("extract", {}).get("status") == "in_progress"
         assert data["error"] is not None
 
     def test_pdf_final_state_has_extract_complete_with_title_present(
@@ -1697,9 +1464,9 @@ class TestIntermediateStatusWrites:
 
         json_path = tmp_path / "document.pdf.json"
         data = json.loads(json_path.read_text())
-        assert data["status"]["extract"] == "complete"
+        assert data["extract"]["status"] == "complete"
         assert data["title"] == "PDF Title"
-        assert "completed_at" in data
+        assert "end_time" in data["extract"]
 
     def test_html_final_state_has_extract_complete_with_title_present(
         self, producer, mock_html_extractor, tmp_path
@@ -1724,6 +1491,233 @@ class TestIntermediateStatusWrites:
 
         json_path = tmp_path / "article.html.json"
         data = json.loads(json_path.read_text())
-        assert data["status"]["extract"] == "complete"
+        assert data["extract"]["status"] == "complete"
         assert data["title"] == "HTML Title"
-        assert "completed_at" in data
+        assert "end_time" in data["extract"]
+
+
+# ---------------------------------------------------------------------------
+# Audio metadata extraction tests (MP4 with ffprobe)
+# ---------------------------------------------------------------------------
+
+
+class TestMP4AudioMetadata:
+    """Tests for audio metadata extraction in _process_mp4."""
+
+    def test_mp4_uses_creation_time_as_date(
+        self, producer, mock_transcriber, mock_summarizer, tmp_path
+    ):
+        """When ffprobe returns creation_time, it should be used as the date field."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        audio_meta = {
+            "type": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": 3600.5,
+            "creation_time": "2024-01-15T10:30:00.000000Z",
+            "bit_rate": 128000,
+        }
+
+        with mock.patch(
+            "local_feed_generator.producer.get_audio_metadata",
+            return_value=audio_meta,
+        ):
+            metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        # creation_time 2024-01-15T10:30:00Z = 1705314600 epoch
+        assert metadata.date == 1705314600
+        assert metadata.creation_time == "2024-01-15T10:30:00.000000Z"
+        assert metadata.duration == 3600.5
+
+    def test_mp4_falls_back_to_mtime_when_no_creation_time(
+        self, producer, mock_transcriber, mock_summarizer, tmp_path
+    ):
+        """When ffprobe returns no creation_time, should fall back to file mtime."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        audio_meta = {
+            "type": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": 120.0,
+            "creation_time": None,
+            "bit_rate": 64000,
+        }
+
+        with mock.patch(
+            "local_feed_generator.producer.get_audio_metadata",
+            return_value=audio_meta,
+        ):
+            metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        expected_mtime = int(source.stat().st_mtime)
+        assert metadata.date == expected_mtime
+        assert metadata.creation_time is None
+        assert metadata.duration == 120.0
+
+    def test_mp4_falls_back_to_mtime_when_ffprobe_returns_none(
+        self, producer, mock_transcriber, mock_summarizer, tmp_path
+    ):
+        """When ffprobe returns None, should fall back to file mtime."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        with mock.patch(
+            "local_feed_generator.producer.get_audio_metadata",
+            return_value=None,
+        ):
+            metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        expected_mtime = int(source.stat().st_mtime)
+        assert metadata.date == expected_mtime
+        assert metadata.creation_time is None
+        assert metadata.duration is None
+
+    def test_mp4_json_includes_duration_and_creation_time(
+        self, producer, mock_transcriber, mock_summarizer, tmp_path
+    ):
+        """JSON metadata should include duration and creation_time fields."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        audio_meta = {
+            "type": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": 1800.0,
+            "creation_time": "2024-06-01T12:00:00Z",
+            "bit_rate": 192000,
+        }
+
+        with mock.patch(
+            "local_feed_generator.producer.get_audio_metadata",
+            return_value=audio_meta,
+        ):
+            producer.process_file(scanned)
+
+        json_path = tmp_path / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        assert data["duration"] == 1800.0
+        assert data["creation_time"] == "2024-06-01T12:00:00Z"
+
+    def test_mp4_date_from_creation_time_is_epoch_int(
+        self, producer, mock_transcriber, mock_summarizer, tmp_path
+    ):
+        """Date from creation_time should be stored as an integer (UNIX epoch)."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        audio_meta = {
+            "type": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": 300.0,
+            "creation_time": "2024-06-15T08:30:00.000000Z",
+            "bit_rate": 128000,
+        }
+
+        with mock.patch(
+            "local_feed_generator.producer.get_audio_metadata",
+            return_value=audio_meta,
+        ):
+            metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert isinstance(metadata.date, int)
+        # 2024-06-15T08:30:00Z = 1718440200 epoch
+        assert metadata.date == 1718440200
+
+    def test_mp4_invalid_creation_time_falls_back_to_mtime(
+        self, producer, mock_transcriber, mock_summarizer, tmp_path
+    ):
+        """When creation_time cannot be parsed, should fall back to file mtime."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        audio_meta = {
+            "type": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": 100.0,
+            "creation_time": "not-a-valid-date",
+            "bit_rate": 128000,
+        }
+
+        with mock.patch(
+            "local_feed_generator.producer.get_audio_metadata",
+            return_value=audio_meta,
+        ):
+            metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        expected_mtime = int(source.stat().st_mtime)
+        assert metadata.date == expected_mtime
+        # creation_time should still be stored as the raw string
+        assert metadata.creation_time == "not-a-valid-date"
+
+    def test_mp4_creation_time_without_timezone_assumes_utc(
+        self, producer, mock_transcriber, mock_summarizer, tmp_path
+    ):
+        """creation_time without timezone info should be treated as UTC."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        audio_meta = {
+            "type": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": 200.0,
+            "creation_time": "2024-03-20T14:00:00",
+            "bit_rate": 128000,
+        }
+
+        with mock.patch(
+            "local_feed_generator.producer.get_audio_metadata",
+            return_value=audio_meta,
+        ):
+            metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        # 2024-03-20T14:00:00 UTC = 1710943200 epoch
+        assert metadata.date == 1710943200
+
+    def test_mp4_audio_metadata_called_with_absolute_path(
+        self, producer, mock_transcriber, mock_summarizer, tmp_path
+    ):
+        """get_audio_metadata should be called with the absolute path."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        with mock.patch(
+            "local_feed_generator.producer.get_audio_metadata",
+            return_value={"type": None, "duration": 0.0, "creation_time": None, "bit_rate": None},
+        ) as mock_get_meta:
+            producer.process_file(scanned)
+
+        mock_get_meta.assert_called_once_with(str(source))

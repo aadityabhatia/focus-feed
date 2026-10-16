@@ -9,13 +9,14 @@ The Producer writes a JSON metadata file adjacent to each source file,
 following the schema defined in design doc section 3.3. On errors, it
 writes an error-state metadata file and logs the error to stderr.
 
-Processing progress is tracked through a unified ``status`` dictionary:
-- ``status["transcribe"]``: set to ``"in_progress"`` / ``"complete"`` for MP4
-- ``status["summarize"]``: set to ``"in_progress"`` / ``"complete"`` for MP4
-- ``status["extract"]``: set to ``"in_progress"`` / ``"complete"`` for PDF/HTML
+Processing progress is tracked through separate step maps:
+- ``transcribe``: StepMap for transcription (MP4 only).
+- ``summarize``: StepMap for summarization (MP4 only).
+- ``extract``: StepMap for metadata extraction (PDF/HTML only).
 
-Date fields (``date``, ``processing_date``, ``started_at``, ``completed_at``)
-are stored as UNIX epoch integers (seconds since 1970-01-01 UTC).
+Date fields (``date``) are stored as UNIX epoch integers (seconds since
+1970-01-01 UTC).  Per-step timing is tracked within each step map's
+``start_time`` and ``end_time`` fields.
 
 Design references:
 - design.md section 2.2 (Producer Pipeline responsibility)
@@ -36,9 +37,14 @@ from local_feed_generator.errors import (
     create_error_metadata,
     log_error,
 )
-from local_feed_generator.metadata import Metadata
+from local_feed_generator.metadata import Metadata, StepMap
 from local_feed_generator.scanner import ScannedFile, Scanner
-from local_feed_generator.services.extractors import HTMLExtractor, PDFExtractor, _clean_title
+from local_feed_generator.services.extractors import (
+    HTMLExtractor,
+    PDFExtractor,
+    _clean_title,
+    get_audio_metadata,
+)
 from local_feed_generator.services.summarizer import Summarizer
 from local_feed_generator.services.transcriber import CUDA_ERROR_MESSAGE, Transcriber
 
@@ -110,11 +116,11 @@ class Producer:
         appropriate processing path:
 
         - **MP4**: transcribe -> summarize -> generate metadata with
-          transcript and summary.
+          content (transcript) and description (summary).
         - **PDF**: extract metadata -> generate metadata without
-          transcript/summary.
+          content.
         - **HTML**: extract metadata -> generate metadata without
-          transcript/summary.
+          content.
 
         On any exception, an error-state metadata file is written and the
         error is logged to stderr.
@@ -146,49 +152,75 @@ class Producer:
         # state so that the file is marked as being processed even if an
         # error occurs early.
         json_path = Path(absolute_path).with_name(Path(absolute_path).name + ".json")
-        now = datetime.now(UTC)
 
-        # If JSON metadata already exists, preserve its status so that
+        # If JSON metadata already exists, preserve existing step maps so that
         # already-complete steps are not overwritten with "in_progress".
-        existing_status: dict[str, Any] | None = None
-        existing_transcript: str | None = None
+        existing_transcribe: dict[str, Any] | None = None
+        existing_summarize: dict[str, Any] | None = None
+        existing_extract: dict[str, Any] | None = None
+        existing_content: str | None = None
         if json_path.exists():
             try:
                 existing_data = json.loads(json_path.read_text(encoding="utf-8"))
                 if isinstance(existing_data, dict):
-                    existing_status = existing_data.get("status")
-                    existing_transcript = existing_data.get("transcript")
+                    existing_transcribe = existing_data.get("transcribe")
+                    existing_summarize = existing_data.get("summarize")
+                    existing_extract = existing_data.get("extract")
+                    existing_content = existing_data.get("content")
             except (json.JSONDecodeError, OSError):
                 pass
 
         partial_metadata: dict[str, Any] = {
-            "started_at": int(now.timestamp()),
             "filename": filename,
             "filepath": filepath,
             "filetype": filetype,
         }
         # Set the initial step status based on file type, preserving
-        # existing status values so completed steps are not overwritten.
+        # existing step maps so completed steps are not overwritten.
+        now_ts = int(datetime.now(UTC).timestamp())
         if filetype == "mp4":
-            base_status = {"transcribe": "in_progress", "summarize": "in_progress"}
+            partial_metadata["transcribe"] = {
+                "status": "in_progress",
+                "start_time": now_ts,
+                "input_size": 0,
+                "output_size": 0,
+                "words": 0,
+                "model": None,
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
+            partial_metadata["summarize"] = {
+                "status": "in_progress",
+                "start_time": now_ts,
+                "input_size": 0,
+                "output_size": 0,
+                "words": 0,
+                "model": None,
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
         elif filetype in ("pdf", "html"):
-            base_status = {"extract": "in_progress"}
-        else:
-            base_status = {}
+            partial_metadata["extract"] = {
+                "status": "in_progress",
+                "start_time": now_ts,
+                "input_size": 0,
+                "output_size": 0,
+                "words": 0,
+            }
 
-        if existing_status and isinstance(existing_status, dict):
-            # Merge: keep existing completed statuses, set others to in_progress
-            merged_status = dict(base_status)
-            for key, value in existing_status.items():
-                if value == "complete":
-                    merged_status[key] = "complete"
-            partial_metadata["status"] = merged_status
-        else:
-            partial_metadata["status"] = base_status
+        # Preserve existing step maps that are complete.
+        if filetype == "mp4":
+            if existing_transcribe and existing_transcribe.get("status") == "complete":
+                partial_metadata["transcribe"] = existing_transcribe
+            if existing_summarize and existing_summarize.get("status") == "complete":
+                partial_metadata["summarize"] = existing_summarize
+        elif filetype in ("pdf", "html"):
+            if existing_extract and existing_extract.get("status") == "complete":
+                partial_metadata["extract"] = existing_extract
 
-        # Preserve existing transcript so _process_mp4 can skip re-transcription.
-        if existing_transcript:
-            partial_metadata["transcript"] = existing_transcript
+        # Preserve existing content (transcript for MP4).
+        if existing_content:
+            partial_metadata["content"] = existing_content
 
         self._write_metadata_partial(partial_metadata, absolute_path)
 
@@ -272,7 +304,9 @@ class Producer:
                 by :meth:`process_file` as the initial in-progress state).
 
         Returns:
-            A :class:`Metadata` instance with transcript and summary.
+            A :class:`Metadata` instance with content (transcript) and
+            summary (key takeaways from LLM). The description field is left
+            empty for MP4 files.
 
         Raises:
             Exception: Any exception from transcription, summarization,
@@ -284,9 +318,28 @@ class Producer:
         if json_path_obj.exists():
             metadata_dict: dict[str, Any] = json.loads(json_path_obj.read_text(encoding="utf-8"))
         else:
+            now_ts = int(datetime.now(UTC).timestamp())
             metadata_dict = {
-                "status": {"transcribe": "in_progress"},
-                "started_at": int(datetime.now(UTC).timestamp()),
+                "transcribe": {
+                    "status": "in_progress",
+                    "start_time": now_ts,
+                    "input_size": 0,
+                    "output_size": 0,
+                    "words": 0,
+                    "model": None,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                },
+                "summarize": {
+                    "status": "in_progress",
+                    "start_time": now_ts,
+                    "input_size": 0,
+                    "output_size": 0,
+                    "words": 0,
+                    "model": None,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                },
                 "filename": filename,
                 "filepath": filepath,
                 "filetype": "mp4",
@@ -304,31 +357,75 @@ class Producer:
                 raise RuntimeError(CUDA_ERROR_MESSAGE)
 
         # Before transcription: set transcribe status to in_progress.
-        metadata_dict["status"] = metadata_dict.get("status") or {}
+        transcribe_step = metadata_dict.get("transcribe") or {}
+
+        # Determine input size for the transcribe step.
+        stat_result = Path(absolute_path).stat()
+        input_size = stat_result.st_size
+
+        # Determine the transcription model to use.
+        transcribe_model = (
+            config.transcription_remote_model or "remote"
+            if config.transcription_endpoint
+            else config.transcription_model
+        )
 
         # Skip transcription if already complete (safety check at the producer
         # level; the CLI transcribe command also filters via
         # _find_files_needing_transcription, and the transcriber itself checks
         # the adjacent JSON as a last-resort guard).
-        if metadata_dict["status"].get("transcribe") == "complete":
-            transcript = metadata_dict.get("transcript", "")
+        if transcribe_step.get("status") == "complete":
+            transcript = metadata_dict.get("content", "")
         else:
-            metadata_dict["status"]["transcribe"] = "in_progress"
+            transcribe_step["status"] = "in_progress"
+            transcribe_step["start_time"] = int(datetime.now(UTC).timestamp())
+            transcribe_step["input_size"] = input_size
+            transcribe_step["output_size"] = 0
+            transcribe_step["words"] = 0
+            transcribe_step["model"] = transcribe_model
+            transcribe_step["input_tokens"] = 0
+            transcribe_step["output_tokens"] = 0
+            metadata_dict["transcribe"] = transcribe_step
             self._write_metadata_partial(metadata_dict, absolute_path)
 
             # Step 1: Transcribe audio to markdown text.
             transcript = self.transcriber.transcribe(absolute_path)
+            transcribe_end = datetime.now(UTC)
+
+            # Update transcribe step with completion info.
+            transcribe_step["status"] = "complete"
+            transcribe_step["end_time"] = int(transcribe_end.timestamp())
+            transcribe_step["output_size"] = len(transcript.encode("utf-8")) if transcript else 0
+            transcribe_step["words"] = len(transcript.split()) if transcript else 0
+            metadata_dict["transcribe"] = transcribe_step
 
         # After transcription, before summarization: update statuses.
-        metadata_dict["status"]["transcribe"] = "complete"
-        metadata_dict["status"]["summarize"] = "in_progress"
+        metadata_dict["content"] = transcript
+        summarize_step = metadata_dict.get("summarize") or {}
+        summarize_step["status"] = "in_progress"
+        summarize_step["start_time"] = int(datetime.now(UTC).timestamp())
+        summarize_step["input_size"] = len(transcript.encode("utf-8")) if transcript else 0
+        summarize_step["output_size"] = 0
+        summarize_step["words"] = 0
+        summarize_step["model"] = config.llm_model
+        summarize_step["input_tokens"] = 0
+        summarize_step["output_tokens"] = 0
+        metadata_dict["summarize"] = summarize_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Step 2: Summarize the transcript via LLM.
-        summary, _, _ = self.summarizer.summarize(transcript)
+        summary, prompt_tokens, completion_tokens = self.summarizer.summarize(transcript)
+        summarize_end = datetime.now(UTC)
 
-        # After summarization, before title generation: update status.
-        metadata_dict["status"]["summarize"] = "complete"
+        # Update summarize step with completion info.
+        summarize_step["status"] = "complete"
+        summarize_step["end_time"] = int(summarize_end.timestamp())
+        summarize_step["output_size"] = len(summary.encode("utf-8")) if summary else 0
+        summarize_step["words"] = len(summary.split()) if summary else 0
+        summarize_step["model"] = config.llm_model
+        summarize_step["input_tokens"] = prompt_tokens
+        summarize_step["output_tokens"] = completion_tokens
+        metadata_dict["summarize"] = summarize_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Step 3: Generate a title.  For MP4 files the transcript is the
@@ -337,50 +434,69 @@ class Producer:
         title = _clean_title(title)
 
         # Step 4: Build metadata.
-        stat_result = Path(absolute_path).stat()
         file_size = stat_result.st_size
         file_mtime = int(stat_result.st_mtime)
-        now = datetime.now(UTC)
 
-        # Determine which transcription model was used.
-        if config.transcription_endpoint:
-            transcription_model_used = config.transcription_remote_model or "remote"
-        else:
-            transcription_model_used = config.transcription_model
+        # Extract audio metadata via ffprobe for duration and creation_time.
+        audio_meta = get_audio_metadata(absolute_path)
+
+        # Use creation_time from media metadata as the date when available;
+        # fall back to file modification time if ffprobe fails or no
+        # creation_time tag is present.
+        file_date = file_mtime
+        creation_time_str: str | None = None
+        duration: float | None = None
+        if audio_meta is not None:
+            creation_time_str = audio_meta.get("creation_time")
+            duration = audio_meta.get("duration")
+            if creation_time_str:
+                try:
+                    parsed_date = datetime.fromisoformat(
+                        creation_time_str.replace("Z", "+00:00")
+                    )
+                    if parsed_date.tzinfo is None:
+                        parsed_date = parsed_date.replace(tzinfo=UTC)
+                    file_date = int(parsed_date.timestamp())
+                except (ValueError, TypeError):
+                    _logger.warning(
+                        "Failed to parse creation_time '%s' for %s; "
+                        "falling back to file modification time",
+                        creation_time_str,
+                        absolute_path,
+                    )
 
         # On completion: update to final state with all fields.
+        # For MP4 files, description is left blank and the LLM-generated
+        # summary is stored in the summary field instead.
         metadata_dict.update(
             {
-                "status": {"transcribe": "complete", "summarize": "complete"},
-                "completed_at": int(now.timestamp()),
                 "title": title,
-                "description": summary,
-                "date": file_mtime,
-                "size": file_size,
-                "transcript": transcript,
+                "description": "",  # MP4: leave description blank, use summary instead
                 "summary": summary,
-                "processing_date": int(now.timestamp()),
-                "transcription_model": transcription_model_used,
+                "date": file_date,
+                "size": file_size,
+                "duration": duration,
+                "creation_time": creation_time_str,
+                "content": transcript,
             }
         )
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Return a Metadata object for in-memory use.
         metadata = Metadata(
-            status={"transcribe": "complete", "summarize": "complete"},
             title=title,
-            description=summary,
+            description="",  # MP4: leave description blank, use summary instead
+            summary=summary,
             filename=filename,
             filepath=filepath,
             filetype="mp4",
-            date=file_mtime,
+            date=file_date,
             size=file_size,
-            transcript=transcript,
-            summary=summary,
-            processing_date=int(now.timestamp()),
-            transcription_model=transcription_model_used,
-            started_at=metadata_dict.get("started_at"),
-            completed_at=int(now.timestamp()),
+            duration=duration,
+            creation_time=creation_time_str,
+            content=transcript,
+            transcribe=StepMap(**transcribe_step),
+            summarize=StepMap(**summarize_step),
         )
         return metadata
 
@@ -420,17 +536,32 @@ class Producer:
         if json_path_obj.exists():
             metadata_dict: dict[str, Any] = json.loads(json_path_obj.read_text(encoding="utf-8"))
         else:
+            now_ts = int(datetime.now(UTC).timestamp())
             metadata_dict = {
-                "status": {"extract": "in_progress"},
-                "started_at": int(datetime.now(UTC).timestamp()),
+                "extract": {
+                    "status": "in_progress",
+                    "start_time": now_ts,
+                    "input_size": 0,
+                    "output_size": 0,
+                    "words": 0,
+                },
                 "filename": filename,
                 "filepath": filepath,
                 "filetype": "pdf",
             }
 
+        # Determine input size for the extract step.
+        stat_result = Path(absolute_path).stat()
+        input_size = stat_result.st_size
+
         # Before extraction: set extract status to in_progress.
-        metadata_dict["status"] = metadata_dict.get("status") or {}
-        metadata_dict["status"]["extract"] = "in_progress"
+        extract_step = metadata_dict.get("extract") or {}
+        extract_step["status"] = "in_progress"
+        extract_step["start_time"] = int(datetime.now(UTC).timestamp())
+        extract_step["input_size"] = input_size
+        extract_step["output_size"] = 0
+        extract_step["words"] = 0
+        metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Step 1: Extract metadata from the PDF.
@@ -448,31 +579,32 @@ class Producer:
         description = extracted.get("description") or ""
         file_date = extracted.get("date", 0)
         file_size = extracted.get("size", 0)
+        file_content = extracted.get("content")
 
         # After extraction (including title fallback): mark extract as complete.
-        metadata_dict["status"]["extract"] = "complete"
+        extract_step["status"] = "complete"
+        extract_step["end_time"] = int(datetime.now(UTC).timestamp())
+        extract_step["output_size"] = len(file_content.encode("utf-8")) if file_content else 0
+        extract_step["words"] = len(file_content.split()) if file_content else 0
+        metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Step 2: Build final metadata.
-        now = datetime.now(UTC)
 
         # On completion: update to final state.
         metadata_dict.update(
             {
-                "status": {"extract": "complete"},
-                "completed_at": int(now.timestamp()),
                 "title": title,
                 "description": description,
                 "date": file_date,
                 "size": file_size,
-                "processing_date": int(now.timestamp()),
+                "content": file_content,
             }
         )
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Return a Metadata object for in-memory use.
         metadata = Metadata(
-            status={"extract": "complete"},
             title=title,
             description=description,
             filename=filename,
@@ -480,9 +612,8 @@ class Producer:
             filetype="pdf",
             date=file_date,
             size=file_size,
-            processing_date=int(now.timestamp()),
-            started_at=metadata_dict.get("started_at"),
-            completed_at=int(now.timestamp()),
+            content=file_content,
+            extract=StepMap(**extract_step),
         )
         return metadata
 
@@ -522,17 +653,32 @@ class Producer:
         if json_path_obj.exists():
             metadata_dict: dict[str, Any] = json.loads(json_path_obj.read_text(encoding="utf-8"))
         else:
+            now_ts = int(datetime.now(UTC).timestamp())
             metadata_dict = {
-                "status": {"extract": "in_progress"},
-                "started_at": int(datetime.now(UTC).timestamp()),
+                "extract": {
+                    "status": "in_progress",
+                    "start_time": now_ts,
+                    "input_size": 0,
+                    "output_size": 0,
+                    "words": 0,
+                },
                 "filename": filename,
                 "filepath": filepath,
                 "filetype": "html",
             }
 
+        # Determine input size for the extract step.
+        stat_result = Path(absolute_path).stat()
+        input_size = stat_result.st_size
+
         # Before extraction: set extract status to in_progress.
-        metadata_dict["status"] = metadata_dict.get("status") or {}
-        metadata_dict["status"]["extract"] = "in_progress"
+        extract_step = metadata_dict.get("extract") or {}
+        extract_step["status"] = "in_progress"
+        extract_step["start_time"] = int(datetime.now(UTC).timestamp())
+        extract_step["input_size"] = input_size
+        extract_step["output_size"] = 0
+        extract_step["words"] = 0
+        metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Step 1: Extract metadata from the HTML.
@@ -550,31 +696,32 @@ class Producer:
         description = extracted.get("description") or ""
         file_date = extracted.get("date", 0)
         file_size = extracted.get("size", 0)
+        file_content = extracted.get("content")
 
         # After extraction (including title fallback): mark extract as complete.
-        metadata_dict["status"]["extract"] = "complete"
+        extract_step["status"] = "complete"
+        extract_step["end_time"] = int(datetime.now(UTC).timestamp())
+        extract_step["output_size"] = len(file_content.encode("utf-8")) if file_content else 0
+        extract_step["words"] = len(file_content.split()) if file_content else 0
+        metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Step 2: Build final metadata.
-        now = datetime.now(UTC)
 
         # On completion: update to final state.
         metadata_dict.update(
             {
-                "status": {"extract": "complete"},
-                "completed_at": int(now.timestamp()),
                 "title": title,
                 "description": description,
                 "date": file_date,
                 "size": file_size,
-                "processing_date": int(now.timestamp()),
+                "content": file_content,
             }
         )
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Return a Metadata object for in-memory use.
         metadata = Metadata(
-            status={"extract": "complete"},
             title=title,
             description=description,
             filename=filename,
@@ -582,9 +729,8 @@ class Producer:
             filetype="html",
             date=file_date,
             size=file_size,
-            processing_date=int(now.timestamp()),
-            started_at=metadata_dict.get("started_at"),
-            completed_at=int(now.timestamp()),
+            content=file_content,
+            extract=StepMap(**extract_step),
         )
         return metadata
 
@@ -654,8 +800,7 @@ class Producer:
         Writes to a temporary file first, then renames to the final path
         to avoid corruption from partial writes. This bypasses
         :class:`Metadata` model validation, allowing intermediate states
-        with fields like ``status``, ``started_at``, ``completed_at``,
-        and ``transcription_model``.
+        with step maps and other fields.
 
         Args:
             metadata_dict: The raw dictionary to write as JSON.
@@ -684,10 +829,10 @@ class Producer:
         """Handle a processing error by writing error metadata and logging.
 
         Creates an error-state metadata dictionary using
-        :func:`create_error_metadata`, preserves the ``stage`` and
-        ``started_at`` from any existing in-progress JSON metadata, writes
-        it atomically as a JSON file adjacent to the source file, and logs
-        the error to stderr via :func:`log_error`.
+        :func:`create_error_metadata`, preserves any step maps that were
+        already set from in-progress JSON metadata, writes it atomically as
+        a JSON file adjacent to the source file, and logs the error to
+        stderr via :func:`log_error`.
 
         Args:
             exc: The exception that occurred during processing.
@@ -718,15 +863,18 @@ class Producer:
 
         json_path = source_path.with_name(source_path.name + ".json")
 
-        # Preserve status and started_at from any existing in-progress metadata.
+        # Preserve step maps from any existing in-progress metadata.
         if json_path.exists():
             try:
                 existing = json.loads(json_path.read_text(encoding="utf-8"))
-                if "started_at" in existing:
-                    error_metadata["started_at"] = existing["started_at"]
-                # Preserve any status map that was already set.
-                if "status" in existing:
-                    error_metadata["status"] = existing["status"]
+                if isinstance(existing, dict):
+                    # Preserve any step maps that were already set.
+                    for step_key in ("transcribe", "summarize", "extract"):
+                        if step_key in existing:
+                            error_metadata[step_key] = existing[step_key]
+                    # Preserve existing content (transcript for MP4).
+                    if "content" in existing:
+                        error_metadata["content"] = existing["content"]
             except json.JSONDecodeError, OSError:
                 pass
 

@@ -97,7 +97,7 @@ class TestScanDirectory:
         """Source files with existing JSON metadata should not be returned."""
         (tmp_path / "lecture.mp4").write_bytes(b"video data")
         (tmp_path / "lecture.mp4.json").write_text(
-            '{"status": {"transcribe": "complete", "summarize": "complete"}}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'
         )
 
         scanner = Scanner(data_dir=tmp_path)
@@ -111,7 +111,7 @@ class TestScanDirectory:
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
         json_file.write_text(
-            '{"status": {"transcribe": "complete", "summarize": "complete"}}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'
         )
 
         # Make the JSON older than the source.
@@ -136,7 +136,7 @@ class TestScanDirectory:
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
         json_file.write_text(
-            '{"status": {"transcribe": "complete", "summarize": "complete"}}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'
         )
 
         # Make the JSON newer than the source.
@@ -394,7 +394,7 @@ class TestOrphanedJsonDetection:
 
     def test_orphaned_json_logs_warning(self, tmp_path, caplog):
         """An orphaned JSON file should log a warning."""
-        (tmp_path / "orphan.mp4.json").write_text('{"status": {"transcribe": "complete"}}')
+        (tmp_path / "orphan.mp4.json").write_text('{"transcribe": {"status": "complete"}}')
 
         scanner = Scanner(data_dir=tmp_path)
         with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
@@ -408,7 +408,7 @@ class TestOrphanedJsonDetection:
 
     def test_orphaned_json_not_in_results(self, tmp_path, caplog):
         """Orphaned JSON files should not appear in the result list."""
-        (tmp_path / "orphan.mp4.json").write_text('{"status": {"transcribe": "complete"}}')
+        (tmp_path / "orphan.mp4.json").write_text('{"transcribe": {"status": "complete"}}')
 
         scanner = Scanner(data_dir=tmp_path)
         with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
@@ -420,7 +420,7 @@ class TestOrphanedJsonDetection:
         """A JSON file with a matching source should not be flagged as orphaned."""
         (tmp_path / "lecture.mp4").write_bytes(b"video")
         (tmp_path / "lecture.mp4.json").write_text(
-            '{"status": {"transcribe": "complete", "summarize": "complete"}}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'
         )
 
         scanner = Scanner(data_dir=tmp_path)
@@ -436,7 +436,7 @@ class TestOrphanedJsonDetection:
 
     def test_json_with_unsupported_extension_is_orphaned(self, tmp_path, caplog):
         """A JSON file whose stripped name has no supported extension is orphaned."""
-        (tmp_path / "config.json").write_text('{"status": {"extract": "complete"}}')
+        (tmp_path / "config.json").write_text('{"extract": {"status": "complete"}}')
 
         scanner = Scanner(data_dir=tmp_path)
         with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
@@ -452,7 +452,7 @@ class TestOrphanedJsonDetection:
         """Orphaned JSON in subdirectories should be detected."""
         (tmp_path / "Course1").mkdir()
         (tmp_path / "Course1" / "orphan.pdf.json").write_text(
-            '{"status": {"extract": "complete"}}'
+            '{"extract": {"status": "complete"}}'
         )
 
         scanner = Scanner(data_dir=tmp_path)
@@ -468,7 +468,7 @@ class TestOrphanedJsonDetection:
 
     def test_warning_includes_json_path(self, tmp_path, caplog):
         """Orphaned JSON warning should include the file path."""
-        (tmp_path / "orphan.mp4.json").write_text('{"status": {"transcribe": "complete"}}')
+        (tmp_path / "orphan.mp4.json").write_text('{"transcribe": {"status": "complete"}}')
 
         scanner = Scanner(data_dir=tmp_path)
         with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
@@ -611,14 +611,14 @@ class TestIntegrationScenarios:
         # Processed file (has JSON with all steps complete).
         (tmp_path / "processed.mp4").write_bytes(b"video")
         (tmp_path / "processed.mp4.json").write_text(
-            '{"status": {"transcribe": "complete", "summarize": "complete"}}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'
         )
 
         # Unprocessed file (no JSON).
         (tmp_path / "unprocessed.pdf").write_bytes(b"pdf")
 
         # Orphaned JSON.
-        (tmp_path / "orphan.pdf.json").write_text('{"status": {"extract": "complete"}}')
+        (tmp_path / "orphan.pdf.json").write_text('{"extract": {"status": "complete"}}')
 
         # Nested unprocessed.
         (tmp_path / "subdir").mkdir()
@@ -646,7 +646,7 @@ class TestIntegrationScenarios:
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
         json_file.write_text(
-            '{"status": {"transcribe": "complete", "summarize": "complete"}}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'
         )
 
         # Make JSON newer.
@@ -668,7 +668,7 @@ class TestIntegrationScenarios:
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
         json_file.write_text(
-            '{"status": {"transcribe": "complete", "summarize": "complete"}}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'
         )
 
         # Make source newer.
@@ -695,7 +695,7 @@ class TestStepStatusBasedScanning:
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
         json_file.write_text(
-            '{"status": {"transcribe": "in_progress", "summarize": null}}'
+            '{"transcribe": {"status": "in_progress"}, "summarize": {"status": null}}'
         )
 
         scanner = Scanner(data_dir=tmp_path)
@@ -711,7 +711,7 @@ class TestStepStatusBasedScanning:
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
         json_file.write_text(
-            '{"status": {"transcribe": "complete", "summarize": "in_progress"}}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "in_progress"}}'
         )
 
         scanner = Scanner(data_dir=tmp_path)
@@ -725,7 +725,7 @@ class TestStepStatusBasedScanning:
         source = tmp_path / "doc.pdf"
         source.write_bytes(b"pdf data")
         json_file = tmp_path / "doc.pdf.json"
-        json_file.write_text('{"status": {"extract": "in_progress"}}')
+        json_file.write_text('{"extract": {"status": "in_progress"}}')
 
         scanner = Scanner(data_dir=tmp_path)
         result = scanner.scan_directory()
@@ -738,7 +738,7 @@ class TestStepStatusBasedScanning:
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
-        json_file.write_text('{"status": {"transcribe": "in_progress"}, "error": "transcription failed"}')
+        json_file.write_text('{"transcribe": {"status": "in_progress"}, "error": "transcription failed"}')
 
         scanner = Scanner(data_dir=tmp_path)
         result = scanner.scan_directory()
@@ -756,7 +756,7 @@ class TestStepStatusBasedScanning:
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
-        json_file.write_text('{"status": {"transcribe": "in_progress"}, "error": "old error"}')
+        json_file.write_text('{"transcribe": {"status": "in_progress"}, "error": "old error"}')
 
         # Make source newer than JSON.
         old_time = time.time() - 100
@@ -776,7 +776,7 @@ class TestStepStatusBasedScanning:
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
         json_file.write_text(
-            '{"status": {"transcribe": "complete", "summarize": "complete"}}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'
         )
 
         scanner = Scanner(data_dir=tmp_path)
@@ -789,7 +789,7 @@ class TestStepStatusBasedScanning:
         source = tmp_path / "lecture.pdf"
         source.write_bytes(b"pdf data")
         json_file = tmp_path / "lecture.pdf.json"
-        json_file.write_text('{"status": {"extract": "complete"}}')
+        json_file.write_text('{"extract": {"status": "complete"}}')
 
         scanner = Scanner(data_dir=tmp_path)
         result = scanner.scan_directory()
@@ -802,7 +802,7 @@ class TestStepStatusBasedScanning:
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
         json_file.write_text(
-            '{"status": {"transcribe": "complete", "summarize": null}}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": null}}'
         )
 
         scanner = Scanner(data_dir=tmp_path)
@@ -820,7 +820,7 @@ class TestStepStatusBasedScanning:
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
         json_file.write_text(
-            '{"status": {"transcribe": "complete", "summarize": "complete"}}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'
         )
 
         old_time = time.time() - 100
@@ -839,7 +839,7 @@ class TestStepStatusBasedScanning:
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
         json_file.write_text(
-            '{"status": {"transcribe": "in_progress", "summarize": null}, "stage": "transcribing"}'
+            '{"transcribe": {"status": "in_progress"}, "summarize": {"status": null}, "stage": "transcribing"}'
         )
 
         scanner = Scanner(data_dir=tmp_path)
@@ -853,7 +853,7 @@ class TestStepStatusBasedScanning:
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
-        json_file.write_text('{"status": {"transcribe": "in_progress"}}')
+        json_file.write_text('{"transcribe": {"status": "in_progress"}}')
 
         scanner = Scanner(data_dir=tmp_path)
         result = scanner.scan_directory()
@@ -937,7 +937,7 @@ class TestJsonExistsField:
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
-        json_file.write_text('{"status": {"transcribe": "in_progress"}}')
+        json_file.write_text('{"transcribe": {"status": "in_progress"}}')
 
         scanner = Scanner(data_dir=tmp_path)
         result = scanner.scan_directory()
@@ -963,7 +963,7 @@ class TestJsonExistsField:
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
-        json_file.write_text('{"status": {"transcribe": "in_progress"}, "error": "some error"}')
+        json_file.write_text('{"transcribe": {"status": "in_progress"}, "error": "some error"}')
 
         old_time = time.time() - 100
         new_time = time.time()
@@ -985,7 +985,7 @@ class TestStageTracking:
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         (tmp_path / "lecture.mp4.json").write_text(
-            '{"status": {"transcribe": "in_progress", "summarize": null}, "stage": "transcribing"}'
+            '{"transcribe": {"status": "in_progress"}, "summarize": {"status": null}, "stage": "transcribing"}'
         )
 
         scanner = Scanner(data_dir=tmp_path)
@@ -999,7 +999,7 @@ class TestStageTracking:
         source = tmp_path / "lecture.pdf"
         source.write_bytes(b"pdf data")
         (tmp_path / "lecture.pdf.json").write_text(
-            '{"status": {"extract": "in_progress"}, "stage": "extracting_metadata"}'
+            '{"extract": {"status": "in_progress"}, "stage": "extracting_metadata"}'
         )
 
         scanner = Scanner(data_dir=tmp_path)
@@ -1017,7 +1017,7 @@ class TestStageTracking:
         source.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
         json_file.write_text(
-            '{"status": {"transcribe": "complete", "summarize": "complete"}, "stage": "summarizing"}'
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}, "stage": "summarizing"}'
         )
 
         old_time = time.time() - 100
@@ -1036,7 +1036,7 @@ class TestStageTracking:
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         (tmp_path / "lecture.mp4.json").write_text(
-            '{"status": {"transcribe": "in_progress"}, "stage": 123}'
+            '{"transcribe": {"status": "in_progress"}, "stage": 123}'
         )
 
         scanner = Scanner(data_dir=tmp_path)

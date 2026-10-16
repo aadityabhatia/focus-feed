@@ -5,41 +5,65 @@ specified in design doc section 3.3. Each processed source file has a
 corresponding `.json` metadata file with the same name, containing metadata
 used for feed generation.
 
-Processing progress is tracked through a unified ``status`` dictionary that
-maps step names to their current state:
+Processing progress is tracked through separate step maps for each processing
+step:
 
-- ``status["transcribe"]`` — tracks transcription progress (MP4 files only).
-- ``status["summarize"]`` — tracks summarization progress (MP4 files only).
-- ``status["extract"]`` — tracks metadata extraction progress (PDF/HTML only).
+- ``transcribe``: Step map for transcription progress (MP4 files only).
+- ``summarize``: Step map for summarization progress (MP4 files only).
+- ``extract``: Step map for metadata extraction progress (PDF/HTML only).
 
-Each status value can be ``None`` (not started), ``"in_progress"``, or
-``"complete"``.  For items with errors, the value is set to ``None`` or the
-key is omitted.  The :attr:`feed_eligible` computed property returns ``True``
-only when all applicable steps are ``"complete"`` and there is no error.
+Each step map contains a ``status`` field that can be ``None`` (not started),
+``"in_progress"``, or ``"complete"``.  The :attr:`feed_eligible` computed
+property returns ``True`` only when all applicable steps are ``"complete"``
+and there is no error.
 
-Date fields (``date``, ``processing_date``, ``started_at``, ``completed_at``)
-are stored as UNIX epoch integers (seconds since 1970-01-01 UTC).
+Date fields (``date``) are stored as UNIX epoch integers (seconds since
+1970-01-01 UTC).  Per-step timing is tracked within each step map's
+``start_time`` and ``end_time`` fields.
 
 Schema:
     {
-        "status": {
-            "transcribe": "in_progress" | "complete" | null,  # MP4 only
-            "summarize": "in_progress" | "complete" | null,   # MP4 only
-            "extract": "in_progress" | "complete" | null,     # PDF/HTML only
-        },
         "title": "string",
-        "description": "string",
+        "description": "string (optional, extracted from source for PDF/HTML, empty for MP4)",
+        "summary": "string (optional, LLM-generated key takeaways for MP4)",
         "filename": "lecture.mp4",
         "filepath": "videos/lecture.mp4",
         "filetype": "mp4|pdf|html",
         "date": 1728931200,          # UNIX epoch (seconds)
         "size": 12345678,
-        "transcript": "Markdown transcript... (mp4 only)",
-        "summary": "Key takeaways... (mp4 only)",
-        "processing_date": 1728931200,  # UNIX epoch (seconds)
-        "transcription_model": "large-v3-turbo (optional, mp4 only)",
-        "started_at": 1728931200,       # UNIX epoch, optional
-        "completed_at": 1728931200,     # UNIX epoch, optional
+        "duration": 3600.5,          # Audio duration in seconds (MP4, optional)
+        "creation_time": "2024-01-15T10:30:00.000000Z",  # Media creation time
+        "content": "Plaintext content (transcript for MP4, extracted text for PDF/HTML)",
+        "transcribe": {
+            "status": "complete",
+            "start_time": 1792096505,
+            "end_time": 1792096515,
+            "input_size": 12345678,
+            "output_size": 456789,
+            "words": 452,
+            "model": "large-v3-turbo",
+            "input_tokens": 1234,
+            "output_tokens": 567
+        },
+        "summarize": {
+            "status": "complete",
+            "start_time": 1792096515,
+            "end_time": 1792096520,
+            "input_size": 456789,
+            "output_size": 1997,
+            "words": 345,
+            "model": "mistralai/Mistral-7B-Instruct",
+            "input_tokens": 890,
+            "output_tokens": 123
+        },
+        "extract": {
+            "status": "complete",
+            "start_time": 1792096500,
+            "end_time": 1792096505,
+            "input_size": 1790891,
+            "output_size": 12345,
+            "words": 543
+        },
         "error": "string (optional, only when processing failed)"
     }
 
@@ -49,48 +73,78 @@ Schema:
 
 import json
 from pathlib import Path
-import sys
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
 
-# Old deprecated field names from previous metadata schema versions.
-# These are no longer part of the Metadata model and will be ignored
-# (via extra="ignore") but a warning is printed when encountered.
-OLD_FIELDS = {"transcribe_status", "summarize_status", "extract_status", "stage"}
+# Step status values.
+_STEP_STATUS_IN_PROGRESS = "in_progress"
+_STEP_STATUS_COMPLETE = "complete"
 
 
-def _warn_old_fields(data: dict[str, Any], filename: str | None = None) -> dict[str, Any]:
-    """Check for old deprecated fields in metadata data and print warnings to stderr.
+class StepMap(BaseModel):
+    """Metadata for a single processing step.
 
-    Args:
-        data: Dictionary containing metadata fields.
-        filename: Optional filename for the warning message.
+    Each processing step (transcribe, summarize, extract) gets its own
+    :class:`StepMap` instance that tracks the step's status, timing, sizes,
+    and (for LLM-based steps) model and token usage.
 
-    Returns:
-        The data dict, with old-style string ``status`` field removed if present
-        (to prevent validation errors with the new dict-based schema).
+    Attributes:
+        status: ``None``, ``"in_progress"``, or ``"complete"``.
+        start_time: UNIX epoch timestamp when the step started, or ``None``.
+        end_time: UNIX epoch timestamp when the step ended, or ``None``.
+        input_size: Input size in bytes.
+        output_size: Output size in bytes.
+        words: Output word count (for text output steps), or ``None``.
+        model: Model identifier used (LLM-based steps only: transcribe,
+            summarize), or ``None``.
+        input_tokens: Number of tokens input to LLM (LLM-based steps only),
+            or ``None``.
+        output_tokens: Number of tokens output from LLM (LLM-based steps
+            only), or ``None``.
     """
-    location = f" in {filename}" if filename else ""
-    for field in sorted(OLD_FIELDS):
-        if field in data:
-            print(
-                f"Warning: Old JSON field '{field}' found{location}. "
-                f"This field is deprecated. Please regenerate metadata using the new schema.",
-                file=sys.stderr,
-            )
-    # Check for old-style status field (string instead of dict).
-    # The new schema uses status as a dict, so a non-dict value indicates
-    # the old single-value format.
-    if "status" in data and not isinstance(data["status"], dict) and data["status"] is not None:
-        print(
-            f"Warning: Old JSON field 'status' found{location}. "
-            f"This field is deprecated. Please regenerate metadata using the new schema.",
-            file=sys.stderr,
-        )
-        # Remove old status field to prevent validation error
-        data = {k: v for k, v in data.items() if k != "status"}
-    return data
+
+    model_config = ConfigDict(extra="forbid")
+
+    status: str | None = Field(
+        default=None,
+        description="null, 'in_progress', or 'complete'",
+    )
+    start_time: int | None = Field(
+        default=None,
+        description="UNIX epoch start time",
+    )
+    end_time: int | None = Field(
+        default=None,
+        description="UNIX epoch end time",
+    )
+    input_size: int = Field(
+        ge=0,
+        description="Input size in bytes",
+    )
+    output_size: int = Field(
+        ge=0,
+        description="Output size in bytes",
+    )
+    words: int | None = Field(
+        default=None,
+        ge=0,
+        description="Output word count",
+    )
+    model: str | None = Field(
+        default=None,
+        description="Model identifier (LLM steps only)",
+    )
+    input_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        description="Input tokens (LLM steps only)",
+    )
+    output_tokens: int | None = Field(
+        default=None,
+        ge=0,
+        description="Output tokens (LLM steps only)",
+    )
 
 
 class Metadata(BaseModel):
@@ -99,33 +153,34 @@ class Metadata(BaseModel):
     Each processed source file has a corresponding `.json` file with the same
     name, containing metadata used for feed generation.
 
-    Step progress is tracked through a unified ``status`` dictionary:
+    Step progress is tracked through separate step maps:
 
-    - ``status["transcribe"]``: ``"in_progress"`` or ``"complete"`` (MP4 only).
-    - ``status["summarize"]``: ``"in_progress"`` or ``"complete"`` (MP4 only).
-    - ``status["extract"]``: ``"in_progress"`` or ``"complete"`` (PDF/HTML only).
+    - ``transcribe``: :class:`StepMap` for transcription (MP4 only).
+    - ``summarize``: :class:`StepMap` for summarization (MP4 only).
+    - ``extract``: :class:`StepMap` for metadata extraction (PDF/HTML only).
 
     The :attr:`feed_eligible` computed property returns ``True`` only when all
     applicable steps are ``"complete"``.  Files with ``feed_eligible == False``
     are excluded from generated feeds.
 
     Field Descriptions:
-        status: Dictionary mapping step names to their status. Keys: "transcribe",
-            "summarize" (MP4 only), "extract" (PDF/HTML only). Values: None,
-            "in_progress", or "complete".
         title: Human-readable title (LLM-generated if not in source metadata)
-        description: Summary/description for feed item
+        description: Description for feed item (optional; extracted from source
+            for PDF/HTML files, empty for MP4 files where summary is used instead)
+        summary: LLM-generated key takeaways summary (MP4 files only, optional)
         filename: Original filename with extension
         filepath: Relative path from data directory root
         filetype: Source file type: "mp4", "pdf", or "html"
         date: Publication/creation date as UNIX epoch (seconds)
         size: File size in bytes (for podcast enclosure length)
-        transcript: Markdown transcript (MP4 files only, no timestamps)
-        summary: Key takeaways from LLM (MP4 files only)
-        processing_date: Processing date as UNIX epoch (seconds)
-        transcription_model: Model used for transcription (MP4 files only)
-        started_at: When processing started, UNIX epoch (seconds)
-        completed_at: When processing completed, UNIX epoch (seconds)
+        duration: Audio duration in seconds (MP4 files only, optional)
+        creation_time: ISO-8601 creation time string from media metadata
+            (MP4 files only, optional)
+        content: Plaintext content — transcript for MP4 files, extracted text
+            for PDF/HTML files (optional)
+        transcribe: Step map for transcription (MP4 only)
+        summarize: Step map for summarization (MP4 only)
+        extract: Step map for metadata extraction (PDF/HTML only)
         error: Error message (only present when processing failed)
     """
 
@@ -134,18 +189,18 @@ class Metadata(BaseModel):
         populate_by_name=True,
     )
 
-    status: dict[str, str | None] | None = Field(
-        default=None,
-        description="Step status map: keys are step names (transcribe, summarize, extract), "
-        "values are None, 'in_progress', or 'complete'",
-    )
     title: str = Field(
         ...,
         description="Human-readable title (LLM-generated if not in source metadata)",
     )
-    description: str = Field(
-        ...,
-        description="Summary/description for feed item",
+    description: str | None = Field(
+        default=None,
+        description="Description for feed item (extracted from source for PDF/HTML, "
+        "empty for MP4 where summary is used instead)",
+    )
+    summary: str | None = Field(
+        default=None,
+        description="LLM-generated key takeaways summary (MP4 files only)",
     )
     filename: str = Field(
         ...,
@@ -168,34 +223,43 @@ class Metadata(BaseModel):
         description="File size in bytes (for podcast enclosure length)",
         ge=0,
     )
-    transcript: str | None = Field(
+    duration: float | None = Field(
         default=None,
-        description="Markdown transcript (MP4 files only, no timestamps)",
+        description="Audio duration in seconds (MP4 files only)",
+        ge=0,
     )
-    summary: str | None = Field(
+    creation_time: str | None = Field(
         default=None,
-        description="Key takeaways from LLM (MP4 files only)",
+        description="ISO-8601 creation time string from media metadata (MP4 files only)",
     )
-    processing_date: int | None = Field(
+    content: str | None = Field(
         default=None,
-        description="Processing date as UNIX epoch (seconds)",
+        description="Plaintext content (transcript for MP4, extracted text for PDF/HTML)",
     )
-    transcription_model: str | None = Field(
+    transcribe: StepMap | None = Field(
         default=None,
-        description="Model used for transcription (MP4 files only)",
+        description="Step map for transcription (MP4 files only)",
     )
-    started_at: int | None = Field(
+    summarize: StepMap | None = Field(
         default=None,
-        description="When processing started, UNIX epoch (seconds)",
+        description="Step map for summarization (MP4 files only)",
     )
-    completed_at: int | None = Field(
+    extract: StepMap | None = Field(
         default=None,
-        description="When processing completed, UNIX epoch (seconds)",
+        description="Step map for metadata extraction (PDF/HTML files only)",
     )
     error: str | None = Field(
         default=None,
         description="Error message (only present when processing failed)",
     )
+
+    @field_validator("error")
+    @classmethod
+    def _validate_error(cls, v: str | None) -> str | None:
+        """Ensure error is not an empty or whitespace-only string."""
+        if v is not None and not v.strip():
+            raise ValueError("error must not be empty or whitespace-only")
+        return v
 
     # ------------------------------------------------------------------
     # Computed properties
@@ -209,9 +273,11 @@ class Metadata(BaseModel):
         A file is feed-eligible when **all applicable steps** are complete
         and there is no error:
 
-        - **MP4 files**: ``status.get("transcribe") == "complete"`` **and**
-          ``status.get("summarize") == "complete"``.
-        - **PDF/HTML files**: ``status.get("extract") == "complete"``.
+        - **MP4 files**: ``transcribe`` is not ``None`` and
+          ``transcribe.status == "complete"`` and ``summarize`` is not
+          ``None`` and ``summarize.status == "complete"``.
+        - **PDF/HTML files**: ``extract`` is not ``None`` and
+          ``extract.status == "complete"``.
 
         If the ``error`` field is set, the file is never eligible.
         """
@@ -219,39 +285,17 @@ class Metadata(BaseModel):
             return False
         if self.filetype == "mp4":
             return (
-                (self.status or {}).get("transcribe") == "complete"
-                and (self.status or {}).get("summarize") == "complete"
+                self.transcribe is not None
+                and self.transcribe.status == _STEP_STATUS_COMPLETE
+                and self.summarize is not None
+                and self.summarize.status == _STEP_STATUS_COMPLETE
             )
         if self.filetype in ("pdf", "html"):
-            return (self.status or {}).get("extract") == "complete"
+            return (
+                self.extract is not None
+                and self.extract.status == _STEP_STATUS_COMPLETE
+            )
         return False
-
-    # ------------------------------------------------------------------
-    # Validators
-    # ------------------------------------------------------------------
-
-    @model_validator(mode="after")
-    def validate_error_field(self) -> Metadata:
-        """Validate the ``error`` field.
-
-        - When ``error`` is provided it must be a non-empty string.
-        """
-        if self.error is not None and not self.error.strip():
-            raise ValueError("error field must be a non-empty string when provided")
-        return self
-
-    @model_validator(mode="after")
-    def validate_conditional_fields(self) -> Metadata:
-        """Validate that transcript/summary are only present for MP4 files.
-
-        - transcript and summary fields are only allowed for filetype='mp4'
-        """
-        if self.filetype != "mp4":
-            if self.transcript is not None:
-                raise ValueError("transcript is only allowed for filetype='mp4'")
-            if self.summary is not None:
-                raise ValueError("summary is only allowed for filetype='mp4'")
-        return self
 
     # ------------------------------------------------------------------
     # Serialization / Deserialization
@@ -283,7 +327,6 @@ class Metadata(BaseModel):
         Returns:
             A validated Metadata instance.
         """
-        data = _warn_old_fields(data)
         return cls.model_validate(data)
 
     @classmethod
@@ -297,7 +340,6 @@ class Metadata(BaseModel):
             A validated Metadata instance.
         """
         data = json.loads(json_str)
-        data = _warn_old_fields(data)
         return cls.model_validate(data)
 
     def to_json_file(self, path: str | Path) -> None:
@@ -326,5 +368,4 @@ class Metadata(BaseModel):
         """
         path = Path(path)
         data = json.loads(path.read_text(encoding="utf-8"))
-        data = _warn_old_fields(data, path.name)
         return cls.model_validate(data)

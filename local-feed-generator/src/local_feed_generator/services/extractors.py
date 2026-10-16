@@ -1,26 +1,43 @@
-"""Metadata extractors for PDF and HTML files.
+"""Metadata extractors for PDF, HTML, and audio (MP4) files.
 
 This module provides extractor classes that read metadata from PDF and HTML
 source files, returning structured dictionaries compatible with the Metadata
 model (design doc section 3.3).
 
-Each extractor's ``extract`` method returns a dict with the following keys:
+It also provides a :func:`get_audio_metadata` function that uses ``ffprobe``
+to extract metadata from MP4/audio files (type, duration, creation_time,
+bit_rate).
+
+    Each extractor's ``extract`` method returns a dict with the following keys:
     - title: str (always present; falls back to filename without extension)
     - description: str | None (optional; may be None if not available)
     - date: int (UNIX epoch seconds; falls back to file modification time)
     - size: int (file size in bytes)
     - filetype: str (always "pdf" or "html")
+    - content: str | None (plaintext content extracted from the source file,
+      or None if extraction fails or no text is found)
 """
 
+import contextlib
 from datetime import UTC, datetime
+import json
 import logging
 from pathlib import Path
+import re
+import shutil
+import subprocess
 from typing import Any
 
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
 _logger = logging.getLogger("local_feed_generator")
+
+# Pattern matching control characters that are invalid in XML (everything
+# below 0x20 except tab \x09, newline \x0a, and carriage return \x0d).
+# These characters can leak into extracted text from PDFs and other binary
+# formats, causing feed generation to fail.
+_CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
 
 
 def _clean_title(title: str | None) -> str | None:
@@ -43,6 +60,27 @@ def _clean_title(title: str | None) -> str | None:
     return title.replace("_", " ")
 
 
+def _sanitize_content(text: str | None) -> str | None:
+    """Remove control characters that are invalid in XML from extracted text.
+
+    PDFs and other binary formats can produce text containing control
+    characters (e.g. ``\\x00``-``\\x1f`` except tab/newline/CR, and
+    ``\\x7f``) that are not valid in XML and cause feed generation to fail.
+    This function strips those characters while preserving common
+    whitespace (``\\t``, ``\\n``, ``\\r``).
+
+    Args:
+        text: The extracted text, or None.
+
+    Returns:
+        The sanitized text with control characters removed, or None if
+        the input was None.
+    """
+    if text is None:
+        return None
+    return _CONTROL_CHAR_PATTERN.sub("", text)
+
+
 class PDFExtractor:
     """Extracts metadata from PDF files using pypdf.
 
@@ -59,13 +97,15 @@ class PDFExtractor:
             filepath: Path to the PDF file.
 
         Returns:
-            A dictionary with keys: title, description, date, size, filetype.
+            A dictionary with keys: title, description, date, size, filetype, content.
 
             - title: PDF metadata title, or filename without extension as fallback.
             - description: PDF metadata author, or None if not available.
             - date: Creation date as UNIX epoch (seconds), or file modification time.
             - size: File size in bytes.
             - filetype: Always "pdf".
+            - content: Plaintext content extracted from all PDF pages, or None
+              if no text could be extracted.
         """
         filepath = Path(filepath)
         filename = filepath.stem
@@ -76,6 +116,7 @@ class PDFExtractor:
         title = filename
         description: str | None = None
         date: datetime | None = None
+        content: str | None = None
 
         try:
             reader = PdfReader(str(filepath))
@@ -88,6 +129,17 @@ class PDFExtractor:
                     description = str(metadata.author)
                 if metadata.creation_date:
                     date = metadata.creation_date
+
+            # Extract plaintext content from all pages.
+            content_parts: list[str] = []
+            for page in reader.pages:
+                text = page.extract_text()
+                if text:
+                    content_parts.append(text)
+            content = "\n".join(content_parts) if content_parts else None
+            # Remove control characters that are invalid in XML and would
+            # cause feed generation to fail.
+            content = _sanitize_content(content)
         except Exception as e:
             _logger.warning("Failed to extract PDF metadata from %s: %s", filepath, e)
 
@@ -108,6 +160,7 @@ class PDFExtractor:
             "date": int(date.timestamp()),
             "size": size,
             "filetype": "pdf",
+            "content": content,
         }
 
 
@@ -128,13 +181,15 @@ class HTMLExtractor:
             filepath: Path to the HTML file.
 
         Returns:
-            A dictionary with keys: title, description, date, size, filetype.
+            A dictionary with keys: title, description, date, size, filetype, content.
 
             - title: Content of ``<title>`` tag, or filename without extension as fallback.
             - description: Content of ``<meta name="description">``, or None if not available.
             - date: Date as UNIX epoch (seconds), or file modification time.
             - size: File size in bytes.
             - filetype: Always "html".
+            - content: Plaintext content extracted from the HTML document body
+              (tags removed), or None if parsing fails.
         """
         filepath = Path(filepath)
         filename = filepath.stem
@@ -145,10 +200,11 @@ class HTMLExtractor:
         title = filename
         description: str | None = None
         date: datetime | None = None
+        text_content: str | None = None
 
         try:
-            content = filepath.read_text(encoding="utf-8")
-            soup = BeautifulSoup(content, "html.parser")
+            html_content = filepath.read_text(encoding="utf-8")
+            soup = BeautifulSoup(html_content, "html.parser")
 
             # Extract title from <title> tag
             title_tag = soup.title
@@ -162,6 +218,11 @@ class HTMLExtractor:
             desc_content = desc_meta.get("content") if desc_meta else None
             if desc_content:
                 description = str(desc_content).strip()
+
+            # Extract plaintext content from the HTML body (tags removed)
+            text_content = soup.get_text()
+            # Remove control characters that are invalid in XML.
+            text_content = _sanitize_content(text_content)
 
             # Extract date from various sources
             date = self._extract_date(soup)
@@ -185,6 +246,7 @@ class HTMLExtractor:
             "date": int(date.timestamp()),
             "size": size,
             "filetype": "html",
+            "content": text_content,
         }
 
     def _extract_date(self, soup: BeautifulSoup) -> datetime | None:
@@ -264,3 +326,107 @@ class HTMLExtractor:
                 continue
 
         return None
+
+
+# ---------------------------------------------------------------------------
+# Audio metadata extraction via ffprobe
+# ---------------------------------------------------------------------------
+
+
+def get_audio_metadata(filepath: str | Path) -> dict[str, Any] | None:
+    """Get audio file metadata using ``ffprobe``.
+
+    Runs the ``ffprobe`` command-line tool to extract container and stream
+    metadata from an audio/video file (typically MP4).  The function returns
+    a structured dictionary suitable for inclusion in the JSON metadata file.
+
+    Returns a dict with the following keys:
+        - type: str — the format name reported by ffprobe (e.g.
+          ``"mov,mp4,m4a,3gp,3g2,mj2"``).
+        - duration: float — duration in seconds, or ``0`` if unavailable.
+        - creation_time: str | None — ISO-8601 creation time string from
+          the file's metadata tags, or ``None`` if not present.
+        - bit_rate: int | None — bit rate in bits per second, or ``None``
+          if not available.
+
+    If ``ffprobe`` is not installed or any error occurs during probing,
+    ``None`` is returned so that callers can fall back to existing behaviour
+    (e.g. file modification time).
+
+    Args:
+        filepath: Path to the audio/video file to probe.
+
+    Returns:
+        A metadata dictionary, or ``None`` if probing fails.
+    """
+    filepath = Path(filepath)
+
+    # Bail out early if ffprobe is not on the system PATH.
+    if shutil.which("ffprobe") is None:
+        _logger.warning("ffprobe not found on PATH; cannot extract audio metadata")
+        return None
+
+    cmd = [
+        "ffprobe",
+        "-v",
+        "quiet",
+        "-print_format",
+        "json",
+        "-show_format",
+        "-show_streams",
+        str(filepath),
+    ]
+
+    try:
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+        probe_data = json.loads(result.stdout)
+    except (subprocess.CalledProcessError, json.JSONDecodeError, OSError) as e:
+        _logger.warning("ffprobe failed for %s: %s", filepath, e)
+        return None
+
+    format_info = probe_data.get("format", {})
+    streams = probe_data.get("streams", [])
+
+    # Prefer the first audio stream for metadata, but fall back to the
+    # container-level format info if no audio stream is found.
+    duration: float | None = None
+    bit_rate: int | None = None
+
+    # Try to get duration from an audio stream first, then from format.
+    for stream in streams:
+        if stream.get("codec_type") == "audio":
+            stream_duration = stream.get("duration")
+            if stream_duration is not None:
+                duration = float(stream_duration)
+            stream_bit_rate = stream.get("bit_rate")
+            if stream_bit_rate is not None:
+                with contextlib.suppress(ValueError, TypeError):
+                    bit_rate = int(stream_bit_rate)
+            break
+
+    # Fall back to format-level values.
+    if duration is None:
+        fmt_duration = format_info.get("duration")
+        if fmt_duration is not None:
+            with contextlib.suppress(ValueError, TypeError):
+                duration = float(fmt_duration)
+
+    if bit_rate is None:
+        fmt_bit_rate = format_info.get("bit_rate")
+        if fmt_bit_rate is not None:
+            with contextlib.suppress(ValueError, TypeError):
+                bit_rate = int(fmt_bit_rate)
+
+    tags = format_info.get("tags", {})
+
+    return {
+        "type": format_info.get("format_name"),
+        "duration": duration if duration is not None else 0.0,
+        "creation_time": tags.get("creation_time"),
+        "bit_rate": bit_rate,
+    }

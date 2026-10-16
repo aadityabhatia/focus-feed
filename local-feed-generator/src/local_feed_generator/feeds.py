@@ -382,7 +382,8 @@ class FeedGenerator:
         For each item:
             - **title**: from metadata ``title``.
             - **description**: from metadata ``summary`` (LLM-generated key
-              takeaways). Falls back to ``description`` if summary is empty.
+              takeaways for MP4 files), falling back to ``description``
+              for backward compatibility.
             - **link**: absolute URL to the source MP4 file.
             - **enclosure**: URL, type ``audio/mp4``, and length (file size).
             - **publication date**: from metadata ``date``.
@@ -416,7 +417,8 @@ class FeedGenerator:
             entry.guid(self._absolute_url(metadata.filepath))
             entry.title(metadata.title)
 
-            # Description from summary (LLM key takeaways), fallback to description.
+            # Description from summary field (holds LLM key takeaways for MP4),
+            # falling back to description for backward compatibility.
             description = metadata.summary or metadata.description or ""
             entry.description(description)
 
@@ -453,7 +455,7 @@ class FeedGenerator:
 
         For each item:
             - **title**: from metadata ``title``.
-            - **description**: from metadata ``transcript`` or ``summary`` if
+            - **description**: from metadata ``content`` (extracted text) if
               available, otherwise from ``description``, otherwise empty.
             - **link**: absolute URL to the source file.
             - **publication date**: from metadata ``date``.
@@ -486,9 +488,9 @@ class FeedGenerator:
             entry.guid(self._absolute_url(metadata.filepath))
             entry.title(metadata.title)
 
-            # Description from transcript/summary (if available), fallback to
+            # Description from content (if available), fallback to
             # description field, then empty string.
-            description = metadata.transcript or metadata.summary or metadata.description or ""
+            description = metadata.content or metadata.description or ""
             entry.description(description)
 
             # Link to the source file.

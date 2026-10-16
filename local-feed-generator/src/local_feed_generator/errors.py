@@ -112,14 +112,13 @@ def create_error_metadata(
 
     Produces a dictionary matching the JSON metadata schema (design doc
     section 3.3) with the ``error`` field set to the exception message.
-    The ``status`` field is set to ``None`` (not started / incomplete)
-    so that :attr:`~local_feed_generator.metadata.Metadata.feed_eligible`
+    Step maps are set to ``None`` so that :attr:`feed_eligible`
     returns ``False`` and the entry is excluded from feeds.  The returned
     dict is ready for JSON serialization and writing to a ``.json`` file
     adjacent to the source file.
 
-    Date fields (``date`` and ``processing_date``) are stored as UNIX epoch
-    integers (seconds since 1970-01-01 UTC).
+    Date field (``date``) is stored as a UNIX epoch integer (seconds since
+    1970-01-01 UTC).
 
     Args:
         exc: The exception that occurred during processing.
@@ -136,7 +135,6 @@ def create_error_metadata(
     error_message = str(exc) if str(exc) else exc.__class__.__name__
 
     return {
-        "status": None,
         "title": filename,
         "description": "",
         "filename": filename,
@@ -144,7 +142,6 @@ def create_error_metadata(
         "filetype": filetype or "unknown",
         "date": timestamp,
         "size": 0,
-        "processing_date": timestamp,
         "error": error_message,
     }
 

@@ -22,7 +22,7 @@ from local_feed_generator.feeds import (
     FeedValidationResult,
     validate_feed,
 )
-from local_feed_generator.metadata import Metadata
+from local_feed_generator.metadata import Metadata, StepMap
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -62,22 +62,37 @@ def make_metadata(
     filename = Path(filepath).name
     kwargs = {
         "title": title or filename,
-        "description": description,
         "filename": filename,
         "filepath": filepath,
         "filetype": filetype,
         "date": date,
         "size": size,
-        "processing_date": 1728931200,
     }
     if filetype == "mp4":
-        kwargs["transcript"] = transcript
-        kwargs["summary"] = summary
+        # For MP4, transcript maps to content, summary holds the LLM key
+        # takeaways, and description is left blank.
+        kwargs["content"] = transcript
+        kwargs["description"] = ""  # MP4: description is blank
+        kwargs["summary"] = summary  # MP4: summary holds LLM key takeaways
         if feed_eligible and not error:
-            kwargs["status"] = {"transcribe": "complete", "summarize": "complete"}
+            kwargs["transcribe"] = StepMap(
+                status="complete",
+                input_size=size,
+                output_size=len(transcript.encode("utf-8")) if transcript else 0,
+            )
+            kwargs["summarize"] = StepMap(
+                status="complete",
+                input_size=len(transcript.encode("utf-8")) if transcript else 0,
+                output_size=len((summary or description).encode("utf-8")) if (summary or description) else 0,
+            )
     else:
+        kwargs["description"] = description
         if feed_eligible and not error:
-            kwargs["status"] = {"extract": "complete"}
+            kwargs["extract"] = StepMap(
+                status="complete",
+                input_size=size,
+                output_size=len(description.encode("utf-8")) if description else 0,
+            )
     if error:
         kwargs["error"] = error
     return Metadata(**kwargs)
@@ -266,7 +281,16 @@ class TestMetadataDiscovery:
         json_path.write_text(
             json.dumps(
                 {
-                    "status": {"transcribe": "complete", "summarize": "complete"},
+                    "transcribe": {
+                        "status": "complete",
+                        "input_size": 1000,
+                        "output_size": 500,
+                    },
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                    },
                     "title": "Orphan",
                     "description": "desc",
                     "filename": "orphan.mp4",
@@ -274,7 +298,6 @@ class TestMetadataDiscovery:
                     "filetype": "mp4",
                     "date": 1728931200,
                     "size": 1000,
-                    "processing_date": 1728931200,
                 }
             ),
             encoding="utf-8",
@@ -456,11 +479,35 @@ class TestPodcastFeedGeneration:
 
     def test_podcast_feed_item_description_fallback_to_description(self, tmp_path):
         """Description should fall back to description field if summary is None."""
-        write_metadata_file(
-            tmp_path,
-            "videos/lecture.mp4",
-            summary=None,
-            description="Fallback description",
+        # Simulate old-format metadata where description held the summary
+        # (before the description/summary split was introduced for MP4).
+        source = tmp_path / "videos" / "lecture.mp4"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"video data")
+        json_path = tmp_path / "videos" / "lecture.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "transcribe": {
+                        "status": "complete",
+                        "input_size": 1000,
+                        "output_size": 500,
+                    },
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                    },
+                    "title": "lecture.mp4",
+                    "description": "Fallback description",
+                    "filename": "lecture.mp4",
+                    "filepath": "videos/lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1000,
+                }
+            ),
+            encoding="utf-8",
         )
 
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
@@ -947,7 +994,7 @@ class TestEdgeCases:
         # Write invalid JSON (missing required fields)
         json_path = tmp_path / "bad.mp4.json"
         json_path.write_text(
-            json.dumps({"status": {"transcribe": "complete"}}),  # Missing required fields
+            json.dumps({"transcribe": {"status": "complete"}}),  # Missing required fields
             encoding="utf-8",
         )
 

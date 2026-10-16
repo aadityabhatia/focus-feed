@@ -21,10 +21,15 @@ These feeds will be:
 - **Input files**: PDF, HTML, and MP4 audio files in the `data` directory (can be in subfolders)
 - **Processing modes**: Batch processing and incremental processing (watching for new files or JSON updates)
 - **Audio processing**: Transcribe MP4 files to markdown, generate key takeaway summaries using a local OpenAI-compatible LLM
-- **Metadata**: Generate JSON metadata for each input file with `.json` extension (e.g., `file.mp4` → `file.mp4.json`)
+- **Metadata**: Generate JSON metadata for each input file with `.json` extension (e.g., `file.mp4` → `file.mp4.json`). JSON metadata includes:
+  - Basic file information (title, filename, filepath, filetype, date, size, version)
+  - Content fields: `description` (blank for MP4, extracted metadata for PDF/HTML), `summary` (LLM-generated key takeaways for MP4, null for PDF/HTML), `content` (full transcript for MP4, null for PDF/HTML)
+  - Duration and creation_time fields
+  - Step maps for processing tracking: `transcribe` (with status, timing, metrics), `summarize` (with status, timing, metrics), `extract` (with status, timing, metrics)
+  - Feed eligibility computed from step map statuses
 - **Feed generation**: Create two distinct feeds in the `data` directory:
   1. **Podcast RSS/Atom feed** for audio content (MP4 files with summaries as descriptions)
-  2. **Articles RSS/Atom feed** for text content (PDF/HTML files)
+  2. **Articles RSS/Atom feed** for text content (PDF/HTML files with extracted metadata as descriptions)
 - **Configuration**: System prompt for LLM summarization stored in a config file for easy updates
 
 ### Out of Scope
@@ -41,3 +46,6 @@ These feeds will be:
 - No dependency on external/cloud services
 - System processes only new or updated files (skips files with existing JSON metadata)
 - Orphaned JSON files and special characters in filenames generate warnings
+- MP4 files have blank description, key takeaways in summary, full transcript in content
+- PDF/HTML files have extracted metadata in description, null summary and content
+- Processing progress tracked via step maps (transcribe, summarize, extract) instead of legacy status fields
