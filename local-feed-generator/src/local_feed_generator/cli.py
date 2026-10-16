@@ -162,6 +162,10 @@ def _is_orphaned_json(json_path: Path) -> bool:
     name without the ``.json`` suffix) does not exist or has an unsupported
     extension.
     """
+    # feed.json is a configuration file, not orphaned metadata.
+    if json_path.name == "feed.json":
+        return False
+
     source_filename = json_path.name[: -len(".json")]
     source_path = json_path.parent / source_filename
     if not source_path.exists():
@@ -865,6 +869,10 @@ class _WatchHandler(FileSystemEventHandler):
 
     def _handle_json_event(self, json_path: Path) -> None:
         """Check a JSON file for orphaned status."""
+        # feed.json is a configuration file, not orphaned metadata.
+        if json_path.name == "feed.json":
+            return
+
         source_filename = json_path.name[: -len(".json")]
         source_path = json_path.parent / source_filename
 

@@ -311,9 +311,16 @@ class TestMetadataDiscovery:
 
         assert result == []
 
+    def test_feed_json_not_treated_as_orphaned(self, tmp_path):
+        """feed.json is a configuration file and should not be flagged as orphaned."""
+        (tmp_path / "feed.json").write_text('{"title": "My Feed"}', encoding="utf-8")
 
-# ---------------------------------------------------------------------------
-# Sorting
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com")
+        result = fg._discover_metadata_files()
+
+        # feed.json is config, not metadata — it should not appear in results
+        # and should not produce an orphaned JSON warning.
+        assert result == []
 # ---------------------------------------------------------------------------
 
 

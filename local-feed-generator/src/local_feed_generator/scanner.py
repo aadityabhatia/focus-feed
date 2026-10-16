@@ -434,6 +434,10 @@ class Scanner:
         yield an existing file with a supported source extension. Such files
         are logged as warnings and never included in the processing list.
         """
+        # feed.json is a configuration file, not orphaned metadata.
+        if json_path.name == "feed.json":
+            return
+
         source_filename = json_path.name[: -len(".json")]
         source_path = root_path / source_filename
 

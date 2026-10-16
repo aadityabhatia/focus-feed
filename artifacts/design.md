@@ -15,10 +15,10 @@ The `local-feed-generator` is a standalone application that processes content fi
 - **Idempotent processing:** Skips files with existing metadata; processes only new/changed files
 - **Mobile-ready:** Generates standard-compliant feeds consumable by Antennapod (podcast) and any RSS reader (articles)
 - **Configurable:** System prompts, feed formats, and runtime parameters via environment variables
-- **Flexible organization:** Supports per-folder feed generation with custom titles and descriptions
-- **Conditional feeds:** Feeds are only generated where feed.json exists and applicable files are present
-- **Index pages:** Auto-generates index.html for feed discovery
-- **Enhanced content:** Extracts content from PDF/HTML files, not just metadata
+ - **Flexible organization:** Supports per-folder feed generation with custom titles and descriptions
+ - **Conditional feeds:** Feeds are only generated where feed.json exists and applicable files are present
+ - **Root index page:** Auto-generates root-level index.html for feed discovery
+ - **Enhanced content:** Extracts content from PDF/HTML files, not just metadata
 
 ---
 
@@ -32,7 +32,7 @@ flowchart TB
         direction LR
         scanner["Scanner & Watcher"] -->|files to process| producer["Producer Pipeline"]
         producer -->|metadata| feedgen["Feed Generator\n(Consumer)"]
-        producer -->|metadata| indexgen["Index Generator\n(NEW)"]
+        producer -->|metadata| indexgen["Index Generator"]
         
         subgraph ai["AI Integration Layer"]
             direction LR
@@ -44,12 +44,11 @@ flowchart TB
         producer --> summarize
         producer -->|reads| reflection["reflection.md\n(optional)"]
         feedgen -->|reads| feedconfig["feed.json\n(optional)"]
-        indexgen -->|reads| feedconfig
     end
     
     subgraph data_dir["data/ directory"]
         folder1["Course1/\n- lecture.mp4\n- lecture.mp4.json\n- reflection.md"]
-        folder2["Course2/\n- feed.json\n- podcast.xml\n- articles.xml\n- index.html\n- document.html\n- document.html.json"]
+        folder2["Course2/\n- feed.json\n- podcast.xml\n- articles.xml\n- document.html\n- document.html.json"]
         root_feeds["feed.json (required)\npodcast.xml (if MP4 present)\narticles.xml (if PDF/HTML present)\nindex.html"]
     end
     
@@ -66,9 +65,9 @@ Note: Root-level feeds (podcast.xml, articles.xml, index.html) are ONLY generate
   - **Transcription Service** (`faster-whisper` + CUDA or OpenAI-compatible API): Converts MP4 audio to markdown text using either local (faster-whisper) or remote (OpenAI-compatible API) mode. The system implements a dual-mode architecture with the `RemoteTranscriber` class for API-based transcription and the local `Transcriber` class for GPU-accelerated transcription.
 - **Summarization Service** (`openai` client \=> local LLM): Generates key takeaways from transcripts; supports reflection questions from `reflection.md` files; works with both MP4 transcripts and PDF/HTML extracted content
 - **Extraction Service** (`pypdf`, `beautifulsoup4`, `ffprobe`): Extracts metadata AND content from PDF/HTML files; extracts audio metadata (duration, creation_time) from MP4 files
-- **Feed Generator** (`feedgen`): Aggregates metadata; generates RSS/Atom feeds; supports per-folder feeds via `feed.json`; converts markdown to HTML; only generates feeds where feed.json exists and applicable files are present
-- **Index Generator** (NEW): Generates index.html pages in each folder with feed.json; lists all available feeds with titles and descriptions; provides hierarchical navigation
-- **Configuration** (`pydantic-settings` + `.env`): Manages runtime settings including new prompt variables
+ - **Feed Generator** (`feedgen`): Aggregates metadata; generates RSS/Atom feeds; supports per-folder feeds via `feed.json`; converts markdown to HTML; only generates feeds where feed.json exists and applicable files are present
+ - **Index Generator**: Generates root-level index.html with all available feeds; lists feeds with titles and descriptions
+ - **Configuration** (`pydantic-settings` + `.env`): Manages runtime settings including new prompt variables
 - **CLI** (`click`): Command-line interface with granular subcommands
 
 ### 2.3 Data Flow
@@ -121,7 +120,7 @@ flowchart TD
     AD -->|PDF/HTML present| AF[Generate articles.xml]
     AD -->|No applicable files| AG[Skip feed generation]
     AC -->|No feed.json| AH[Skip folder]
-    AE --> AI[Generate index.html]
+    AE --> AI[Generate root index.html]
     AF --> AI
     AG --> AI
     
@@ -180,7 +179,7 @@ uv run local-feed-generator extract --data-dir ./data
 
 - **`process`**: Process all files in data directory (batch mode)
 - **`watch`**: Watch for changes and process incrementally
-- **`feeds`**: Generate RSS/Atom feeds from existing JSON metadata; supports per-folder feeds via feed.json; generates index.html pages; only generates feeds where feed.json exists and applicable files are present
+ - **`feeds`**: Generate RSS/Atom feeds from existing JSON metadata; supports per-folder feeds via feed.json; generates root-level index.html; only generates feeds where feed.json exists and applicable files are present
 - **`validate`**: Validate all metadata files and finalize incomplete ones by setting step completion statuses
 - **`transcribe`**: Transcribe MP4 files using local or remote mode
 - **`summarize`**: Generate summaries from existing transcripts or extracted content; uses reflection questions if available; works with MP4, PDF, and HTML files
@@ -325,9 +324,9 @@ Each processed file has a corresponding `.json` file with the same name in the s
 ### 3.4 Feed Output
 
 Two or more feed files are generated based on feed.json configuration:
-- `podcast.xml` (or `podcast.atom`) - Contains all MP4 files with enclosures (only generated if feed.json exists AND MP4 files present)
-- `articles.xml` (or `articles.atom`) - Contains all PDF/HTML files (only generated if feed.json exists AND PDF/HTML files present)
-- `index.html` - Lists all available feeds in the folder (generated if feed.json exists)
+ - `podcast.xml` (or `podcast.atom`) - Contains all MP4 files with enclosures (only generated if feed.json exists AND MP4 files present)
+ - `articles.xml` (or `articles.atom`) - Contains all PDF/HTML files (only generated if feed.json exists AND PDF/HTML files present)
+ - `index.html` - Lists all available feeds (generated at root level if feed.json exists)
 
 For podcast feed items:
 - Title from metadata title dict's "final" key
@@ -341,12 +340,12 @@ For articles feed items:
 - Link to the source file
 - Publication date from metadata `date` field
 
-**NEW Features:**
-- **Markdown to HTML conversion**: Descriptions are converted from markdown to HTML with XSS protection
-- **Per-folder feeds**: When a folder contains `feed.json`, feeds are generated in that folder with custom titles/descriptions
-- **Conditional feed generation**: Feeds only generated if both feed.json exists AND applicable file types are present
-- **Index pages**: index.html generated in each folder with feed.json, listing available feeds
-- **Safe links**: Only allows safe URL schemes (http, https, mailto, relative paths, fragments)
+ **NEW Features:**
+ - **Markdown to HTML conversion**: Descriptions are converted from markdown to HTML with XSS protection
+ - **Per-folder feeds**: When a folder contains `feed.json`, feeds are generated in that folder with custom titles/descriptions
+ - **Conditional feed generation**: Feeds only generated if both feed.json exists AND applicable file types are present
+ - **Index page**: Root-level index.html listing all available feeds
+ - **Safe links**: Only allows safe URL schemes (http, https, mailto, relative paths, fragments)
 
 **Feed Item Sorting:** Folder name (ascending), then filename (ascending)
 
@@ -368,12 +367,11 @@ The `feed.json` file can contain:
 - `description`: Custom description for the feeds generated in this folder
 
 When `feed.json` exists:
-- `podcast.xml` is generated in that folder **only if MP4 files with feed_eligible=true exist in the subtree**
-- `articles.xml` is generated in that folder **only if PDF/HTML files with feed_eligible=true exist in the subtree**
-- `index.html` is generated in that folder listing all available feeds
-- Only items within that folder's subtree are included in the feeds
-- Custom title and description from `feed.json` are used
-- Root-level feeds require their own feed.json (not generated by default)
+ - `podcast.xml` is generated in that folder **only if MP4 files with feed_eligible=true exist in the subtree**
+ - `articles.xml` is generated in that folder **only if PDF/HTML files with feed_eligible=true exist in the subtree**
+ - Only items within that folder's subtree are included in the feeds
+ - Custom title and description from `feed.json` are used
+ - Root-level feeds require their own feed.json (not generated by default)
 
 ### 3.6 Reflection Questions (reflection.md)
 
@@ -394,22 +392,21 @@ When processing files in that folder:
 - LLM focuses summary on answering the reflection questions
 - Works with both MP4 files (transcripts) and PDF/HTML files (extracted content) via the `summarize` command
 
-### 3.7 Index.html Generation (NEW)
+### 3.7 Index.html Generation
 
-The system automatically generates `index.html` files to provide a discovery mechanism for feeds.
+The system automatically generates a root-level `index.html` file to provide a discovery mechanism for feeds.
 
 **Generation Rules:**
-- `index.html` is generated in every folder that contains a `feed.json` file
-- Contains links only to feeds that actually exist (podcast.xml if MP4 files present, articles.xml if PDF/HTML files present)
-- Includes feed titles and descriptions from `feed.json`
-- Provides hierarchical navigation to subfolder index pages
-- Uses simple, clean HTML that works with any browser
+ - `index.html` is generated at the root level if feed.json exists
+ - Contains links to all feeds that actually exist (podcast.xml and articles.xml from all folders with feed.json)
+ - Includes feed titles and descriptions from each feed.json
+ - Uses simple, clean HTML that works with any browser
 
 **Purpose:**
-- Easy discovery of all available feeds
-- Human-readable directory structure
-- Self-documenting feed organization
-- Central access point for all content
+ - Easy discovery of all available feeds
+ - Human-readable directory structure
+ - Self-documenting feed organization
+ - Central access point for all content
 
 ---
 
@@ -593,12 +590,11 @@ classDiagram
         +index.html
     }
     
-    class course1 {
-        +feed.json
-        +podcast.xml (if MP4 present)
-        +articles.xml (if PDF/HTML present)
-        +index.html
-    }
+     class course1 {
+         +feed.json
+         +podcast.xml (if MP4 present)
+         +articles.xml (if PDF/HTML present)
+     }
     
     class course1_files {
         +lecture.mp4
@@ -638,12 +634,11 @@ data/
 \u251c\u2500\u2500 feed.json                    # REQUIRED: Root-level feed config
 \u251c\u2500\u2500 podcast.xml                  # Generated only if MP4 files present
 \u251c\u2500\u2500 articles.xml                 # Generated only if PDF/HTML files present
-\u251c\u2500\u2500 index.html                   # NEW: Root-level index page
+\u251c\u2500\u2500 index.html                   # Root-level index page
 \u251c\u2500\u2500 Course1/
 \u2502   \u251c\u2500\u2500 feed.json               # REQUIRED: Per-folder feed config
 \u2502   \u251c\u2500\u2500 podcast.xml             # Generated only if MP4 files present
 \u2502   \u251c\u2500\u2500 articles.xml            # Generated only if PDF/HTML files present
-\u2502   \u251c\u2500\u2500 index.html              # NEW: Per-folder index page
 \u2502   \u251c\u2500\u2500 lecture.mp4
 \u2502   \u251c\u2500\u2500 lecture.mp4.json        # Metadata with title dict, step maps, ms precision
 \u2502   \u251c\u2500\u2500 reflection.md           # Optional: reflection questions
@@ -653,7 +648,6 @@ data/
     \u251c\u2500\u2500 feed.json
     \u251c\u2500\u2500 podcast.xml (only if MP4 present)
     \u251c\u2500\u2500 articles.xml (only if PDF/HTML present)
-    \u251c\u2500\u2500 index.html
     \u251c\u2500\u2500 document.html
     \u2514\u2500\u2500 document.html.json
 ```
@@ -729,15 +723,12 @@ data/
 - **NEW:** Supports per-folder feed generation via feed.json files
 - **NEW:** Validates feeds for XML well-formedness and RSS compliance
 
-#### Index Generator (NEW)
-- Scans for feed.json files in the data directory
-- For each folder with feed.json:
-  - Checks which feeds exist (podcast.xml, articles.xml) based on file types present
-  - Generates index.html with links to available feeds
-  - Includes feed titles and descriptions from feed.json
-  - Provides hierarchical navigation to subfolder index pages
-- Uses simple HTML generation (no external templates)
-- Regenerates automatically when feeds are regenerated
+#### Index Generator
+ - Scans for feed.json files in the data directory
+ - Generates root-level index.html with links to all available feeds from all folders with feed.json
+ - Includes feed titles and descriptions from each feed.json
+ - Uses simple HTML generation (no external templates)
+ - Regenerates automatically when feeds are regenerated
 
 ---
 
@@ -791,20 +782,9 @@ flowchart TD
     
     Q1 --> R[All files processed]
     R --> S[Feed Generator discovers metadata]
-    S --> T[Index Generator discovers feed.json files]
-    T --> U[For each feed.json folder]
-    U --> V{MP4 files present?}
-    V -->|Yes| W[Generate podcast.xml]
-    V -->|No| X[Skip podcast.xml]
-    U --> Y{PDF/HTML files present?}
-    Y -->|Yes| Z[Generate articles.xml]
-    Y -->|No| AA[Skip articles.xml]
-    W --> AB[Mark podcast as available]
-    Z --> AB
-    X --> AB
-    AA --> AB
-    AB --> AC[Generate index.html with available feeds]
-    AC --> AD[Write all files]
+    S --> T[Generate podcast.xml and articles.xml for each folder with feed.json]
+    T --> U[Index Generator generates root index.html with all feeds]
+    U --> V[Write all files]
 ```
 
 **Key Processing Steps:**
@@ -814,7 +794,7 @@ flowchart TD
 4. For PDF/HTML: Extract metadata & content \=> Generate title \=> Build metadata
 5. All steps populate step maps with millisecond precision timestamps
 6. Feed generator creates feeds from all valid metadata, with markdown to HTML conversion
-7. Index generator creates index.html pages for each folder with feed.json
+7. Index generator creates root-level index.html with all feeds
 8. Per-folder feeds generated when feed.json exists AND applicable files are present
 
 ### 6.2 Incremental Processing Flow
@@ -1049,15 +1029,15 @@ SUMMARY_REFLECTION_PROMPT="Summarize key takeaways focusing on: frameworks, anal
 - [x] Test with sample MP4 files
 
 ### Milestone 4: Feed Generation
-- [x] Implement feed generator with per-folder support
-- [x] Generate podcast feed with enclosures
-- [x] Generate articles feed
-- [x] Implement markdown to HTML conversion
-- [x] Implement proper XML escaping
-- [x] Implement sorting by filepath
-- [x] Add feed.json support for per-folder feeds
-- [x] **NEW:** Implement conditional feed generation (only if feed.json exists and files present)
-- [x] **NEW:** Implement index.html generation
+ - [x] Implement feed generator with per-folder support
+ - [x] Generate podcast feed with enclosures
+ - [x] Generate articles feed
+ - [x] Implement markdown to HTML conversion
+ - [x] Implement proper XML escaping
+ - [x] Implement sorting by filepath
+ - [x] Add feed.json support for per-folder feeds
+ - [x] **NEW:** Implement conditional feed generation (only if feed.json exists and files present)
+ - [x] **NEW:** Implement root-level index.html generation
 
 ### Milestone 5: Incremental Mode & Polish
 - [x] Implement watch mode with file system monitoring
@@ -1079,14 +1059,13 @@ SUMMARY_REFLECTION_PROMPT="Summarize key takeaways focusing on: frameworks, anal
 - [x] Add content extraction for PDF/HTML files
 - [x] Add ffprobe integration for audio metadata
 
-### Milestone 7: Conditional Feed Generation & Index Pages
-- [x] **NEW:** Implement conditional feed generation rules
-- [x] **NEW:** NO root feeds without feed.json
-- [x] **NEW:** podcast.xml only if MP4 files present
-- [x] **NEW:** articles.xml only if PDF/HTML files present
-- [x] **NEW:** Implement index.html generation
-- [x] **NEW:** Add hierarchical navigation in index pages
-- [x] Final end-to-end testing
+### Milestone 7: Conditional Feed Generation & Index Page
+ - [x] **NEW:** Implement conditional feed generation rules
+ - [x] **NEW:** NO root feeds without feed.json
+ - [x] **NEW:** podcast.xml only if MP4 files present
+ - [x] **NEW:** articles.xml only if PDF/HTML files present
+ - [x] **NEW:** Implement root-level index.html generation
+ - [x] Final end-to-end testing
 
 ### Milestone 8: Documentation & Deployment
 - [x] Update README with new features
@@ -1244,14 +1223,13 @@ SUMMARY_REFLECTION_PROMPT="Summarize key takeaways focusing on: frameworks, anal
 
 ### 13.13 Index.html Generation
 
-**Decision:** Auto-generate index.html pages in folders with feed.json.
+**Decision:** Auto-generate root-level index.html to list all feeds.
 
 **Rationale:**
-- Easy discovery of all feeds
-- Human-readable directory structure
-- Self-documenting feed organization
-- Works with any web browser
-- Hierarchical navigation
+ - Easy discovery of all feeds
+ - Human-readable directory structure
+ - Self-documenting feed organization
+ - Works with any web browser
 
 ### 13.14 Summarize Command for PDF/HTML
 

@@ -554,6 +554,10 @@ class FeedGenerator:
         Returns:
             ``True`` if the JSON file is orphaned, ``False`` otherwise.
         """
+        # feed.json is a configuration file, not orphaned metadata.
+        if json_path.name == "feed.json":
+            return False
+
         source_filename = json_path.name[: -len(".json")]
         source_path = json_path.parent / source_filename
 

@@ -644,6 +644,21 @@ class TestWatchCommand:
 
         mock_logger.warning.assert_not_called()
 
+    def test_watch_handler_feed_json_no_orphaned_warning(self, valid_env, tmp_data_dir):
+        """Watch handler should not warn for feed.json (configuration file)."""
+        from local_feed_generator.cli import _WatchHandler
+
+        json_file = tmp_data_dir / "feed.json"
+        json_file.write_text('{"title": "My Feed"}')
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("local_feed_generator.cli._logger") as mock_logger:
+            handler._handle_json_event(json_file)
+
+        mock_logger.warning.assert_not_called()
+
     def test_watch_graceful_shutdown(self, runner, valid_env, tmp_data_dir):
         """Watch should shut down gracefully on SIGINT."""
         with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
@@ -1407,6 +1422,18 @@ class TestValidateCommand:
         assert result.exit_code == 0  # warnings, not errors
         assert "Orphaned JSON" in result.output
         assert "WARNING" in result.output
+
+    def test_validate_does_not_flag_feed_json_as_orphaned(self, runner, valid_env, tmp_data_dir):
+        """Validate should not flag feed.json as orphaned JSON."""
+        (tmp_data_dir / "feed.json").write_text('{"title": "My Feed"}')
+
+        result = runner.invoke(
+            app,
+            ["validate", "--data-dir", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "Orphaned JSON" not in result.output
 
     def test_validate_detects_special_characters(self, runner, valid_env, tmp_data_dir):
         """Validate should warn about special characters in filenames."""
