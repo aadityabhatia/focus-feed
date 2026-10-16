@@ -402,9 +402,12 @@ def _find_files_needing_title(data_dir: Path, force: bool = False) -> list[Path]
         title = metadata_dict.get("title", "")
         # Normalize string title to dict for backward compatibility.
         if isinstance(title, str):
-            title = {"filename": title}
+            title = {"filename": title, "extracted": None, "generated": None}
         # A file needs a title if 'generated' is not set or empty.
-        has_generated = isinstance(title, dict) and bool(title.get("generated", "").strip())
+        has_generated = (
+            isinstance(title, dict)
+            and bool((title.get("generated") or "").strip())
+        )
         if force or not has_generated:
             needs.append(source_file)
     return needs
@@ -1711,8 +1714,11 @@ def title(
             title = metadata_dict.get("title", "")
             # Normalize string title to dict for backward compatibility.
             if isinstance(title, str):
-                title = {"filename": title}
-            has_generated = isinstance(title, dict) and bool(title.get("generated", "").strip())
+                title = {"filename": title, "extracted": None, "generated": None}
+            has_generated = (
+                isinstance(title, dict)
+                and bool((title.get("generated") or "").strip())
+            )
             if has_generated and not force:
                 click.echo("  Already has a proper title; skipping.")
                 continue
@@ -1739,7 +1745,11 @@ def title(
             if isinstance(title, dict):
                 title["generated"] = new_title
             else:
-                title = {"filename": filename_title, "generated": new_title}
+                title = {
+                    "filename": filename_title,
+                    "extracted": extracted_title,
+                    "generated": new_title,
+                }
             metadata_dict["title"] = title
 
             _write_json_metadata(metadata_dict, source_file)
@@ -1829,9 +1839,13 @@ def _finalize_incomplete_json(
             title = metadata.get("title")
             # Normalize string title to dict for backward compatibility.
             if isinstance(title, str):
-                title = {"filename": title}
+                title = {"filename": title, "extracted": None, "generated": None}
             if not isinstance(title, dict):
                 title = {}
+            # Ensure all three required keys are present.
+            title.setdefault("filename", None)
+            title.setdefault("extracted", None)
+            title.setdefault("generated", None)
             filename_title = title.get("filename") or _clean_title(source_file.stem)
             extracted_title = title.get("extracted") or metadata.get("extracted_title")
 

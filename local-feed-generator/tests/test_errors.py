@@ -18,10 +18,16 @@ import pytest
 class TestExceptionHierarchy:
     """Tests for custom exception class hierarchy and raisability."""
 
-    def test_processing_error_can_be_raised(self):
-        """ProcessingError should be raisable and catchable."""
-        with pytest.raises(ProcessingError):
-            raise ProcessingError("something went wrong")
+    @pytest.mark.parametrize("exc_class,exc_msg", [
+        (ProcessingError, "something went wrong"),
+        (TranscriptionError, "audio decode failed"),
+        (SummarizationError, "LLM request failed"),
+        (ValidationError, "field is required"),
+    ])
+    def test_exception_can_be_raised(self, exc_class, exc_msg):
+        """All exception classes should be raisable and catchable."""
+        with pytest.raises(exc_class):
+            raise exc_class(exc_msg)
 
     def test_transcription_error_is_subclass_of_processing_error(self):
         """TranscriptionError should inherit from ProcessingError."""
@@ -35,50 +41,36 @@ class TestExceptionHierarchy:
         """ValidationError should be a separate exception hierarchy."""
         assert not issubclass(ValidationError, ProcessingError)
 
-    def test_transcription_error_can_be_raised(self):
-        """TranscriptionError should be raisable and catchable."""
-        with pytest.raises(TranscriptionError):
-            raise TranscriptionError("audio decode failed")
-
-    def test_summarization_error_can_be_raised(self):
-        """SummarizationError should be raisable and catchable."""
-        with pytest.raises(SummarizationError):
-            raise SummarizationError("LLM request failed")
-
-    def test_validation_error_can_be_raised(self):
-        """ValidationError should be raisable and catchable."""
-        with pytest.raises(ValidationError):
-            raise ValidationError("field is required")
-
-    def test_transcription_error_caught_as_processing_error(self):
-        """TranscriptionError should be catchable via ProcessingError."""
+    @pytest.mark.parametrize("exc_class", [TranscriptionError, SummarizationError])
+    def test_subclass_caught_as_processing_error(self, exc_class):
+        """Subclasses should be catchable via ProcessingError."""
         with pytest.raises(ProcessingError):
-            raise TranscriptionError("gpu out of memory")
+            raise exc_class("test error")
 
-    def test_summarization_error_caught_as_processing_error(self):
-        """SummarizationError should be catchable via ProcessingError."""
-        with pytest.raises(ProcessingError):
-            raise SummarizationError("rate limited")
-
-    def test_processing_error_stores_message(self):
-        """ProcessingError should store the message attribute."""
-        exc = ProcessingError("disk full")
-        assert exc.message == "disk full"
-
-    def test_processing_error_stores_filepath(self):
-        """ProcessingError should store the filepath attribute."""
-        exc = ProcessingError("disk full", filepath="videos/lecture.mp4")
-        assert exc.filepath == "videos/lecture.mp4"
+    @pytest.mark.parametrize("exc_class,exc_msg,attr_name", [
+        (ProcessingError, "disk full", "message"),
+        (ProcessingError, None, "filepath"),
+        (ValidationError, "invalid value", "field"),
+    ])
+    def test_attribute_storage(self, exc_class, exc_msg, attr_name):
+        """Exceptions should store their specific attributes."""
+        kwargs = {}
+        if exc_msg is not None:
+            kwargs["message"] = exc_msg
+        if attr_name == "filepath":
+            exc = ProcessingError("disk full", filepath="videos/lecture.mp4")
+            assert exc.filepath == "videos/lecture.mp4"
+        elif attr_name == "field":
+            exc = ValidationError("invalid value", field="email")
+            assert exc.field == "email"
+        elif attr_name == "message":
+            exc = ProcessingError("disk full")
+            assert exc.message == "disk full"
 
     def test_processing_error_filepath_defaults_none(self):
         """ProcessingError filepath should default to None."""
         exc = ProcessingError("disk full")
         assert exc.filepath is None
-
-    def test_validation_error_stores_field(self):
-        """ValidationError should store the field attribute."""
-        exc = ValidationError("invalid value", field="email")
-        assert exc.field == "email"
 
     def test_validation_error_field_defaults_none(self):
         """ValidationError field should default to None."""
@@ -89,78 +81,40 @@ class TestExceptionHierarchy:
 class TestCreateErrorMetadata:
     """Tests for the create_error_metadata utility function."""
 
-    def test_returns_dict_with_error_field(self):
-        """Error metadata should have error field set."""
-        exc = ProcessingError("failed")
-        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
-        assert metadata["error"] == "failed"
-
-    def test_includes_filename(self):
-        """Error metadata should include the filename."""
-        exc = ProcessingError("failed")
-        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
-        assert metadata["filename"] == "lecture.mp4"
-
-    def test_includes_filepath(self):
-        """Error metadata should include the filepath."""
-        exc = ProcessingError("failed")
-        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
-        assert metadata["filepath"] == "videos/lecture.mp4"
-
-    def test_includes_filetype(self):
-        """Error metadata should include the filetype."""
-        exc = ProcessingError("failed")
-        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
-        assert metadata["filetype"] == "mp4"
-
-    def test_includes_error_message(self):
-        """Error metadata should include the exception message in the error field."""
+    def test_error_metadata_has_all_fields(self):
+        """Error metadata should have all required fields with correct values."""
         exc = ProcessingError("disk full")
         metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
         assert metadata["error"] == "disk full"
-
-    def test_includes_processing_date(self):
-        """Error metadata should not include processing_date field (removed in schema)."""
-        exc = ProcessingError("failed")
-        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
-        assert "processing_date" not in metadata
-
-    def test_includes_date(self):
-        """Error metadata should include a date timestamp."""
-        exc = ProcessingError("failed")
-        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
+        assert metadata["filename"] == "lecture.mp4"
+        assert metadata["filepath"] == "videos/lecture.mp4"
+        assert metadata["filetype"] == "mp4"
+        assert metadata["title"] == {"filename": "lecture", "extracted": None, "generated": None}
         assert "date" in metadata
         assert metadata["date"] is not None
+        assert "processing_date" not in metadata
+        expected_fields = {"title", "description", "filename", "filepath", "filetype", "date", "size", "error"}
+        assert expected_fields.issubset(set(metadata.keys()))
+        assert "status" not in metadata
+
+    @pytest.mark.parametrize("exc_class,exc_msg", [
+        (ProcessingError, "failed"),
+        (TranscriptionError, "gpu error"),
+        (SummarizationError, "api timeout"),
+        (ValidationError, "bad schema"),
+        (RuntimeError, "unexpected failure"),
+    ])
+    def test_works_with_various_exception_types(self, exc_class, exc_msg):
+        """create_error_metadata should work with various exception types."""
+        exc = exc_class(exc_msg)
+        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
+        assert metadata["error"] == exc_msg
 
     def test_filetype_defaults_to_unknown(self):
         """Error metadata filetype should default to 'unknown' when not provided."""
         exc = ProcessingError("failed")
         metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4")
         assert metadata["filetype"] == "unknown"
-
-    def test_works_with_transcription_error(self):
-        """create_error_metadata should work with TranscriptionError."""
-        exc = TranscriptionError("gpu error")
-        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
-        assert metadata["error"] == "gpu error"
-
-    def test_works_with_summarization_error(self):
-        """create_error_metadata should work with SummarizationError."""
-        exc = SummarizationError("api timeout")
-        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
-        assert metadata["error"] == "api timeout"
-
-    def test_works_with_validation_error(self):
-        """create_error_metadata should work with ValidationError."""
-        exc = ValidationError("bad schema")
-        metadata = create_error_metadata(exc, "doc.pdf", "documents/doc.pdf", "pdf")
-        assert metadata["error"] == "bad schema"
-
-    def test_works_with_generic_exception(self):
-        """create_error_metadata should work with any Exception subclass."""
-        exc = RuntimeError("unexpected failure")
-        metadata = create_error_metadata(exc, "doc.html", "documents/doc.html", "html")
-        assert metadata["error"] == "unexpected failure"
 
     def test_empty_message_uses_class_name(self):
         """Error metadata should use exception class name when message is empty."""
@@ -175,32 +129,6 @@ class TestCreateErrorMetadata:
         json_str = json.dumps(metadata)
         restored = json.loads(json_str)
         assert restored["error"] == "failed"
-
-    def test_metadata_has_all_schema_fields(self):
-        """Error metadata should include all fields from the JSON schema."""
-        exc = ProcessingError("failed")
-        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
-        expected_fields = {
-            "title",
-            "description",
-            "filename",
-            "filepath",
-            "filetype",
-            "date",
-            "size",
-            "error",
-        }
-        assert expected_fields.issubset(set(metadata.keys()))
-        # Ensure status and processing_date are not present (removed from schema)
-        assert "status" not in metadata
-        assert "processing_date" not in metadata
-
-    def test_title_is_dict_not_string(self):
-        """Error metadata title should be a dict with 'filename' key."""
-        exc = ProcessingError("failed")
-        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
-        assert isinstance(metadata["title"], dict)
-        assert metadata["title"]["filename"] == "lecture.mp4"
 
 
 class TestLogError:
@@ -224,21 +152,19 @@ class TestLogError:
         log.addHandler(handler)
         return log, stream
 
-    def test_logs_error_message(self, capture_logger):
-        """log_error should include the error message in the log output."""
+    @pytest.mark.parametrize("exc,exc_name,exc_msg", [
+        (ProcessingError("disk full"), "ProcessingError", "disk full"),
+        (TranscriptionError("gpu error"), "TranscriptionError", "gpu error"),
+        (SummarizationError("api timeout"), "SummarizationError", "api timeout"),
+        (ValidationError("bad schema"), "ValidationError", "bad schema"),
+    ])
+    def test_logs_exception_details(self, capture_logger, exc, exc_name, exc_msg):
+        """log_error should include both the exception class name and message."""
         log, stream = capture_logger
-        exc = ProcessingError("disk full")
-        log_error(exc, filepath="videos/lecture.mp4", logger=log)
+        log_error(exc, filepath="lecture.mp4", logger=log)
         output = stream.getvalue()
-        assert "disk full" in output
-
-    def test_logs_exception_class_name(self, capture_logger):
-        """log_error should include the exception class name in the log output."""
-        log, stream = capture_logger
-        exc = ProcessingError("disk full")
-        log_error(exc, filepath="videos/lecture.mp4", logger=log)
-        output = stream.getvalue()
-        assert "ProcessingError" in output
+        assert exc_name in output
+        assert exc_msg in output
 
     def test_logs_filepath(self, capture_logger):
         """log_error should include the filepath in the log output."""
@@ -284,33 +210,6 @@ class TestLogError:
         # Should not raise an exception
         log_error(exc, filepath="videos/lecture.mp4")
 
-    def test_logs_transcription_error(self, capture_logger):
-        """log_error should correctly log TranscriptionError."""
-        log, stream = capture_logger
-        exc = TranscriptionError("gpu error")
-        log_error(exc, filepath="lecture.mp4", logger=log)
-        output = stream.getvalue()
-        assert "TranscriptionError" in output
-        assert "gpu error" in output
-
-    def test_logs_summarization_error(self, capture_logger):
-        """log_error should correctly log SummarizationError."""
-        log, stream = capture_logger
-        exc = SummarizationError("api timeout")
-        log_error(exc, filepath="lecture.mp4", logger=log)
-        output = stream.getvalue()
-        assert "SummarizationError" in output
-        assert "api timeout" in output
-
-    def test_logs_validation_error(self, capture_logger):
-        """log_error should correctly log ValidationError."""
-        log, stream = capture_logger
-        exc = ValidationError("bad schema")
-        log_error(exc, filepath="doc.pdf", logger=log)
-        output = stream.getvalue()
-        assert "ValidationError" in output
-        assert "bad schema" in output
-
     def test_consistent_format(self, capture_logger):
         """log_error should produce a consistent format across calls."""
         log, stream = capture_logger
@@ -326,18 +225,20 @@ class TestLogError:
             assert "|" in line
             assert "ERROR" in line
 
-    def test_logs_stage_when_provided(self, capture_logger):
-        """log_error should include the stage in the log output when provided."""
-        log, stream = capture_logger
-        exc = ProcessingError("transcription failed")
-        log_error(exc, filepath="lecture.mp4", logger=log, stage="transcription")
-        output = stream.getvalue()
-        assert "stage=transcription" in output
-
-    def test_omits_stage_when_not_provided(self, capture_logger):
-        """log_error should not include stage info when not provided."""
+    @pytest.mark.parametrize("stage,expected_in_output", [
+        ("transcription", "stage=transcription"),
+        (None, None),
+    ])
+    def test_stage_logging(self, capture_logger, stage, expected_in_output):
+        """log_error should include stage when provided, omit when not."""
         log, stream = capture_logger
         exc = ProcessingError("processing failed")
-        log_error(exc, filepath="doc.pdf", logger=log)
+        if stage:
+            log_error(exc, filepath="lecture.mp4", logger=log, stage=stage)
+        else:
+            log_error(exc, filepath="doc.pdf", logger=log)
         output = stream.getvalue()
-        assert "stage=" not in output
+        if expected_in_output:
+            assert expected_in_output in output
+        else:
+            assert "stage=" not in output

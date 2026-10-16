@@ -280,6 +280,111 @@ class TestProcessFileMP4:
         assert metadata.size == len(b"video data")
         assert metadata.feed_eligible is True
 
+    def test_mp4_title_dict_has_all_three_keys(self, producer, tmp_path):
+        """MP4 title dict should have filename, extracted, and generated keys."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        title = metadata.title
+        assert isinstance(title, dict)
+        assert "filename" in title
+        assert "extracted" in title
+        assert "generated" in title
+        # For MP4 without audio metadata title, extracted should be None
+        assert title["extracted"] is None
+        # filename should be sanitized (no extension, no underscores)
+        assert title["filename"] == "lecture"
+        # generated should be the LLM-generated title
+        assert title["generated"] == "Generated Title"
+
+    def test_mp4_title_dict_extracted_from_audio_metadata(self, producer, mock_transcriber, mock_summarizer, tmp_path):
+        """MP4 title dict should include extracted title from audio metadata."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        audio_meta = {
+            "type": "mov,mp4,m4a,3gp,3g2,mj2",
+            "duration": 3600.5,
+            "creation_time": "2024-01-15T10:30:00.000000Z",
+            "bit_rate": 128000,
+            "title": "Audio Title",
+        }
+
+        with mock.patch(
+            "local_feed_generator.producer.get_audio_metadata",
+            return_value=audio_meta,
+        ):
+            metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        title = metadata.title
+        assert isinstance(title, dict)
+        assert title["extracted"] == "Audio Title"
+        assert metadata.extracted_title == "Audio Title"
+
+    def test_mp4_filename_sanitized_no_extension_no_underscores(self, producer, tmp_path):
+        """MP4 title filename key should have no extension and no underscores."""
+        source = tmp_path / "my_lecture_video.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "my_lecture_video.mp4",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        title = metadata.title
+        assert isinstance(title, dict)
+        assert title["filename"] == "my lecture video"
+
+    def test_pdf_title_dict_has_all_three_keys(self, producer, tmp_path):
+        """PDF title dict should have filename, extracted, and generated keys."""
+        source = tmp_path / "document.pdf"
+        source.write_bytes(b"pdf data")
+        scanned = _make_scanned_file(
+            "document.pdf",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        title = metadata.title
+        assert isinstance(title, dict)
+        assert "filename" in title
+        assert "extracted" in title
+        assert "generated" in title
+
+    def test_html_title_dict_has_all_three_keys(self, producer, tmp_path):
+        """HTML title dict should have filename, extracted, and generated keys."""
+        source = tmp_path / "article.html"
+        source.write_text("<html>test</html>")
+        scanned = _make_scanned_file(
+            "article.html",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        title = metadata.title
+        assert isinstance(title, dict)
+        assert "filename" in title
+        assert "extracted" in title
+        assert "generated" in title
+
     def test_mp4_metadata_date_from_file_mtime(self, producer, tmp_path):
         """MP4 metadata date should match the file modification time (epoch float)."""
         source = tmp_path / "lecture.mp4"
@@ -431,17 +536,23 @@ class TestProcessFilePDF:
         mock_summarizer.generate_title.assert_called_once()
         assert metadata.final_title == "Generated Title"
 
-    def test_pdf_does_not_call_llm_for_title_when_no_content(
-        self, producer, mock_pdf_extractor, mock_summarizer, tmp_path
+    @pytest.mark.parametrize("content_present,should_call_llm", [
+        ("Some content here", True),
+        ("", False),
+        (None, False),
+    ])
+    def test_pdf_title_generation_logic(
+        self, producer, mock_pdf_extractor, mock_summarizer, tmp_path, content_present, should_call_llm
     ):
-        """PDF should NOT call LLM for title when no content is available."""
+        """PDF should call LLM for title only when content is available."""
         mock_pdf_extractor.extract.return_value = {
-            "title": "",
-            "extracted_title": None,
+            "title": "doc",
+            "extracted_title": "PDF Title" if content_present else None,
             "description": "Desc",
             "date": 1728931200,
             "size": 1024,
             "filetype": "pdf",
+            "content": content_present,
         }
         source = tmp_path / "doc.pdf"
         source.write_bytes(b"pdf data content")
@@ -450,36 +561,12 @@ class TestProcessFilePDF:
             absolute_path=str(source),
         )
 
-        metadata = producer.process_file(scanned)
+        producer.process_file(scanned)
 
-        # LLM should not be called when no content is available for title generation
-        mock_summarizer.generate_title.assert_not_called()
-        assert metadata.final_title == "doc"
-
-    def test_pdf_does_not_call_llm_for_title_when_content_none(
-        self, producer, mock_pdf_extractor, mock_summarizer, tmp_path
-    ):
-        """PDF should NOT call LLM for title when content is None."""
-        mock_pdf_extractor.extract.return_value = {
-            "title": None,
-            "extracted_title": None,
-            "description": "Desc",
-            "date": 1728931200,
-            "size": 1024,
-            "filetype": "pdf",
-        }
-        source = tmp_path / "doc.pdf"
-        source.write_bytes(b"pdf data content")
-        scanned = _make_scanned_file(
-            "doc.pdf",
-            absolute_path=str(source),
-        )
-
-        metadata = producer.process_file(scanned)
-
-        # LLM should not be called when no content is available for title generation
-        mock_summarizer.generate_title.assert_not_called()
-        assert metadata.final_title == "doc"
+        if should_call_llm:
+            mock_summarizer.generate_title.assert_called_once()
+        else:
+            mock_summarizer.generate_title.assert_not_called()
 
     def test_pdf_always_calls_llm_when_title_present(
         self, producer, mock_pdf_extractor, mock_summarizer, tmp_path
@@ -1058,33 +1145,25 @@ class TestIntermediateStateSaving:
         data = json.loads(json_path.read_text())
         assert data["transcribe"]["model"] == "large-v3-turbo"
 
-    def test_pdf_final_state_no_stage_field(self, producer, tmp_path):
-        """PDF final JSON state should not have stage field."""
-        source = tmp_path / "document.pdf"
-        source.write_bytes(b"pdf data")
+    @pytest.mark.parametrize("filetype,content", [
+        ("pdf", b"pdf data"),
+        ("html", "<html>test</html>"),
+    ])
+    def test_final_state_no_stage_field(self, producer, filetype, content, tmp_path):
+        """Final JSON state should not have stage field for PDF/HTML."""
+        source = tmp_path / f"file.{filetype}"
+        if filetype == "html":
+            source.write_text(content)
+        else:
+            source.write_bytes(content)
         scanned = _make_scanned_file(
-            "document.pdf",
+            f"file.{filetype}",
             absolute_path=str(source),
         )
 
         producer.process_file(scanned)
 
-        json_path = tmp_path / "document.pdf.json"
-        data = json.loads(json_path.read_text())
-        assert "stage" not in data
-
-    def test_html_final_state_no_stage_field(self, producer, tmp_path):
-        """HTML final JSON state should not have stage field."""
-        source = tmp_path / "article.html"
-        source.write_text("<html>test</html>")
-        scanned = _make_scanned_file(
-            "article.html",
-            absolute_path=str(source),
-        )
-
-        producer.process_file(scanned)
-
-        json_path = tmp_path / "article.html.json"
+        json_path = tmp_path / f"file.{filetype}.json"
         data = json.loads(json_path.read_text())
         assert "stage" not in data
 
@@ -1321,52 +1400,31 @@ class TestIntermediateStateSaving:
         assert metadata.transcribe.model == "large-v3-turbo"
         assert metadata.feed_eligible is True
 
-    def test_metadata_object_has_step_map_timing(self, producer, tmp_path):
+    @pytest.mark.parametrize("filetype,step_map,source_content", [
+        ("mp4", "transcribe", b"video data"),
+        ("pdf", "extract", b"pdf data"),
+        ("html", "extract", "<html>test</html>"),
+    ])
+    def test_metadata_object_has_step_map_timing(
+        self, producer, filetype, step_map, source_content, tmp_path
+    ):
         """Returned Metadata object should have step maps with start_time and end_time."""
-        source = tmp_path / "lecture.mp4"
-        source.write_bytes(b"video data")
+        source = tmp_path / f"file.{filetype}"
+        if filetype == "html":
+            source.write_text(source_content)
+        else:
+            source.write_bytes(source_content)
         scanned = _make_scanned_file(
-            "lecture.mp4",
+            f"file.{filetype}",
             absolute_path=str(source),
         )
 
         metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        assert metadata.transcribe.start_time is not None
-        assert metadata.transcribe.end_time is not None
-        assert metadata.summarize.start_time is not None
-        assert metadata.summarize.end_time is not None
-
-    def test_pdf_metadata_object_has_step_map_timing(self, producer, tmp_path):
-        """Returned PDF Metadata object should have extract step map with timing."""
-        source = tmp_path / "document.pdf"
-        source.write_bytes(b"pdf data")
-        scanned = _make_scanned_file(
-            "document.pdf",
-            absolute_path=str(source),
-        )
-
-        metadata = producer.process_file(scanned)
-
-        assert metadata is not None
-        assert metadata.extract.start_time is not None
-        assert metadata.extract.end_time is not None
-
-    def test_html_metadata_object_has_step_map_timing(self, producer, tmp_path):
-        """Returned HTML Metadata object should have extract step map with timing."""
-        source = tmp_path / "article.html"
-        source.write_text("<html>test</html>")
-        scanned = _make_scanned_file(
-            "article.html",
-            absolute_path=str(source),
-        )
-
-        metadata = producer.process_file(scanned)
-
-        assert metadata is not None
-        assert metadata.extract.start_time is not None
-        assert metadata.extract.end_time is not None
+        step = getattr(metadata, step_map)
+        assert step.start_time is not None
+        assert step.end_time is not None
 
 
 # ---------------------------------------------------------------------------

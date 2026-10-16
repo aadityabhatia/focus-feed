@@ -15,6 +15,7 @@ from local_feed_generator.services.extractors import (
     get_audio_metadata,
 )
 from pypdf import PdfWriter
+import pytest
 
 # ---------------------------------------------------------------------------
 # Helper functions for creating test fixtures
@@ -252,96 +253,200 @@ class TestSanitizeContent:
 
 
 # ---------------------------------------------------------------------------
+# Shared parameterized tests for PDF and HTML extractors
+# ---------------------------------------------------------------------------
+# These tests cover behavior that is identical across both PDFExtractor and
+# HTMLExtractor (file size, date type, required keys, string path, etc.).
+# Rather than duplicating the same test logic in both TestPDFExtractor and
+# TestHTMLExtractor, we parameterize across the two extractor classes.
+
+
+class TestExtractorSharedBehavior:
+    """Parameterized tests covering behavior common to PDF and HTML extractors."""
+
+    @pytest.fixture(
+        params=[
+            pytest.param(("pdf", PDFExtractor, create_test_pdf, "document.pdf"), id="pdf"),
+            pytest.param(("html", HTMLExtractor, create_test_html, "article.html"), id="html"),
+        ]
+    )
+    def extractor_info(self, request):
+        """Provide (filetype, extractor_class, create_func, filename) for each extractor."""
+        return request.param
+
+    def test_extract_returns_all_required_keys(self, extractor_info, tmp_path):
+        """Result dict should contain all required keys."""
+        _filetype, extractor_class, create_func, filename = extractor_info
+        path = tmp_path / filename
+        create_func(path, title="Keys Test")
+
+        extractor = extractor_class()
+        result = extractor.extract(path)
+
+        required_keys = {
+            "title",
+            "extracted_title",
+            "description",
+            "date",
+            "size",
+            "filetype",
+            "content",
+        }
+        assert required_keys.issubset(set(result.keys()))
+
+    def test_extract_file_size_in_bytes(self, extractor_info, tmp_path):
+        """File size should be the actual file size in bytes."""
+        _filetype, extractor_class, create_func, filename = extractor_info
+        path = tmp_path / filename
+        create_func(path, title="Size Test")
+
+        extractor = extractor_class()
+        result = extractor.extract(path)
+
+        expected_size = path.stat().st_size
+        assert result["size"] == expected_size
+        assert isinstance(result["size"], int)
+
+    def test_extract_date_is_iso8601(self, extractor_info, tmp_path):
+        """Date should be stored as UNIX epoch (float with ms precision)."""
+        filetype, extractor_class, create_func, _filename = extractor_info
+        path = tmp_path / f"date_test.{filetype}"
+        if filetype == "pdf":
+            create_func(
+                path,
+                title="Date Test",
+                author=None,
+                creation_date=datetime(2026, 6, 15, 8, 30, 0),
+            )
+        else:
+            create_func(path, title="Date Test", date="2026-06-15T08:30:00Z")
+
+        extractor = extractor_class()
+        result = extractor.extract(path)
+
+        assert isinstance(result["date"], float)
+        assert result["date"] > 0
+
+    def test_extract_fallback_title_to_filename(self, extractor_info, tmp_path):
+        """Without a title, should fall back to filename (stem, underscores cleaned)."""
+        filetype, extractor_class, create_func, _filename = extractor_info
+        path = tmp_path / f"my_document.{filetype}"
+        if filetype == "pdf":
+            create_func(path, title=None, author=None, creation_date=None)
+        else:
+            create_func(path, title=None, description="Some description")
+
+        extractor = extractor_class()
+        result = extractor.extract(path)
+
+        assert result["title"] == "my document"
+        assert result["filetype"] == filetype
+
+    def test_extract_fallback_date_to_mtime(self, extractor_info, tmp_path):
+        """Without a date, should fall back to file modification time."""
+        filetype, extractor_class, create_func, _filename = extractor_info
+        path = tmp_path / f"nodate.{filetype}"
+        if filetype == "pdf":
+            create_func(path, title="No Date", author=None, creation_date=None)
+        else:
+            create_func(path, title="No Date", date=None)
+
+        extractor = extractor_class()
+        result = extractor.extract(path)
+
+        mtime = int(path.stat().st_mtime)
+        assert isinstance(result["date"], float)
+        assert abs(result["date"] - mtime) < 5
+
+    def test_extract_empty_title_falls_back_to_filename(self, extractor_info, tmp_path):
+        """Empty title string should fall back to filename (underscores cleaned)."""
+        filetype, extractor_class, create_func, _filename = extractor_info
+        path = tmp_path / f"empty_title.{filetype}"
+        if filetype == "pdf":
+            create_func(path, title="", author="Author")
+        else:
+            path.write_text(
+                "<html><head><title></title></head><body>Test</body></html>",
+                encoding="utf-8",
+            )
+
+        extractor = extractor_class()
+        result = extractor.extract(path)
+
+        assert result["title"] == "empty title"
+
+    def test_extract_cleans_underscores_from_fallback_filename(self, extractor_info, tmp_path):
+        """Underscores in fallback filename should be replaced with spaces."""
+        filetype, extractor_class, create_func, _filename = extractor_info
+        path = tmp_path / f"my_document.{filetype}"
+        if filetype == "pdf":
+            create_func(path, title=None, author=None)
+        else:
+            create_func(path, title=None, description=None)
+
+        extractor = extractor_class()
+        result = extractor.extract(path)
+
+        assert result["title"] == "my document"
+
+    def test_extract_accepts_string_path(self, extractor_info, tmp_path):
+        """Extractor should accept a string path, not just Path."""
+        filetype, extractor_class, create_func, _filename = extractor_info
+        path = tmp_path / f"string_path.{filetype}"
+        create_func(path, title="String Path Test")
+
+        extractor = extractor_class()
+        result = extractor.extract(str(path))
+
+        assert result["title"] == "string path"
+        assert result["extracted_title"] == "String Path Test"
+        assert result["filetype"] == filetype
+
+    def test_extract_with_full_metadata(self, extractor_info, tmp_path):
+        """With full metadata, should extract all fields."""
+        filetype, extractor_class, create_func, filename = extractor_info
+        path = tmp_path / filename
+        if filetype == "pdf":
+            create_func(
+                path,
+                title="My Title",
+                author="Author Name",
+                creation_date=datetime(2026, 10, 14, 12, 0, 0),
+            )
+            expected_description = "Author Name"
+        else:
+            create_func(
+                path,
+                title="My Title",
+                description="An interesting article",
+                date="2026-10-14T12:00:00Z",
+            )
+            expected_description = "An interesting article"
+
+        extractor = extractor_class()
+        result = extractor.extract(path)
+
+        assert result["title"] == filename.split(".")[0]
+        assert result["extracted_title"] == "My Title"
+        assert result["description"] == expected_description
+        assert result["filetype"] == filetype
+        assert result["size"] > 0
+        assert isinstance(result["date"], float)
+        assert result["date"] > 0
+
+
+# ---------------------------------------------------------------------------
 # PDFExtractor tests
 # ---------------------------------------------------------------------------
 
 
 class TestPDFExtractor:
-    """Tests for the PDFExtractor class."""
+    """Tests for the PDFExtractor class.
 
-    def test_extract_with_full_metadata(self, tmp_path):
-        """PDF with title, author, and creation date should extract all fields."""
-        pdf_path = tmp_path / "document.pdf"
-        # PDF dates use D:YYYYMMDDhhmmss format; pypdf expects naive datetime
-        create_test_pdf(
-            pdf_path,
-            title="My PDF Title",
-            author="John Doe",
-            creation_date=datetime(2026, 10, 14, 12, 0, 0),
-        )
-
-        extractor = PDFExtractor()
-        result = extractor.extract(pdf_path)
-
-        # Title is always filename-derived, not from PDF metadata
-        assert result["title"] == "document"
-        assert result["extracted_title"] == "My PDF Title"
-        assert result["description"] == "John Doe"
-        assert result["filetype"] == "pdf"
-        assert result["size"] > 0
-        # Date should be UNIX epoch (float with ms precision)
-        assert isinstance(result["date"], float)
-        assert result["date"] > 0
-
-    def test_extract_fallback_title_to_filename(self, tmp_path):
-        """PDF without title should fall back to filename (stem, underscores cleaned)."""
-        pdf_path = tmp_path / "my_document.pdf"
-        create_test_pdf(
-            pdf_path,
-            title=None,
-            author=None,
-            creation_date=None,
-        )
-
-        extractor = PDFExtractor()
-        result = extractor.extract(pdf_path)
-
-        assert result["title"] == "my document"
-        assert result["extracted_title"] is None
-        assert result["description"] is None
-        assert result["filetype"] == "pdf"
-
-    def test_extract_fallback_date_to_mtime(self, tmp_path):
-        """PDF without creation date should fall back to file modification time."""
-        pdf_path = tmp_path / "nodate.pdf"
-        create_test_pdf(pdf_path, title="No Date", author=None, creation_date=None)
-
-        extractor = PDFExtractor()
-        result = extractor.extract(pdf_path)
-
-        # Date should be close to file modification time (as epoch float)
-        mtime = int(pdf_path.stat().st_mtime * 1000) / 1000.0
-        assert isinstance(result["date"], float)
-        assert abs(result["date"] - mtime) < 5
-
-    def test_extract_file_size_in_bytes(self, tmp_path):
-        """File size should be the actual file size in bytes."""
-        pdf_path = tmp_path / "sized.pdf"
-        create_test_pdf(pdf_path, title="Size Test")
-
-        extractor = PDFExtractor()
-        result = extractor.extract(pdf_path)
-
-        expected_size = pdf_path.stat().st_size
-        assert result["size"] == expected_size
-        assert isinstance(result["size"], int)
-
-    def test_extract_date_is_iso8601(self, tmp_path):
-        """Date should be stored as UNIX epoch (float with ms precision)."""
-        pdf_path = tmp_path / "date_test.pdf"
-        create_test_pdf(
-            pdf_path,
-            title="Date Test",
-            author=None,
-            creation_date=datetime(2026, 6, 15, 8, 30, 0),
-        )
-
-        extractor = PDFExtractor()
-        result = extractor.extract(pdf_path)
-
-        # Should be a float (UNIX epoch with ms precision)
-        assert isinstance(result["date"], float)
-        assert result["date"] > 0
+    NOTE: Tests covering behavior shared with HTMLExtractor (file size, date
+    type, required keys, string path, fallback title, etc.) are consolidated
+    in TestExtractorSharedBehavior above to avoid duplication.
+    """
 
     def test_extract_handles_corrupted_pdf(self, tmp_path):
         """Corrupted PDF should fall back to filename and mtime without crashing."""
@@ -359,52 +464,6 @@ class TestPDFExtractor:
         # Date should fall back to file mtime (as epoch float)
         assert isinstance(result["date"], float)
         assert result["date"] > 0
-
-    def test_extract_empty_title_falls_back_to_filename(self, tmp_path):
-        """PDF with empty title string should fall back to filename (underscores cleaned)."""
-        pdf_path = tmp_path / "empty_title.pdf"
-        create_test_pdf(pdf_path, title="", author="Author")
-
-        extractor = PDFExtractor()
-        result = extractor.extract(pdf_path)
-
-        # Title is always filename-derived
-        assert result["title"] == "empty title"
-        # Empty title string should result in None extracted_title
-        assert result["extracted_title"] is None
-        assert result["description"] == "Author"
-
-    def test_extract_accepts_string_path(self, tmp_path):
-        """Extractor should accept a string path, not just Path."""
-        pdf_path = tmp_path / "string_path.pdf"
-        create_test_pdf(pdf_path, title="String Path Test")
-
-        extractor = PDFExtractor()
-        result = extractor.extract(str(pdf_path))
-
-        # Title is always filename-derived
-        assert result["title"] == "string path"
-        assert result["extracted_title"] == "String Path Test"
-        assert result["filetype"] == "pdf"
-
-    def test_extract_returns_all_required_keys(self, tmp_path):
-        """Result dict should contain all required keys."""
-        pdf_path = tmp_path / "keys.pdf"
-        create_test_pdf(pdf_path, title="Keys Test")
-
-        extractor = PDFExtractor()
-        result = extractor.extract(pdf_path)
-
-        required_keys = {
-            "title",
-            "extracted_title",
-            "description",
-            "date",
-            "size",
-            "filetype",
-            "content",
-        }
-        assert required_keys.issubset(set(result.keys()))
 
     def test_extract_description_is_none_when_no_author(self, tmp_path):
         """Description should be None when PDF has no author."""
@@ -428,16 +487,6 @@ class TestPDFExtractor:
         assert result["title"] == "document"
         # Extracted title should have underscores cleaned
         assert result["extracted_title"] == "my pdf title"
-
-    def test_extract_cleans_underscores_from_fallback_filename(self, tmp_path):
-        """Underscores in fallback filename should be replaced with spaces."""
-        pdf_path = tmp_path / "my_document.pdf"
-        create_test_pdf(pdf_path, title=None, author=None)
-
-        extractor = PDFExtractor()
-        result = extractor.extract(pdf_path)
-
-        assert result["title"] == "my document"
 
     def test_extract_content_from_pdf_with_text(self, tmp_path):
         """PDF with text content should extract plaintext into the content field."""
@@ -477,84 +526,12 @@ class TestPDFExtractor:
 
 
 class TestHTMLExtractor:
-    """Tests for the HTMLExtractor class."""
+    """Tests for the HTMLExtractor class.
 
-    def test_extract_with_full_metadata(self, tmp_path):
-        """HTML with title, description, and date should extract all fields."""
-        html_path = tmp_path / "article.html"
-        create_test_html(
-            html_path,
-            title="My Article Title",
-            description="An interesting article about ILE",
-            date="2026-10-14T12:00:00Z",
-        )
-
-        extractor = HTMLExtractor()
-        result = extractor.extract(html_path)
-
-        assert result["title"] == "article"
-        assert result["extracted_title"] == "My Article Title"
-        assert result["description"] == "An interesting article about ILE"
-        assert result["filetype"] == "html"
-        assert result["size"] > 0
-        # Date should be UNIX epoch (float, ms precision)
-        assert isinstance(result["date"], float)
-        assert result["date"] > 0
-
-    def test_extract_fallback_title_to_filename(self, tmp_path):
-        """HTML without title tag should fall back to filename (stem, underscores cleaned)."""
-        html_path = tmp_path / "no_title.html"
-        create_test_html(
-            html_path,
-            title=None,
-            description="Some description",
-        )
-
-        extractor = HTMLExtractor()
-        result = extractor.extract(html_path)
-
-        assert result["title"] == "no title"
-        assert result["filetype"] == "html"
-
-    def test_extract_fallback_date_to_mtime(self, tmp_path):
-        """HTML without date meta should fall back to file modification time."""
-        html_path = tmp_path / "no_date.html"
-        create_test_html(html_path, title="No Date", date=None)
-
-        extractor = HTMLExtractor()
-        result = extractor.extract(html_path)
-
-        mtime = int(html_path.stat().st_mtime)
-        assert isinstance(result["date"], float)
-        assert abs(result["date"] - mtime) < 5
-
-    def test_extract_file_size_in_bytes(self, tmp_path):
-        """File size should be the actual file size in bytes."""
-        html_path = tmp_path / "sized.html"
-        create_test_html(html_path, title="Size Test")
-
-        extractor = HTMLExtractor()
-        result = extractor.extract(html_path)
-
-        expected_size = html_path.stat().st_size
-        assert result["size"] == expected_size
-        assert isinstance(result["size"], int)
-
-    def test_extract_date_is_iso8601(self, tmp_path):
-        """Date should be stored as UNIX epoch (int)."""
-        html_path = tmp_path / "date_test.html"
-        create_test_html(
-            html_path,
-            title="Date Test",
-            date="2026-06-15T08:30:00Z",
-        )
-
-        extractor = HTMLExtractor()
-        result = extractor.extract(html_path)
-
-        # Should be a float (UNIX epoch, ms precision)
-        assert isinstance(result["date"], float)
-        assert result["date"] > 0
+    NOTE: Tests covering behavior shared with PDFExtractor (file size, date
+    type, required keys, string path, fallback title, etc.) are consolidated
+    in TestExtractorSharedBehavior above to avoid duplication.
+    """
 
     def test_extract_description_from_meta(self, tmp_path):
         """Description should come from <meta name='description'>."""
@@ -579,25 +556,6 @@ class TestHTMLExtractor:
         result = extractor.extract(html_path)
 
         assert result["description"] is None
-
-    def test_extract_returns_all_required_keys(self, tmp_path):
-        """Result dict should contain all required keys."""
-        html_path = tmp_path / "keys.html"
-        create_test_html(html_path, title="Keys Test")
-
-        extractor = HTMLExtractor()
-        result = extractor.extract(html_path)
-
-        required_keys = {
-            "title",
-            "extracted_title",
-            "description",
-            "date",
-            "size",
-            "filetype",
-            "content",
-        }
-        assert required_keys.issubset(set(result.keys()))
 
     def test_extract_minimal_html(self, tmp_path):
         """Minimal HTML with only a title should work correctly."""
@@ -667,31 +625,6 @@ class TestHTMLExtractor:
         assert result["filetype"] == "html"
         assert result["size"] > 0
 
-    def test_extract_empty_title_falls_back_to_filename(self, tmp_path):
-        """HTML with empty title tag should fall back to filename (underscores cleaned)."""
-        html_path = tmp_path / "empty_title.html"
-        html_path.write_text(
-            "<html><head><title></title></head><body>Test</body></html>",
-            encoding="utf-8",
-        )
-
-        extractor = HTMLExtractor()
-        result = extractor.extract(html_path)
-
-        assert result["title"] == "empty title"
-
-    def test_extract_accepts_string_path(self, tmp_path):
-        """Extractor should accept a string path, not just Path."""
-        html_path = tmp_path / "string_path.html"
-        create_test_html(html_path, title="String Path Test")
-
-        extractor = HTMLExtractor()
-        result = extractor.extract(str(html_path))
-
-        assert result["title"] == "string path"
-        assert result["extracted_title"] == "String Path Test"
-        assert result["filetype"] == "html"
-
     def test_extract_date_date_only_format(self, tmp_path):
         """Date in YYYY-MM-DD format should be parsed correctly."""
         html_path = tmp_path / "date_only.html"
@@ -740,20 +673,6 @@ class TestHTMLExtractor:
 
         assert result["title"] == "article"
         assert result["extracted_title"] == "my article title"
-
-    def test_extract_cleans_underscores_from_fallback_filename(self, tmp_path):
-        """Underscores in fallback filename should be replaced with spaces."""
-        html_path = tmp_path / "my_page.html"
-        create_test_html(
-            html_path,
-            title=None,
-            description=None,
-        )
-
-        extractor = HTMLExtractor()
-        result = extractor.extract(html_path)
-
-        assert result["title"] == "my page"
 
     def test_extract_content_from_html(self, tmp_path):
         """HTML content should be extracted as plaintext (tags removed)."""
@@ -980,21 +899,21 @@ class TestMetadataCompatibility:
 class TestGetAudioMetadata:
     """Tests for the get_audio_metadata function."""
 
-    def test_returns_none_when_ffprobe_not_found(self, tmp_path):
-        """Should return None when ffprobe is not on PATH."""
+    @pytest.fixture
+    def mock_probe(self, tmp_path):
+        """Set up a mock audio file and return helper for patching."""
         audio_path = tmp_path / "test.mp4"
         audio_path.write_bytes(b"fake audio data")
+        return audio_path
 
+    def test_returns_none_when_ffprobe_not_found(self, mock_probe):
+        """Should return None when ffprobe is not on PATH."""
         with mock.patch("shutil.which", return_value=None):
-            result = get_audio_metadata(audio_path)
-
+            result = get_audio_metadata(mock_probe)
         assert result is None
 
-    def test_returns_metadata_dict_when_ffprobe_succeeds(self, tmp_path):
+    def test_returns_metadata_dict_when_ffprobe_succeeds(self, mock_probe):
         """Should return a dict with expected keys when ffprobe succeeds."""
-        audio_path = tmp_path / "test.mp4"
-        audio_path.write_bytes(b"fake audio data")
-
         mock_probe_output = {
             "format": {
                 "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
@@ -1022,7 +941,7 @@ class TestGetAudioMetadata:
                 stderr="",
                 returncode=0,
             )
-            result = get_audio_metadata(audio_path)
+            result = get_audio_metadata(mock_probe)
 
         assert result is not None
         assert result["type"] == "mov,mp4,m4a,3gp,3g2,mj2"
@@ -1030,25 +949,22 @@ class TestGetAudioMetadata:
         assert result["creation_time"] == "2024-01-15T10:30:00.000000Z"
         assert result["bit_rate"] == 128000
 
-    def test_returns_none_on_subprocess_error(self, tmp_path):
+    @pytest.mark.parametrize("side_effect,expected", [
+        (subprocess.CalledProcessError(1, "ffprobe"), None),
+        (OSError("command not found"), None),
+    ])
+    def test_returns_none_on_subprocess_error(self, mock_probe, side_effect, expected):
         """Should return None when ffprobe command fails."""
-        audio_path = tmp_path / "test.mp4"
-        audio_path.write_bytes(b"fake audio data")
-
         with (
             mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
             mock.patch("subprocess.run") as mock_run,
         ):
-            mock_run.side_effect = subprocess.CalledProcessError(1, "ffprobe")
-            result = get_audio_metadata(audio_path)
+            mock_run.side_effect = side_effect
+            result = get_audio_metadata(mock_probe)
+        assert result is expected
 
-        assert result is None
-
-    def test_returns_none_on_json_decode_error(self, tmp_path):
+    def test_returns_none_on_json_decode_error(self, mock_probe):
         """Should return None when ffprobe output is not valid JSON."""
-        audio_path = tmp_path / "test.mp4"
-        audio_path.write_bytes(b"fake audio data")
-
         with (
             mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
             mock.patch("subprocess.run") as mock_run,
@@ -1058,29 +974,11 @@ class TestGetAudioMetadata:
                 stderr="",
                 returncode=0,
             )
-            result = get_audio_metadata(audio_path)
-
+            result = get_audio_metadata(mock_probe)
         assert result is None
 
-    def test_returns_none_on_os_error(self, tmp_path):
-        """Should return None when subprocess raises OSError."""
-        audio_path = tmp_path / "test.mp4"
-        audio_path.write_bytes(b"fake audio data")
-
-        with (
-            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
-            mock.patch("subprocess.run") as mock_run,
-        ):
-            mock_run.side_effect = OSError("command not found")
-            result = get_audio_metadata(audio_path)
-
-        assert result is None
-
-    def test_handles_missing_creation_time(self, tmp_path):
+    def test_handles_missing_creation_time(self, mock_probe):
         """Should return None for creation_time when tag is absent."""
-        audio_path = tmp_path / "test.mp4"
-        audio_path.write_bytes(b"fake audio data")
-
         mock_probe_output = {
             "format": {
                 "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
@@ -1104,18 +1002,15 @@ class TestGetAudioMetadata:
                 stderr="",
                 returncode=0,
             )
-            result = get_audio_metadata(audio_path)
+            result = get_audio_metadata(mock_probe)
 
         assert result is not None
         assert result["creation_time"] is None
         assert result["duration"] == 120.0
         assert result["bit_rate"] is None
 
-    def test_falls_back_to_format_duration_when_no_audio_stream(self, tmp_path):
+    def test_falls_back_to_format_duration_when_no_audio_stream(self, mock_probe):
         """Should use format-level duration when no audio stream exists."""
-        audio_path = tmp_path / "test.mp4"
-        audio_path.write_bytes(b"fake audio data")
-
         mock_probe_output = {
             "format": {
                 "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
@@ -1142,18 +1037,15 @@ class TestGetAudioMetadata:
                 stderr="",
                 returncode=0,
             )
-            result = get_audio_metadata(audio_path)
+            result = get_audio_metadata(mock_probe)
 
         assert result is not None
         assert result["duration"] == 600.0
         assert result["bit_rate"] == 256000
         assert result["creation_time"] == "2023-06-01T08:00:00Z"
 
-    def test_handles_empty_streams_list(self, tmp_path):
+    def test_handles_empty_streams_list(self, mock_probe):
         """Should return 0 duration when no streams and no format duration."""
-        audio_path = tmp_path / "test.mp4"
-        audio_path.write_bytes(b"fake audio data")
-
         mock_probe_output = {
             "format": {
                 "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
@@ -1171,18 +1063,15 @@ class TestGetAudioMetadata:
                 stderr="",
                 returncode=0,
             )
-            result = get_audio_metadata(audio_path)
+            result = get_audio_metadata(mock_probe)
 
         assert result is not None
         assert result["duration"] == 0.0
         assert result["creation_time"] is None
         assert result["bit_rate"] is None
 
-    def test_accepts_string_path(self, tmp_path):
+    def test_accepts_string_path(self, mock_probe):
         """Should accept a string path, not just Path."""
-        audio_path = tmp_path / "test.mp4"
-        audio_path.write_bytes(b"fake audio data")
-
         mock_probe_output = {
             "format": {
                 "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
@@ -1201,19 +1090,77 @@ class TestGetAudioMetadata:
                 stderr="",
                 returncode=0,
             )
-            result = get_audio_metadata(str(audio_path))
+            result = get_audio_metadata(str(mock_probe))
 
         assert result is not None
         assert result["type"] == "mov,mp4,m4a,3gp,3g2,mj2"
         # Verify the path was passed to ffprobe as a string
         call_args = mock_run.call_args
-        assert str(audio_path) in call_args[0][0]
+        assert str(mock_probe) in call_args[0][0]
 
-    def test_returns_all_required_keys(self, tmp_path):
+    @pytest.mark.parametrize("duration_str,expected_duration", [
+        ("180.5", 180.5),
+        ("100.0", 100.0),
+        ("0.0", 0.0),
+    ])
+    def test_duration_is_float(self, mock_probe, duration_str, expected_duration):
+        """Duration should be a float."""
+        mock_probe_output = {
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "duration": duration_str,
+                "tags": {},
+            },
+            "streams": [],
+        }
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.Mock(
+                stdout=json.dumps(mock_probe_output),
+                stderr="",
+                returncode=0,
+            )
+            result = get_audio_metadata(mock_probe)
+
+        assert result is not None
+        assert isinstance(result["duration"], float)
+        assert result["duration"] == expected_duration
+
+    @pytest.mark.parametrize("bit_rate_str,expected_bit_rate", [
+        ("320000", 320000),
+        ("128000", 128000),
+    ])
+    def test_bit_rate_is_int(self, mock_probe, bit_rate_str, expected_bit_rate):
+        """Bit rate should be an int."""
+        mock_probe_output = {
+            "format": {
+                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
+                "bit_rate": bit_rate_str,
+                "tags": {},
+            },
+            "streams": [],
+        }
+
+        with (
+            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
+            mock.patch("subprocess.run") as mock_run,
+        ):
+            mock_run.return_value = mock.Mock(
+                stdout=json.dumps(mock_probe_output),
+                stderr="",
+                returncode=0,
+            )
+            result = get_audio_metadata(mock_probe)
+
+        assert result is not None
+        assert isinstance(result["bit_rate"], int)
+        assert result["bit_rate"] == expected_bit_rate
+
+    def test_returns_all_required_keys(self, mock_probe):
         """Result dict should contain all required keys."""
-        audio_path = tmp_path / "test.mp4"
-        audio_path.write_bytes(b"fake audio data")
-
         mock_probe_output = {
             "format": {
                 "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
@@ -1240,65 +1187,7 @@ class TestGetAudioMetadata:
                 stderr="",
                 returncode=0,
             )
-            result = get_audio_metadata(audio_path)
+            result = get_audio_metadata(mock_probe)
 
         required_keys = {"type", "duration", "creation_time", "bit_rate"}
         assert required_keys.issubset(set(result.keys()))
-
-    def test_duration_is_float(self, tmp_path):
-        """Duration should be a float."""
-        audio_path = tmp_path / "test.mp4"
-        audio_path.write_bytes(b"fake audio data")
-
-        mock_probe_output = {
-            "format": {
-                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
-                "duration": "180.5",
-                "tags": {},
-            },
-            "streams": [],
-        }
-
-        with (
-            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
-            mock.patch("subprocess.run") as mock_run,
-        ):
-            mock_run.return_value = mock.Mock(
-                stdout=json.dumps(mock_probe_output),
-                stderr="",
-                returncode=0,
-            )
-            result = get_audio_metadata(audio_path)
-
-        assert result is not None
-        assert isinstance(result["duration"], float)
-        assert result["duration"] == 180.5
-
-    def test_bit_rate_is_int(self, tmp_path):
-        """Bit rate should be an int."""
-        audio_path = tmp_path / "test.mp4"
-        audio_path.write_bytes(b"fake audio data")
-
-        mock_probe_output = {
-            "format": {
-                "format_name": "mov,mp4,m4a,3gp,3g2,mj2",
-                "bit_rate": "320000",
-                "tags": {},
-            },
-            "streams": [],
-        }
-
-        with (
-            mock.patch("shutil.which", return_value="/usr/bin/ffprobe"),
-            mock.patch("subprocess.run") as mock_run,
-        ):
-            mock_run.return_value = mock.Mock(
-                stdout=json.dumps(mock_probe_output),
-                stderr="",
-                returncode=0,
-            )
-            result = get_audio_metadata(audio_path)
-
-        assert result is not None
-        assert isinstance(result["bit_rate"], int)
-        assert result["bit_rate"] == 320000

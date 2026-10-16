@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-The `local-feed-generator` is a standalone application that processes content files (PDF, HTML, MP4) in a `data` directory and generates RSS/Atom feeds for personal consumption through mobile applications. The system supports both local and remote transcription: by default, it uses GPU-accelerated open-weight models (faster-whisper) for audio transcription; when configured with a remote endpoint via `TRANSCRIPTION_ENDPOINT`, it automatically uses an OpenAI-compatible API for transcription instead. Summarization always uses OpenAI-compatible local LLMs.
+The `local-feed-generator` is a standalone application that processes content files (PDF, HTML, MP4) in a `data` directory and generates RSS feeds for personal consumption through mobile applications. The system supports both local and remote transcription: by default, it uses GPU-accelerated open-weight models (faster-whisper) for audio transcription; when configured with a remote endpoint via `TRANSCRIPTION_ENDPOINT`, it automatically uses an OpenAI-compatible API for transcription instead. Summarization always uses OpenAI-compatible local LLMs.
 
 ### 1.1 System Goals
 
@@ -65,7 +65,7 @@ Note: Root-level feeds (podcast.xml, articles.xml, index.html) are ONLY generate
   - **Transcription Service** (`faster-whisper` + CUDA or OpenAI-compatible API): Converts MP4 audio to markdown text using either local (faster-whisper) or remote (OpenAI-compatible API) mode. The system implements a dual-mode architecture with the `RemoteTranscriber` class for API-based transcription and the local `Transcriber` class for GPU-accelerated transcription.
 - **Summarization Service** (`openai` client \=> local LLM): Generates key takeaways from transcripts; supports reflection questions from `reflection.md` files; works with both MP4 transcripts and PDF/HTML extracted content
 - **Extraction Service** (`pypdf`, `beautifulsoup4`, `ffprobe`): Extracts metadata AND content from PDF/HTML files; extracts audio metadata (duration, creation_time) from MP4 files
- - **Feed Generator** (`feedgen`): Aggregates metadata; generates RSS/Atom feeds; supports per-folder feeds via `feed.json`; converts markdown to HTML; only generates feeds where feed.json exists and applicable files are present
+  - **Feed Generator** (`feedgen`): Aggregates metadata; generates RSS feeds; supports per-folder feeds via `feed.json`; converts markdown to HTML; only generates feeds where feed.json exists and applicable files are present
  - **Index Generator**: Generates root-level index.html with all available feeds; lists feeds with titles and descriptions
  - **Configuration** (`pydantic-settings` + `.env`): Manages runtime settings including new prompt variables
 - **CLI** (`click`): Command-line interface with granular subcommands
@@ -91,7 +91,7 @@ flowchart TD
     K --> L[Summarize with reflection]
     L --> M[Store summary in summary field]
     M --> N[Extract audio metadata]
-    N --> O[Generate title dict]
+    N --> O[Generate title dict (filename, extracted, generated with prompt: filename+extracted+content)]
     O --> P[Apply module prefix]
     
     F -->|PDF| Q[Extract metadata & content]
@@ -100,8 +100,8 @@ flowchart TD
     S -->|Exists| T[Optional: summarize content]
     S -->|No| U[Set summary to null]
     T --> U
-    Q --> V[Build filename-derived title]
-    V --> W[Build title dict]
+    Q --> V[Build sanitized filename (no extension, no underscores)]
+    V --> W[Build title dict with sources]
     W --> X[Apply module prefix]
     
     F -->|HTML| Y[Extract metadata & content]
@@ -179,7 +179,7 @@ uv run local-feed-generator extract --data-dir ./data
 
 - **`process`**: Process all files in data directory (batch mode)
 - **`watch`**: Watch for changes and process incrementally
- - **`feeds`**: Generate RSS/Atom feeds from existing JSON metadata; supports per-folder feeds via feed.json; generates root-level index.html; only generates feeds where feed.json exists and applicable files are present
+ - **`feeds`**: Generate RSS feeds from existing JSON metadata; supports per-folder feeds via feed.json; generates root-level index.html; only generates feeds where feed.json exists and applicable files are present
 - **`validate`**: Validate all metadata files and finalize incomplete ones by setting step completion statuses
 - **`transcribe`**: Transcribe MP4 files using local or remote mode
 - **`summarize`**: Generate summaries from existing transcripts or extracted content; uses reflection questions if available; works with MP4, PDF, and HTML files
@@ -214,9 +214,6 @@ TITLE_PROMPT="Generate a concise, descriptive title (5-10 words) for the given c
 # Optional: Reflection prompt
 SUMMARY_REFLECTION_PROMPT="Summarize key takeaways focusing on frameworks or analytical tools to develop critical, creative, and systems thinking."
 
-# Feed Configuration
-FEED_FORMAT=rss                           # rss or atom (default: rss)
-
 # Transcription Configuration
 TRANSCRIPTION_MODEL=large-v3-turbo
 TRANSCRIPTION_DEVICE=cuda
@@ -235,10 +232,9 @@ Each processed file has a corresponding `.json` file with the same name in the s
 ```json
 {
   "title": {
-    "filename": "lecture",      // filename-derived (underscores\=>spaces)
-    "extracted": "Lecture 1",   // from source metadata (PDF metadata, HTML <title>)
-    "generated": "LLM Title",   // LLM-generated for MP4 (or for title generation when needed)
-    "final": "Course1: lecture" // the final title to use (with module prefix)
+    "filename": "lecture",      // sanitized filename with no extension, no underscores
+    "extracted": "Lecture 1",   // from source metadata (PDF metadata, HTML <title>, or MP4 metadata where available)
+    "generated": "LLM Title"   // LLM-generated with prompt including filename and extracted title before content
   },
   "extracted_title": "Lecture 1",  // extracted title stored separately (optional)
   "description": "Extracted metadata description",  // For MP4: blank; For PDF/HTML: extracted metadata
@@ -290,8 +286,9 @@ Each processed file has a corresponding `.json` file with the same name in the s
 ```
 
 **Field Descriptions:**
-- `title`: **NEW - Now a dict** with keys: `filename` (from filename, underscores\=>spaces), `extracted` (from source metadata), `generated` (LLM-generated for MP4 or when title generation is requested), `final` (the actual title to use, with module prefix)
-- `extracted_title`: **NEW** - Title extracted from source metadata (PDF metadata title, HTML `<title>` tag). Stored separately and NOT used as the actual title.
+- `title`: **NEW - Now a dict** with keys: `filename` (sanitized filename with no extension, no underscores), `extracted` (from source metadata), `generated` (LLM-generated with prompt including filename and extracted title before content)
+- **Title Precedence:** filename < extracted < generated (generated takes highest precedence, filename lowest)
+- `extracted_title`: **NEW** - Title extracted from source metadata (PDF metadata title, HTML `<title>` tag). Stored separately and also used in title dict for tracking.
 - `description`: For MP4 files, this is blank. For PDF/HTML files, this contains extracted metadata.
 - `summary`: For MP4 files, this contains LLM-generated key takeaways. For PDF/HTML files, this is null by default (can be populated by running the `summarize` command on the file).
 - `content`: For MP4 files, this contains the full transcript. **NEW: For PDF/HTML files, this contains extracted plaintext content.**
@@ -324,18 +321,18 @@ Each processed file has a corresponding `.json` file with the same name in the s
 ### 3.4 Feed Output
 
 Two or more feed files are generated based on feed.json configuration:
- - `podcast.xml` (or `podcast.atom`) - Contains all MP4 files with enclosures (only generated if feed.json exists AND MP4 files present)
- - `articles.xml` (or `articles.atom`) - Contains all PDF/HTML files (only generated if feed.json exists AND PDF/HTML files present)
+ - `podcast.xml` - Contains all MP4 files with enclosures (only generated if feed.json exists AND MP4 files present)
+ - `articles.xml` - Contains all PDF/HTML files (only generated if feed.json exists AND PDF/HTML files present)
  - `index.html` - Lists all available feeds (generated at root level if feed.json exists)
 
 For podcast feed items:
-- Title from metadata title dict's "final" key
+- Title from metadata title dict's final title computation
 - Description from `summary` field (LLM-generated key takeaways)
 - Enclosure: URL, type="audio/mp4", length (file size from `size` field)
 - Publication date from metadata `date` field
 
 For articles feed items:
-- Title from metadata title dict's "final" key
+- Title from metadata title dict's final title computation
 - Description from `content` field (if available) or `description` field
 - Link to the source file
 - Publication date from metadata `date` field
@@ -415,7 +412,7 @@ The system automatically generates a root-level `index.html` file to provide a d
 ### 4.1 Dependencies
 
 **Required dependencies:**
-- **`feedgen`**: RSS/Atom feed generation with podcast extension
+- **`feedgen`**: RSS feed generation with podcast extension
 - **`watchdog`**: File system monitoring for incremental mode
 - **`openai`**: Client for OpenAI-compatible LLM API and remote transcription API
 - **`pydantic-settings`**: Configuration management with environment variables
@@ -562,7 +559,6 @@ classDiagram
         +producer.py
         +metadata.py
         +feeds.py
-        +index.py (NEW)
     }
     
     class services {
@@ -624,9 +620,8 @@ local-feed-generator/
 \u2502   \u2502\u2500 \u251c\u2500\u2500 remote_transcriber.py
 \u2502   \u2502\u2500 \u251c\u2500\u2500 summarizer.py
 \u2502   \u2502\u2500 \u251c\u2500\u2500 extractors.py
-\u2502   \u251c\u2500\u2500 metadata.py
-\u2502   \u251c\u2500\u2500 feeds.py
-\u2502   \u251c\u2500\u2500 index.py (NEW - for index.html generation)
+   \u2502   \u251c\u2500\u2500 metadata.py
+   \u2502   \u251c\u2500\u2500 feeds.py
 \u251c\u2500\u2500 .env
 \u2514\u2500\u2500 README.md
 
@@ -665,14 +660,14 @@ data/
 
 #### Producer
 - Orchestrates file processing based on file type
-- For MP4 files: Requests transcription, then summarization (with optional reflection questions), extracts audio metadata, generates title dict, applies module prefix
-- For PDF/HTML files: Extracts metadata AND content, generates title dict, set summary to null (unless explicitly summarized), applies module prefix
+- For MP4 files: Requests transcription, then summarization (with optional reflection questions), extracts audio metadata, generates title dict with sources (filename, extracted, generated) and precedence (filename < extracted < generated), applies module prefix
+- For PDF/HTML files: Extracts metadata AND content, generates title dict with sources (filename, extracted, generated) and precedence (filename < extracted < generated), set summary to null (unless explicitly summarized), applies module prefix
 - **NEW:** Can generate summaries for PDF/HTML files when explicitly requested via summarize command
 - Generates JSON metadata file adjacent to source file with step maps, millisecond precision timestamps, title dict
 - Handles errors gracefully, writing error metadata
 - **NEW:** Checks for `reflection.md` files and passes questions to summarizer
 - **NEW:** Extracts audio metadata (duration, creation_time) using ffprobe
-- **NEW:** Builds title as dict with sources
+- **NEW:** Builds title as dict with sources (filename=sanitized no extension/no underscores, extracted=from metadata, generated=LLM with filename+extracted in prompt)
 - **NEW:** Applies module name prefix to titles when appropriate
 
 #### Transcription Service
@@ -693,7 +688,7 @@ data/
 #### Summarization Service
 - Generates key takeaways from audio transcripts and extracted content
 - Uses configured OpenAI-compatible LLM endpoint
-- Can generate titles from content when source metadata is unavailable
+- Generates titles from content with prompt including filename and extracted title before content. TITLE_PROMPT includes instructions to use extracted or filename titles when generating.
 - Tracks processing in the `summarize` step map with millisecond precision timing
 - **NEW:** Accepts optional reflection questions parameter
 - **NEW:** Uses `SUMMARY_PROMPT` or `SUMMARY_REFLECTION_PROMPT` based on context
@@ -701,8 +696,8 @@ data/
 - Handles API errors with retry logic
 
 #### Extractors Service
-- Extracts metadata from PDF files using PyPDF
-- Extracts metadata from HTML files using BeautifulSoup
+- Extracts metadata (including title) from PDF files using PyPDF
+- Extracts metadata (including title from <title> tag) from HTML files using BeautifulSoup
 - **NEW:** Extracts plaintext content from PDF (all pages) and HTML (body text)
 - **NEW:** Removes control characters that are invalid in XML from extracted content
 - **NEW:** Extracts audio metadata using ffprobe (duration, creation_time, bit_rate)
@@ -765,8 +760,8 @@ flowchart TD
     G -->|PDF| H4[Extract metadata & content]
     H4 --> K2[Store metadata in description]
     K2 --> L2[Store content in content field]
-    H4 --> M2[Build filename-derived title]
-    M2 --> N2[Build title dict]
+    H4 --> M2[Build sanitized filename (no extension, no underscores)]
+    M2 --> N2[Build title dict with sources]
     N2 --> O2[Apply module prefix]
     O2 --> Q2[Set summary to null]
     Q2 --> Q1
@@ -774,8 +769,8 @@ flowchart TD
     G -->|HTML| H5[Extract metadata & content]
     H5 --> K3[Store metadata in description]
     K3 --> L3[Store content in content field]
-    H5 --> M3[Build filename-derived title]
-    M3 --> N3[Build title dict]
+    H5 --> M3[Build sanitized filename (no extension, no underscores)]
+    M3 --> N3[Build title dict with sources]
     N3 --> O3[Apply module prefix]
     O3 --> Q3[Set summary to null]
     Q3 --> Q1
@@ -790,8 +785,8 @@ flowchart TD
 **Key Processing Steps:**
 1. Scanner discovers files needing processing (no JSON, incomplete JSON, or source newer than JSON)
 2. Producer processes each file based on type
-3. For MP4: Transcribe \=> Summarize (with optional reflection) \=> Extract audio metadata \=> Generate title \=> Build metadata
-4. For PDF/HTML: Extract metadata & content \=> Generate title \=> Build metadata
+3. For MP4: Transcribe => Summarize (with optional reflection) => Extract audio metadata => Build title dict (filename, extracted, generated with prompt including filename+extracted) with precedence (filename < extracted < generated) => Build metadata
+4. For PDF/HTML: Extract metadata & content => Build title dict (filename, extracted, generated with prompt including filename+extracted) with precedence (filename < extracted < generated) => Build metadata
 5. All steps populate step maps with millisecond precision timestamps
 6. Feed generator creates feeds from all valid metadata, with markdown to HTML conversion
 7. Index generator creates root-level index.html with all feeds
@@ -948,7 +943,7 @@ When an error occurs during processing:
 
 ### 10.1 Feed Format
 
-**Recommendation:** Use **RSS** (`FEED_FORMAT=rss`)
+**Recommendation:** Use **RSS** (only supported format)
 
 **Rationale:**
 - Better podcast support (enclosure tags well-defined)
@@ -1104,20 +1099,26 @@ SUMMARY_REFLECTION_PROMPT="Summarize key takeaways focusing on: frameworks, anal
 
 **Rationale:**
 - Need to track where each title comes from (filename, extracted from metadata, generated by LLM)
-- Enables proper fallback logic (filename \=> extracted \=> generated)
+- Enables proper fallback logic with precedence: filename < extracted < generated
 - Allows displaying the original extracted title separately if needed
 - Provides better visibility into title generation process
 - Permits different title formats for different use cases
 
+**Title Field Details:**
+- `filename`: Sanitized filename with NO extension and NO underscores (underscores replaced with spaces)
+- `extracted`: Title extracted from source metadata (PDF metadata title, HTML <title> tag, or MP4 metadata where available)
+- `generated`: Produced by LLM, with the prompt containing both the filename and extracted title before the content. TITLE_PROMPT includes instructions to use extracted or filename titles when generating.
+
 ### 13.2 Title Generation
 
-**Decision:** Use LLM to generate titles for MP4 files. For PDF/HTML, use filename-derived titles.
+**Decision:** Use LLM to generate titles for all file types. The LLM prompt MUST include the sanitized filename and extracted title (if available) before the content. TITLE_PROMPT already includes instructions to use extracted or filename titles while generating the final title.
 
 **Rationale:**
 - MP4 files rarely have embedded metadata with useful titles
-- PDF/HTML files often have metadata or `<title>` tags, but filename is more reliable for organization
-- Consistent user experience: filename-derived titles organize by filename structure
+- PDF/HTML files often have metadata, but LLM can generate better, more descriptive titles
+- The filename provides context, extracted title provides source metadata, and LLM combines these with content for optimal title
 - Module prefixing provides additional context
+- Precedence: filename < extracted < generated
 
 ### 13.3 Module Name Prefixing
 

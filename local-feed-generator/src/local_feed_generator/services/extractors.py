@@ -366,6 +366,8 @@ def get_audio_metadata(filepath: str | Path) -> dict[str, Any] | None:
           the file's metadata tags, or ``None`` if not present.
         - bit_rate: int | None — bit rate in bits per second, or ``None``
           if not available.
+        - title: str | None — title from the file's metadata tags, or
+          ``None`` if not present. Underscores are replaced with spaces.
 
     If ``ffprobe`` is not installed or any error occurs during probing,
     ``None`` is returned so that callers can fall back to existing behaviour
@@ -442,9 +444,16 @@ def get_audio_metadata(filepath: str | Path) -> dict[str, Any] | None:
 
     tags = format_info.get("tags", {})
 
+    # Extract title from metadata tags if available (MP4 files may have a
+    # 'title' tag in their container metadata).
+    title: str | None = tags.get("title")
+    if title:
+        title = _clean_title(title)
+
     return {
         "type": format_info.get("format_name"),
         "duration": duration if duration is not None else 0.0,
         "creation_time": tags.get("creation_time"),
         "bit_rate": bit_rate,
+        "title": title,
     }

@@ -2,7 +2,7 @@
 
 **Transform your education content into mobile-friendly RSS feeds for podcast and article consumption.**
 
-This is a personal feed generator that processes your education content files (PDF, HTML, MP4 audio) and creates standardized RSS/Atom feeds. These feeds can be consumed through mobile applications like **Antennapod** for audio content and **any RSS reader** for text content.
+This is a personal feed generator that processes your education content files (PDF, HTML, MP4 audio) and creates standardized RSS feeds. These feeds can be consumed through mobile applications like **Antennapod** for audio content and **any RSS reader** for text content.
 
 ## Synopsis
 
@@ -12,9 +12,9 @@ You have education content as a disorganized collection of PDF documents, HTML f
 2. **Transcribing audio** - Converts MP4 files to markdown text using local AI models on your Nvidia GPU, or optionally via a remote OpenAI-compatible API
 3. **Generating summaries** - Creates key takeaways from audio content using a local OpenAI-compatible LLM; PDF/HTML files can also be summarized
 4. **Extracting metadata** - Pulls titles, descriptions, and text content from PDF/HTML files
-5. **Creating feeds** - Generates RSS/Atom feeds that work with mobile apps:
-   - `podcast.xml` - For audio content (Antennapod and other podcast apps)
-   - `articles.xml` - For text content (any RSS reader app)
+5. **Creating feeds** - Generates RSS feeds that work with mobile apps:
+    - `podcast.xml` - For audio content (Antennapod and other podcast apps)
+    - `articles.xml` - For text content (any RSS reader app)
 6. **Per-folder organization** - Optional `feed.json` files in subfolders enable per-folder feeds with custom titles and descriptions
 7. **Index page** - Generates `index.html` with all feed URLs for easy discovery
 
@@ -72,7 +72,7 @@ The feed generator is configured through environment variables. Create a `.env` 
 
 ### Optional Variables
 
-- **FEED_FORMAT**: Default: `rss`. Feed format: `rss` or `atom`
+- **FEED_FORMAT**: (Removed - RSS is the only supported format)
 - **TRANSCRIPTION_MODEL**: Default: `large-v3-turbo`. Whisper model size: `tiny`, `base`, `small`, `medium`, `large-v3-turbo`
 - **TRANSCRIPTION_DEVICE**: Default: `cuda`. Device for transcription: `cuda` (recommended) or `cpu`
 - **TRANSCRIPTION_COMPUTE_TYPE**: Default: `float16`. Compute type: `float16` (best quality), `int8` (lower memory)
@@ -106,8 +106,7 @@ TITLE_PROMPT="Generate a concise, descriptive title (5-10 words) for the given c
 # Optional reflection prompt (uses SUMMARY_PROMPT if not provided)
 SUMMARY_REFLECTION_PROMPT="Summarize key takeaways focusing on: frameworks, analytical tools, critical thinking, creative thinking, systems thinking. Output just the summary concisely."
 
-# Optional: Feed format (rss or atom)
-FEED_FORMAT=rss
+# Feed format is RSS only (FEED_FORMAT setting removed)
 
 # Optional: Transcription settings
 # For best quality with sufficient GPU memory:
@@ -344,7 +343,7 @@ uv run local-feed-generator watch --file videos/lecture.mp4
 
 ### `feeds`
 
-Generate RSS/Atom feeds from existing JSON metadata (no processing). Reads all existing JSON metadata files, **finalizes JSON metadata** by computing feed eligibility for all items, generates `podcast.xml` and `articles.xml` only where feed.json exists and applicable files are present, and generates `index.html` with all feed URLs.
+Generate RSS feeds from existing JSON metadata (no processing). Reads all existing JSON metadata files, **finalizes JSON metadata** by computing feed eligibility for all items, generates `podcast.xml` and `articles.xml` only where feed.json exists and applicable files are present, and generates `index.html` with all feed URLs.
 
 **Flags:**
 - `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
@@ -479,7 +478,6 @@ data/
 ├── feed.json                  # REQUIRED for root feeds: Custom title/description
 ├── Course1/
 │   ├── feed.json            # REQUIRED for per-folder feeds: Per-folder configuration
-│   ├── index.html           # NEW: Per-folder index with feed URLs
 │   ├── podcast.xml          # Generated if feed.json exists and MP4 files present
 │   ├── articles.xml         # Generated if feed.json exists and PDF/HTML files present
 │   ├── lecture.mp4
@@ -489,7 +487,6 @@ data/
 │   └── notes.pdf.json       # Auto-generated metadata
 ├── Course2/
 │   ├── feed.json
-│   ├── index.html
 │   ├── podcast.xml
 │   ├── articles.xml
 │   ├── document.html
@@ -498,7 +495,7 @@ data/
 ```
 
 Each processed file gets a companion `.json` file containing:
-- **Title as dict**: With keys `filename`, `extracted`, `generated`, `final` for tracking title sources
+- **Title as dict**: With keys `filename`, `extracted`, `generated` for tracking title sources
 - **Extracted title**: Title from source metadata (PDF metadata, HTML `<title>` tag) stored separately
 - File metadata (type, size, date as UNIX epoch timestamps with **millisecond precision**)
 - For MP4 files: `description` is blank, `summary` contains LLM-generated key takeaways, `content` contains the full transcript
@@ -506,7 +503,6 @@ Each processed file gets a companion `.json` file containing:
 - Step maps (`transcribe`, `summarize`, `extract`) tracking processing progress with detailed timing and metrics
 - `duration` field for MP4 files (from audio metadata)
 - `creation_time` field in ISO8601 format (from audio media metadata)
-- `reflected_title` field for PDF/HTML (the filename-derived title)
 
 ### Per-Folder Feeds with feed.json
 
@@ -546,13 +542,11 @@ Example `reflection.md`:
 
 ### Index.html Generation
 
-**NEW:** The system automatically generates an `index.html` file in every folder that has a `feed.json` file. This file contains:
-- A list of all feeds available in that folder
-- Feed titles and descriptions from `feed.json`
+**NEW:** The system automatically generates a **root-level** `index.html` file when feed.json exists. This file contains:
+- A list of all feeds available from all folders with `feed.json`
+- Feed titles and descriptions from each `feed.json`
 - Links to both `podcast.xml` (if MP4 files present) and `articles.xml` (if PDF/HTML files present)
-- Hierarchical navigation showing parent/child folder relationships
-
-The root-level `index.html` (if feed.json exists in root) lists all per-folder feeds, creating a complete directory of all available content feeds.
+- Simple, clean HTML that works with any browser
 
 ## Features
 
@@ -582,7 +576,7 @@ The root-level `index.html` (if feed.json exists in root) lists all per-folder f
 - **Type-specific generation**: `podcast.xml` only if MP4 files present, `articles.xml` only if PDF/HTML files present
 - **Per-folder feeds**: Optional `feed.json` enables feeds in subfolders with custom branding
 - **No root feeds without feed.json**: Root-level feeds require explicit `feed.json` configuration
-- **Standards-compliant**: RSS or Atom format
+ - **Standards-compliant**: RSS format
 - **Sorted alphabetically**: By folder name, then filename
 - **Proper encoding**: XML special characters properly escaped
 - **Markdown to HTML**: Summaries and descriptions converted to HTML for feed readers
@@ -609,7 +603,7 @@ The root-level `index.html` (if feed.json exists in root) lists all per-folder f
    - Audio files \=> transcribed to markdown \=> summarized by LLM \=> stored in `content` and `summary` fields
    - Documents \=> metadata and content extracted \=> stored in `description` and `content` fields \=> optionally summarized
 3. **Metadata**: JSON file created alongside each source file with all extracted information including:
-   - Title as dict with sources (`filename`, `extracted`, `generated`, `final`)
+   - Title as dict with sources (`filename`, `extracted`, `generated`)
    - Step maps tracking processing progress
    - Millisecond-precision timestamps
    - Extracted content for PDF/HTML files

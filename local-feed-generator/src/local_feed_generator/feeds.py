@@ -52,33 +52,6 @@ _DC_NAMESPACE = "http://purl.org/dc/elements/1.1/"
 _SAFE_URL_SCHEMES = re.compile(r"^(https?://|mailto:|/|#|\.\.)")
 
 
-def _get_final_title(title: dict[str, str | None] | str | None) -> str:
-    """Extract the final title as a plain string from a title field.
-
-    Handles both the new dict format (``{"generated": "...", "filename": "..."}``)
-    and the legacy string format.  For dict titles, the ``"generated"`` key is
-    preferred; if absent or empty, falls back to ``"filename"``.  The
-    ``"extracted"`` key is intentionally not used as the final title.  If
-    *title* is a plain string, it is returned as-is.  Returns an empty string
-    when *title* is ``None`` or no suitable key is found.
-
-    Args:
-        title: A title dict, a title string, or ``None``.
-
-    Returns:
-        The final title string, or an empty string if not available.
-    """
-    if title is None:
-        return ""
-    if isinstance(title, dict):
-        for key in ("generated", "filename"):
-            value = title.get(key)
-            if value and value.strip():
-                return value
-        return ""
-    return str(title)
-
-
 def _markdown_to_html(text: str | None) -> str:
     """Convert markdown text to HTML with XSS protection.
 
@@ -704,7 +677,7 @@ class FeedGenerator:
         with ``feed_eligible == True`` are included.
 
         For each item:
-            - **title**: from metadata ``title``.
+            - **title**: from metadata ``final_title`` computed property.
             - **description**: from metadata ``summary`` (LLM-generated key
               takeaways for MP4 files), falling back to ``description``
               for backward compatibility.  Markdown is converted to HTML.
@@ -765,7 +738,7 @@ class FeedGenerator:
             entry = fg.add_entry()
             entry.id(str(metadata.filepath))
             entry.guid(self._absolute_url(metadata.filepath))
-            entry.title(_get_final_title(metadata.title))
+            entry.title(metadata.final_title)
 
             # Description from summary field (holds LLM key takeaways for MP4),
             # falling back to description for backward compatibility.
@@ -815,7 +788,7 @@ class FeedGenerator:
         Only PDF and HTML files with ``feed_eligible == True`` are included.
 
         For each item:
-            - **title**: from metadata ``title``.
+            - **title**: from metadata ``final_title`` computed property.
             - **description**: from metadata ``content`` (extracted text) if
               available, otherwise from ``description``, otherwise empty.
               Markdown is converted to HTML.
@@ -878,7 +851,7 @@ class FeedGenerator:
             entry = fg.add_entry()
             entry.id(str(metadata.filepath))
             entry.guid(self._absolute_url(metadata.filepath))
-            entry.title(_get_final_title(metadata.title))
+            entry.title(metadata.final_title)
 
             # Description from content (if available), fallback to
             # description field, then empty string.

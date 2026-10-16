@@ -12,7 +12,7 @@
 This document provides a detailed, executable implementation plan for building `local-feed-generator`, a Python application that processes PDF/HTML/MP4 files and generates RSS feeds. The plan is organized into phases with ordered tasks, dependencies, and completion criteria.
 
 **Latest Updates:**
-- Added support for title as dict with source tracking (filename, extracted, generated, final)
+- Added support for title as dict with source tracking (filename, extracted, generated)
 - Added new config variables: SUMMARY_PROMPT, TITLE_PROMPT, SUMMARY_REFLECTION_PROMPT
 - Added reflection.md support for reflection questions in summarization
 - Added per-folder feed generation with feed.json configuration
@@ -78,7 +78,7 @@ Establish the project foundation with dependency management, directory structure
   - Create a basic `README.md` stub
 - **Completion Criteria:**
   - `.env.example` contains all required environment variables with example values
-  - `.env.example` includes: `BASE_URL`, `DATA_DIR`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`, `SUMMARY_PROMPT`, `TITLE_PROMPT`, `FEED_FORMAT`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_DEVICE`, `TRANSCRIPTION_COMPUTE_TYPE`, `SUMMARY_REFLECTION_PROMPT`
+  - `.env.example` includes: `BASE_URL`, `DATA_DIR`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`, `SUMMARY_PROMPT`, `TITLE_PROMPT`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_DEVICE`, `TRANSCRIPTION_COMPUTE_TYPE`, `SUMMARY_REFLECTION_PROMPT`
 
 - [x] T1.4: Verify Dependency Installation
 - **Description:** Ensure all dependencies can be installed
@@ -109,7 +109,6 @@ Implement the foundational modules for configuration, file scanning, and metadat
   - Add validation for required fields (`BASE_URL`, `DATA_DIR`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`)
   - Add new required fields: `SUMMARY_PROMPT`, `TITLE_PROMPT`
   - Add new optional field: `SUMMARY_REFLECTION_PROMPT` (defaults to None)
-  - Add optional fields with design doc defaults (`FEED_FORMAT=rss`)
   - Implement singleton pattern for config access
 - **Completion Criteria:**
   - Config validations work (errors on missing required fields)
@@ -123,17 +122,17 @@ Implement the foundational modules for configuration, file scanning, and metadat
 - **File:** `src/local_feed_generator/metadata.py`
 - **Actions:**
   - Create `Metadata` dataclass/model matching schema from design doc section 3.3
-  - **NEW:** `title` field is now a dict with keys: `filename`, `extracted`, `generated`, `final` (can also be a plain string for backward compatibility)
+  - **NEW:** `title` field is now a dict with keys: `filename`, `extracted`, `generated` (can also be a plain string for backward compatibility)
   - **NEW:** Add `extracted_title` field (string or None)
   - **NEW:** `date` field is float (millisecond precision UNIX epoch)
   - **NEW:** Add `duration` field (float, MP4 only, optional)
   - **NEW:** Add `creation_time` field (ISO-8601 string, MP4 only, optional)
-  - Include all fields: `version`, `title`, `extracted_title`, `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date`, `duration`, `creation_time`, `size`, `transcribe`, `summarize`, `extract`, `feed_eligible`, `error`
+  - Include all fields: `title`, `extracted_title`, `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date`, `duration`, `creation_time`, `size`, `transcribe`, `summarize`, `extract`, `feed_eligible`, `error`
   - `transcribe`, `summarize`, `extract` are step maps with fields: `status` (null | "in_progress" | "complete"), `start_time` (float, ms precision), `end_time` (float, ms precision), `input_size`, `output_size`, `words`, `model`, `input_tokens`, `output_tokens`
   - Add validation: `filetype` must be "mp4", "pdf", or "html"
   - Add validation: `error` field is optional
   - Add validation: MP4 files should have blank `description`, PDF/HTML files should have extracted metadata in `description`
-  - Add `final_title` computed property to extract the final title string from the title dict
+  - Add `final_title` computed property to extract the final title string from the title dict with precedence: generated > extracted > filename
   - Add `feed_eligible` computed property to check step map completion
   - Implement serialization/deserialization methods
   - Ensure serialization excludes computed properties (feed_eligible, final_title)
@@ -200,16 +199,17 @@ Implement the file processing pipeline including transcription, summarization, a
   - Create `process_file()` method that:
     - Determines file type from extension
     - Dispatches to appropriate processing path
-    - For MP4: call Transcriber (stores result in `content` field), then Summarizer (stores result in `summary` field), sets `description` to blank, then generate title, build title dict, apply module prefix
-    - For PDF/HTML: call appropriate extractor (stores result in `description` and `content` fields), build title dict, set `summary` to null, apply module prefix
-    - **NEW:** Build title as dict with sources (filename, extracted, generated, final)
-    - **NEW:** Apply module name prefix to final title
+    - For MP4: call Transcriber (stores result in `content` field), then Summarizer (stores result in `summary` field), sets `description` to blank, then generate title dict with sources (filename=sanitized no extension/no underscores, extracted=from metadata, generated=LLM with prompt including filename+extracted+content), apply module prefix with precedence filename < extracted < generated
+    - For PDF/HTML: call appropriate extractor (stores result in `description` and `content` fields), generate title dict with sources (filename=sanitized no extension/no underscores, extracted=from metadata, generated=LLM with prompt including filename+extracted+content), set `summary` to null, apply module prefix with precedence filename < extracted < generated
+    - **UPDATED:** Build title as dict with sources (filename, extracted, generated) and precedence (filename < extracted < generated)
+    - **NEW:** Sanitize filename for title dict: remove extension, replace underscores with spaces
+    - **UPDATED:** Apply module name prefix to final title (computed based on precedence)
     - **NEW:** Check for reflection.md and pass questions to summarizer
     - **NEW:** Extract audio metadata (duration, creation_time) using ffprobe
     - Writes JSON metadata file adjacent to source file with step maps
     - Handles errors and writes error metadata with preserved step maps
   - Implement `process_all()` method for batch processing
-  - Create `generate_title()` helper method that uses LLM if source metadata unavailable
+  - Create `generate_title()` helper method that uses LLM with prompt including filename and extracted title before content. TITLE_PROMPT includes instructions to use extracted or filename titles when generating.
   - **NEW:** Create helper for module name prefixing
 - **Dependencies:**
   - T2.2 (Metadata model)
@@ -430,9 +430,9 @@ Implement RSS feed generation for podcast and articles feeds with new features.
   - Implement `generate_podcast_feed()` method
   - Use `feedgen` library with podcast extension
   - Include all MP4 files with `feed_eligible = true` from metadata
-  - For each item:
-    - Title from metadata title dict's "final" key
-    - Description from `summary` field (LLM-generated key takeaways)
+   - For each item:
+     - Title from metadata title dict's final title computation
+     - Description from `summary` field (LLM-generated key takeaways)
     - **NEW:** Convert markdown in summary to HTML
     - Link: absolute URL to source file
     - Enclosure with URL, type="audio/mp4", length (file size from `size` field)
@@ -460,9 +460,9 @@ Implement RSS feed generation for podcast and articles feeds with new features.
   - Implement `generate_articles_feed()` method
   - Use `feedgen` library for RSS
   - Include all PDF/HTML files with `feed_eligible = true` from metadata
-  - For each item:
-    - Title from metadata title dict's "final" key
-    - **NEW:** Description from `content` field (if available), otherwise `description` field
+   - For each item:
+     - Title from metadata title dict's final title computation
+     - **NEW:** Description from `content` field (if available), otherwise `description` field
     - **NEW:** Convert markdown in content/description to HTML
     - Link: absolute URL to source file
     - Publication date from metadata `date` field (UNIX epoch to datetime)
@@ -675,7 +675,7 @@ Implement command-line interface for all processing modes.
 - **Actions:**
   - Implement `validate` command with required `--data-dir` option
   - Scan for all JSON metadata files
-  - Validate each against the schema (including new fields: version, title dict, duration, creation_time, content, step maps)
+  - Validate each against the schema (including new fields: title dict, duration, creation_time, content, step maps)
   - Check for deprecated field usage (warn on transcript, status dict, transcribe_status, etc.)
   - Check for orphaned JSON files
   - Check for special characters in filenames
@@ -687,7 +687,7 @@ Implement command-line interface for all processing modes.
   - T2.3 (Scanner)
 - **Completion Criteria:**
   - Command validates all JSON metadata files against new schema
-  - Schema validation works correctly for version 2.0 with title dict
+  - Schema validation works correctly with title dict
   - New fields validated (title dict, duration, creation_time, content, step maps with ms precision)
   - Deprecated field warnings are shown
   - Orphaned JSON files are detected
@@ -798,11 +798,11 @@ Implement comprehensive validation and robust error handling throughout the syst
 - **Description:** Ensure all metadata files conform to schema
 - **File:** `src/local_feed_generator/metadata.py`
 - **Actions:**
-  - Validate required fields for each filetype (version, title, filename, filepath, filetype, date)
+  - Validate required fields for each filetype (title, filename, filepath, filetype, date)
   - Validate field types and formats (UNIX epoch float for date, float for duration, ISO8601 for creation_time)
   - Validate conditional fields (content/summary only for MP4, description for PDF/HTML)
   - Validate step map structure (transcribe, summarize, extract objects with proper fields)
-  - **NEW:** Validate title dict structure (filename, extracted, generated, final keys)
+  - **NEW:** Validate title dict structure (filename=sanitized no extension/no underscores, extracted=from metadata, generated=LLM-generated) with precedence validation
   - **NEW:** Validate millisecond precision timestamps
   - Add validation for MP4: description should be blank, summary and content should be present for complete files
   - Add validation for PDF/HTML: description should be present, summary should be null (unless explicitly summarized), content should be present for complete files
@@ -1008,19 +1008,21 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
 ### Tasks
 
 - [x] T9.1: Implement Title as Dict with Source Tracking
-- **Description:** Change title field from string to dict
+- **Description:** Change title field from string to dict with sanitized filename, extracted, and generated sources
 - **Files:** `metadata.py`, `producer.py`, `extractors.py`, `feeds.py`
 - **Actions:**
-  - Update Metadata model to accept title as dict or string
-  - Implement title dict building in producer for all file types
-  - Add final_title computed property to extract final title string
+  - Update Metadata model to accept title as dict with keys: filename (sanitized: no extension, no underscores), extracted (from metadata), generated (LLM-generated)
+  - Implement title dict building in producer for all file types with filename sanitization (remove extension, replace underscores with spaces)
+  - Add final_title computed property to extract final title string with precedence: generated > extracted > filename
   - Update feed generator to use final_title from title dict
   - Ensure backward compatibility with string titles
+  - Update generate_title() to include filename and extracted title in LLM prompt before content. TITLE_PROMPT already includes instructions to use extracted or filename titles when generating.
 - **Completion Criteria:**
-  - Title dict with all sources (filename, extracted, generated, final) works
-  - Final title extraction works correctly
+  - Title dict with all sources (filename=sanitized, extracted, generated) works correctly
+  - Final title extraction works with correct precedence (generated > extracted > filename)
   - Feed generation uses final title
   - Backward compatibility maintained
+  - Filename in title dict is sanitized (no extension, no underscores)
 
 - [x] T9.2: Implement Millisecond Precision Timestamps
 - **Description:** Change date timestamps from integer seconds to float with ms precision
@@ -1297,7 +1299,7 @@ The following tasks can be worked on concurrently:
 ## Key Constraints Reminders
 
 ### Schema Requirements (Version 2.0)
-1. **Title field**: Must be a dict with keys: `filename`, `extracted`, `generated`, `final` (or a plain string for backward compatibility)
+1. **Title field**: Must be a dict with keys: `filename`, `extracted`, `generated` (or a plain string for backward compatibility)
 2. **Content field**: Used for both MP4 (transcript) and PDF/HTML (extracted text)
 3. **Step maps**: Processing tracked via `transcribe`, `summarize`, `extract` objects (not unified `status` dict)
 4. **Description behavior**: MP4 files have blank `description`, PDF/HTML have extracted metadata in `description`
@@ -1326,9 +1328,8 @@ The following tasks can be worked on concurrently:
 4. **Transcription:** Use faster-whisper with large-v3-turbo, CUDA, float16 (local); or remote API (when configured)
 5. **No quantization:** Best quality transcription, no quantization
 6. **LLM:** OpenAI-compatible with 128K context
-7. **Prompts:** SUMMARY_PROMPT and TITLE_PROMPT required; SUMMARY_REFLECTION_PROMPT optional
-8. **System Prompt:** LLM_SYSTEM_PROMPT still used for general LLM configuration
-9. **Feed Format:** RSS (not Atom) by default
+7. **Prompts:** SUMMARY_PROMPT and TITLE_PROMPT have defaults; SUMMARY_REFLECTION_PROMPT optional
+8. **Feed Format:** RSS only (Atom not supported)
 10. **URLs:** Absolute URLs = BASE_URL + filepath
 11. **Errors:** Error state written to JSON with step map status = null, excluded from feeds
 12. **Directory Structure:** Follow design doc section 5.1

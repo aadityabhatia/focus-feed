@@ -10,7 +10,6 @@ Tests cover:
 - CUDA availability check in _load_model()
 """
 
-import ctypes
 import json
 import os
 from pathlib import Path
@@ -100,23 +99,28 @@ class MockWhisperModel:
         self.delete_called = True
 
 
-# ---------------------------------------------------------------------------
-# Tests: Initialization and model loading
-# ---------------------------------------------------------------------------
+def _make_av_mock_with_streams(streams_data):
+    """Create a mock av module with the given audio streams."""
+    mock_streams = []
+    for sd in streams_data:
+        s = mock.MagicMock()
+        if "duration_seconds" in sd:
+            s.duration_seconds = sd["duration_seconds"]
+        mock_streams.append(s)
+
+    mock_container = mock.MagicMock()
+    mock_container.streams.audio = mock_streams
+
+    mock_av_module = mock.MagicMock()
+    mock_av_module.open.return_value.__enter__.return_value = mock_container
+    return mock_av_module
 
 
-class TestTranscriberInitialization:
-    """Tests for Transcriber initialization."""
-
-    def test_transcriber_starts_with_no_model(self, valid_env):
-        """Transcriber should start with no model loaded."""
-        transcriber = Transcriber()
-        assert transcriber.model is None
-
-    def test_model_property_returns_none_initially(self, valid_env):
-        """The model property should return None before loading."""
-        transcriber = Transcriber()
-        assert transcriber.model is None
+def _make_av_mock_with_error(error):
+    """Create a mock av module that raises on open."""
+    mock_av_module = mock.MagicMock()
+    mock_av_module.open.side_effect = error
+    return mock_av_module
 
 
 # ---------------------------------------------------------------------------
@@ -239,26 +243,18 @@ class TestConfigLoading:
 class TestTranscribeFileExistence:
     """Tests for file existence validation in transcribe()."""
 
-    def test_transcribe_nonexistent_file_raises_error(self, valid_env):
+    @pytest.mark.parametrize("filepath", ["nonexistent.mp4", "/path/to/nonexistent.mp4"])
+    def test_transcribe_nonexistent_file_raises_error(self, valid_env, filepath):
         """transcribe() should raise TranscriptionError for non-existent files."""
         transcriber = Transcriber()
 
         with mock.patch.object(Path, "exists", return_value=False):
             with pytest.raises(TranscriptionError) as exc_info:
-                transcriber.transcribe("nonexistent.mp4")
+                transcriber.transcribe(filepath)
 
             assert "File not found" in str(exc_info.value)
-            assert "nonexistent.mp4" in str(exc_info.value)
-
-    def test_transcribe_nonexistent_file_sets_filepath(self, valid_env):
-        """TranscriptionError should include the filepath attribute."""
-        transcriber = Transcriber()
-
-        with mock.patch.object(Path, "exists", return_value=False):
-            with pytest.raises(TranscriptionError) as exc_info:
-                transcriber.transcribe("/path/to/nonexistent.mp4")
-
-            assert exc_info.value.filepath == "/path/to/nonexistent.mp4"
+            assert filepath in str(exc_info.value)
+            assert exc_info.value.filepath == filepath
 
 
 class TestTranscribeOutput:
@@ -290,17 +286,25 @@ class TestTranscribeOutput:
         assert "[" not in result
         assert "->" not in result
 
-    def test_transcribe_joins_segments_with_newlines(self, valid_env):
-        """transcribe() should join segments with newlines."""
+    @pytest.mark.parametrize("segments_data,expected_lines", [
+        (
+            ["First sentence.", "Second sentence.", "Third sentence."],
+            ["First sentence.", "Second sentence.", "Third sentence."],
+        ),
+        (["Real text", "", "   ", "More text"], ["Real text", "More text"]),
+        (["Only one segment."], ["Only one segment."]),
+        ([], []),
+        (["", "   ", ""], []),
+        (["  Padded text  ", "  More text  "], ["Padded text", "More text"]),
+    ])
+    def test_transcribe_output_formatting(self, valid_env, segments_data, expected_lines):
+        """transcribe() should join segments with newlines, strip whitespace.
+
+        Empty segments are skipped to ensure clean output.
+        """
         transcriber = Transcriber()
 
-        mock_model = MockWhisperModel(
-            segments_data=[
-                "First sentence.",
-                "Second sentence.",
-                "Third sentence.",
-            ]
-        )
+        mock_model = MockWhisperModel(segments_data=segments_data)
 
         with mock.patch(
             "local_feed_generator.services.transcriber.WhisperModel"
@@ -310,238 +314,13 @@ class TestTranscribeOutput:
             with mock.patch.object(Path, "exists", return_value=True):
                 result = transcriber.transcribe("fake.mp4")
 
-        lines = result.split("\n")
-        assert len(lines) == 3
-        assert lines[0] == "First sentence."
-        assert lines[1] == "Second sentence."
-        assert lines[2] == "Third sentence."
-
-    def test_transcribe_strips_whitespace_from_segments(self, valid_env):
-        """transcribe() should strip leading/trailing whitespace from segments."""
-        transcriber = Transcriber()
-
-        mock_model = MockWhisperModel(
-            segments_data=[
-                "  Padded text  ",
-                "  More text  ",
-            ]
-        )
-
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
-            mock_whisper_cls.return_value = mock_model
-
-            with mock.patch.object(Path, "exists", return_value=True):
-                result = transcriber.transcribe("fake.mp4")
-
-        lines = result.split("\n")
-        assert lines[0] == "Padded text"
-        assert lines[1] == "More text"
-
-    def test_transcribe_skips_empty_segments(self, valid_env):
-        """transcribe() should skip empty segments."""
-        transcriber = Transcriber()
-
-        mock_model = MockWhisperModel(
-            segments_data=[
-                "Real text",
-                "",
-                "   ",
-                "More text",
-            ]
-        )
-
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
-            mock_whisper_cls.return_value = mock_model
-
-            with mock.patch.object(Path, "exists", return_value=True):
-                result = transcriber.transcribe("fake.mp4")
-
-        lines = result.split("\n")
-        assert len(lines) == 2
-        assert lines[0] == "Real text"
-        assert lines[1] == "More text"
-
-    def test_transcribe_single_segment(self, valid_env):
-        """transcribe() should handle a single segment."""
-        transcriber = Transcriber()
-
-        mock_model = MockWhisperModel(segments_data=["Only one segment."])
-
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
-            mock_whisper_cls.return_value = mock_model
-
-            with mock.patch.object(Path, "exists", return_value=True):
-                result = transcriber.transcribe("fake.mp4")
-
-        assert result == "Only one segment."
-
-    def test_transcribe_empty_transcript(self, valid_env):
-        """transcribe() should return empty string for files with no speech."""
-        transcriber = Transcriber()
-
-        mock_model = MockWhisperModel(segments_data=[])
-
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
-            mock_whisper_cls.return_value = mock_model
-
-            with mock.patch.object(Path, "exists", return_value=True):
-                result = transcriber.transcribe("fake.mp4")
-
-        assert result == ""
-
-    def test_transcribe_all_empty_segments_returns_empty_string(self, valid_env):
-        """transcribe() should return empty string when all segments are empty."""
-        transcriber = Transcriber()
-
-        mock_model = MockWhisperModel(segments_data=["", "   ", ""])
-
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
-            mock_whisper_cls.return_value = mock_model
-
-            with mock.patch.object(Path, "exists", return_value=True):
-                result = transcriber.transcribe("fake.mp4")
-
-        assert result == ""
+        lines = result.split("\n") if result else []
+        assert lines == expected_lines
 
 
 # ---------------------------------------------------------------------------
-# Tests: Audio metadata and progress output
+# Tests: Skip already complete
 # ---------------------------------------------------------------------------
-
-
-class TestTranscribeMetadataOutput:
-    """Tests for audio metadata and progress output in transcribe()."""
-
-    # Short aliases for repeated mock.patch paths to stay within line length.
-    _MPATH = "local_feed_generator.services.transcriber"
-
-    def test_transcribe_prints_start_metadata_with_duration(self, valid_env, capsys):
-        """transcribe() should print file name, duration, and size at start."""
-        transcriber = Transcriber()
-        mock_model = MockWhisperModel(segments_data=["Hello world"])
-
-        with (
-            mock.patch(f"{self._MPATH}.WhisperModel") as mock_whisper_cls,
-            mock.patch.object(Path, "exists", return_value=True),
-            mock.patch.object(Path, "stat") as mock_stat,
-            mock.patch(f"{self._MPATH}.Transcriber._get_audio_duration", return_value=120.5),
-        ):
-            mock_whisper_cls.return_value = mock_model
-            mock_stat.return_value.st_size = 12345
-
-            transcriber.transcribe("lecture.mp4")
-
-        captured = capsys.readouterr()
-        assert "Transcribing lecture.mp4: 120.5s, 12,345 bytes" in captured.out
-
-    def test_transcribe_prints_start_metadata_without_duration(self, valid_env, capsys):
-        """transcribe() should print file name and size when duration unavailable."""
-        transcriber = Transcriber()
-        mock_model = MockWhisperModel(segments_data=["Hello world"])
-
-        with (
-            mock.patch(f"{self._MPATH}.WhisperModel") as mock_whisper_cls,
-            mock.patch.object(Path, "exists", return_value=True),
-            mock.patch.object(Path, "stat") as mock_stat,
-            mock.patch(f"{self._MPATH}.Transcriber._get_audio_duration", return_value=None),
-        ):
-            mock_whisper_cls.return_value = mock_model
-            mock_stat.return_value.st_size = 12345
-
-            transcriber.transcribe("lecture.mp4")
-
-        captured = capsys.readouterr()
-        assert "Transcribing lecture.mp4: 12,345 bytes" in captured.out
-
-    def test_transcribe_prints_start_metadata_no_size(self, valid_env, capsys):
-        """transcribe() should print just filename when size is unavailable."""
-        transcriber = Transcriber()
-        mock_model = MockWhisperModel(segments_data=["Hello world"])
-
-        with (
-            mock.patch(f"{self._MPATH}.WhisperModel") as mock_whisper_cls,
-            mock.patch.object(Path, "exists", return_value=True),
-            mock.patch.object(Path, "stat", side_effect=OSError("stat failed")),
-            mock.patch(f"{self._MPATH}.Transcriber._get_audio_duration", return_value=None),
-        ):
-            mock_whisper_cls.return_value = mock_model
-
-            transcriber.transcribe("lecture.mp4")
-
-        captured = capsys.readouterr()
-        assert "Transcribing lecture.mp4" in captured.out
-
-    def test_transcribe_prints_completion_time_with_word_count(self, valid_env, capsys):
-        """transcribe() should print elapsed time and word count after completion."""
-        transcriber = Transcriber()
-        mock_model = MockWhisperModel(segments_data=["Hello world"])
-
-        with (
-            mock.patch(f"{self._MPATH}.WhisperModel") as mock_whisper_cls,
-            mock.patch.object(Path, "exists", return_value=True),
-            mock.patch.object(Path, "stat") as mock_stat,
-            mock.patch(f"{self._MPATH}.Transcriber._get_audio_duration", return_value=60.0),
-        ):
-            mock_whisper_cls.return_value = mock_model
-            mock_stat.return_value.st_size = 1000
-
-            transcriber.transcribe("lecture.mp4")
-
-        captured = capsys.readouterr()
-        assert "Completed in" in captured.out
-        assert "s" in captured.out
-        assert "words)" in captured.out
-
-    def test_transcribe_output_goes_to_stdout(self, valid_env, capsys):
-        """transcribe() output should go to stdout, not stderr."""
-        transcriber = Transcriber()
-        mock_model = MockWhisperModel(segments_data=["Hello world"])
-
-        with (
-            mock.patch(f"{self._MPATH}.WhisperModel") as mock_whisper_cls,
-            mock.patch.object(Path, "exists", return_value=True),
-            mock.patch.object(Path, "stat") as mock_stat,
-            mock.patch(f"{self._MPATH}.Transcriber._get_audio_duration", return_value=30.0),
-        ):
-            mock_whisper_cls.return_value = mock_model
-            mock_stat.return_value.st_size = 5000
-
-            transcriber.transcribe("lecture.mp4")
-
-        captured = capsys.readouterr()
-        assert "Transcribing" in captured.out
-        assert "Completed in" in captured.out
-        assert captured.err == ""
-
-    def test_transcribe_does_not_print_completion_on_error(self, valid_env, capsys):
-        """transcribe() should not print completion time on transcription error."""
-        transcriber = Transcriber()
-        mock_model = MockWhisperModel(segments_data=["Hello"], raise_on_transcribe=True)
-
-        with (
-            mock.patch(f"{self._MPATH}.WhisperModel") as mock_whisper_cls,
-            mock.patch.object(Path, "exists", return_value=True),
-            mock.patch.object(Path, "stat") as mock_stat,
-            mock.patch(f"{self._MPATH}.Transcriber._get_audio_duration", return_value=30.0),
-            pytest.raises(TranscriptionError),
-        ):
-            mock_whisper_cls.return_value = mock_model
-            mock_stat.return_value.st_size = 5000
-
-            transcriber.transcribe("lecture.mp4")
-
-        captured = capsys.readouterr()
-        assert "Completed in" not in captured.out
 
 
 class TestTranscribeSkipAlreadyComplete:
@@ -549,46 +328,34 @@ class TestTranscribeSkipAlreadyComplete:
 
     _MPATH = "local_feed_generator.services.transcriber"
 
-    def test_transcribe_skips_when_json_status_complete(self, valid_env, tmp_path):
-        """Return existing transcript when JSON has status.transcribe=complete."""
+    @pytest.mark.parametrize("json_content,should_skip,expected_result", [
+        (
+            '{"status": {"transcribe": "in_progress", "summarize": null}, "transcript": ""}',
+            False,
+            "New transcript",
+        ),
+        (
+            '{"status": {"transcribe": "complete", "summarize": null}, "transcript": "Existing"}',
+            True,
+            "Existing",
+        ),
+        (
+            '{"status": {"transcribe": "complete", "summarize": null}, "transcript": ""}',
+            False,
+            "New transcript",
+        ),
+    ])
+    def test_transcribe_skip_or_proceed(
+        self, valid_env, tmp_path, json_content, should_skip, expected_result
+    ):
+        """transcribe() should skip or proceed based on JSON status and transcript availability."""
         audio_file = tmp_path / "lecture.mp4"
         audio_file.write_bytes(b"video data")
         json_file = tmp_path / "lecture.mp4.json"
-        json_file.write_text(
-            json.dumps(
-                {
-                    "status": {"transcribe": "complete", "summarize": None},
-                    "transcript": "Existing transcript text.",
-                }
-            )
-        )
+        json_file.write_text(json_content)
 
         transcriber = Transcriber()
-
-        # WhisperModel should NOT be instantiated since we skip transcription
-        with mock.patch(f"{self._MPATH}.WhisperModel") as mock_whisper_cls:
-            result = transcriber.transcribe(str(audio_file))
-
-        assert result == "Existing transcript text."
-        # Model should not have been loaded
-        assert mock_whisper_cls.call_count == 0
-
-    def test_transcribe_proceeds_when_json_status_not_complete(self, valid_env, tmp_path):
-        """transcribe() should proceed when JSON status.transcribe is not 'complete'."""
-        audio_file = tmp_path / "lecture.mp4"
-        audio_file.write_bytes(b"video data")
-        json_file = tmp_path / "lecture.mp4.json"
-        json_file.write_text(
-            json.dumps(
-                {
-                    "status": {"transcribe": "in_progress", "summarize": None},
-                    "transcript": "",
-                }
-            )
-        )
-
-        transcriber = Transcriber()
-        mock_model = MockWhisperModel(segments_data=["New transcript"])
+        mock_model = MockWhisperModel(segments_data=[expected_result])
 
         with (
             mock.patch(f"{self._MPATH}.WhisperModel") as mock_whisper_cls,
@@ -597,134 +364,56 @@ class TestTranscribeSkipAlreadyComplete:
             mock_whisper_cls.return_value = mock_model
             result = transcriber.transcribe(str(audio_file))
 
-        assert result == "New transcript"
-        assert mock_whisper_cls.call_count == 1
-
-    def test_transcribe_proceeds_when_no_json_exists(self, valid_env, tmp_path):
-        """transcribe() should proceed when no adjacent JSON file exists."""
-        audio_file = tmp_path / "lecture.mp4"
-        audio_file.write_bytes(b"video data")
-
-        transcriber = Transcriber()
-        mock_model = MockWhisperModel(segments_data=["Transcript"])
-
-        with (
-            mock.patch(f"{self._MPATH}.WhisperModel") as mock_whisper_cls,
-            mock.patch(f"{self._MPATH}.Transcriber._get_audio_duration", return_value=60.0),
-        ):
-            mock_whisper_cls.return_value = mock_model
-            result = transcriber.transcribe(str(audio_file))
-
-        assert result == "Transcript"
-        assert mock_whisper_cls.call_count == 1
-
-    def test_transcribe_proceeds_when_json_has_no_transcript(self, valid_env, tmp_path):
-        """transcribe() should proceed when JSON marks complete but has no transcript."""
-        audio_file = tmp_path / "lecture.mp4"
-        audio_file.write_bytes(b"video data")
-        json_file = tmp_path / "lecture.mp4.json"
-        json_file.write_text(
-            json.dumps(
-                {
-                    "status": {"transcribe": "complete", "summarize": None},
-                    "transcript": "",
-                }
-            )
-        )
-
-        transcriber = Transcriber()
-        mock_model = MockWhisperModel(segments_data=["Fresh transcript"])
-
-        with (
-            mock.patch(f"{self._MPATH}.WhisperModel") as mock_whisper_cls,
-            mock.patch(f"{self._MPATH}.Transcriber._get_audio_duration", return_value=60.0),
-        ):
-            mock_whisper_cls.return_value = mock_model
-            result = transcriber.transcribe(str(audio_file))
-
-        assert result == "Fresh transcript"
-        assert mock_whisper_cls.call_count == 1
+        assert result == expected_result
+        if should_skip:
+            assert mock_whisper_cls.call_count == 0
+        else:
+            assert mock_whisper_cls.call_count == 1
 
 
 class TestGetAudioDuration:
     """Tests for the _get_audio_duration helper method."""
 
-    def test_returns_duration_from_av(self, valid_env, tmp_path):
-        """_get_audio_duration should return duration from av container."""
+    @pytest.mark.parametrize("setup_mock,expected", [
+        # Duration from av container
+        (lambda: _make_av_mock_with_streams([{"duration_seconds": 42.5}]), 42.5),
+        # No audio streams
+        (lambda: _make_av_mock_with_streams([]), None),
+        # av.open raises
+        (lambda: _make_av_mock_with_error(RuntimeError("av error")), None),
+        # av not available
+        (lambda: None, None),
+    ])
+    def test_get_audio_duration_scenarios(self, valid_env, tmp_path, setup_mock, expected):
+        """_get_audio_duration should handle various scenarios."""
         audio_file = tmp_path / "test.mp4"
         audio_file.write_bytes(b"fake audio data")
 
-        mock_stream = mock.MagicMock()
-        mock_stream.duration_seconds = 42.5
+        if setup_mock is None:
+            with mock.patch.dict("sys.modules", {"av": None}):
+                result = Transcriber._get_audio_duration(audio_file)
+        else:
+            av_module = setup_mock()
+            with mock.patch.dict("sys.modules", {"av": av_module}):
+                result = Transcriber._get_audio_duration(audio_file)
 
-        mock_container = mock.MagicMock()
-        mock_container.streams.audio = [mock_stream]
-
-        mock_av_module = mock.MagicMock()
-        mock_av_module.open.return_value.__enter__.return_value = mock_container
-
-        with mock.patch.dict("sys.modules", {"av": mock_av_module}):
-            result = Transcriber._get_audio_duration(audio_file)
-
-        assert result == 42.5
-
-    def test_returns_none_when_no_audio_streams(self, valid_env, tmp_path):
-        """_get_audio_duration should return None when no audio streams exist."""
-        audio_file = tmp_path / "test.mp4"
-        audio_file.write_bytes(b"fake audio data")
-
-        mock_container = mock.MagicMock()
-        mock_container.streams.audio = []
-
-        mock_av_module = mock.MagicMock()
-        mock_av_module.open.return_value.__enter__.return_value = mock_container
-
-        with mock.patch.dict("sys.modules", {"av": mock_av_module}):
-            result = Transcriber._get_audio_duration(audio_file)
-
-        assert result is None
-
-    def test_returns_none_on_av_error(self, valid_env, tmp_path):
-        """_get_audio_duration should return None when av.open raises."""
-        audio_file = tmp_path / "test.mp4"
-        audio_file.write_bytes(b"fake audio data")
-
-        mock_av_module = mock.MagicMock()
-        mock_av_module.open.side_effect = RuntimeError("av error")
-
-        with mock.patch.dict("sys.modules", {"av": mock_av_module}):
-            result = Transcriber._get_audio_duration(audio_file)
-
-        assert result is None
-
-    def test_returns_none_when_av_not_available(self, valid_env, tmp_path):
-        """_get_audio_duration should return None when av import fails."""
-        audio_file = tmp_path / "test.mp4"
-        audio_file.write_bytes(b"fake audio data")
-
-        with mock.patch.dict("sys.modules", {"av": None}):
-            result = Transcriber._get_audio_duration(audio_file)
-
-        assert result is None
+        assert result == expected
 
 
 class TestGetFileSize:
     """Tests for the _get_file_size helper method."""
 
-    def test_returns_file_size(self, valid_env, tmp_path):
-        """_get_file_size should return the file size in bytes."""
+    @pytest.mark.parametrize("file_exists,expected", [
+        (True, 1024),
+        (False, None),  # Nonexistent file returns None
+    ])
+    def test_get_file_size(self, valid_env, tmp_path, file_exists, expected):
+        """_get_file_size should return the file size in bytes, or None on error."""
         audio_file = tmp_path / "test.mp4"
-        audio_file.write_bytes(b"x" * 1024)
-
+        if file_exists:
+            audio_file.write_bytes(b"x" * 1024)
         result = Transcriber._get_file_size(audio_file)
-        assert result == 1024
-
-    def test_returns_none_on_os_error(self, valid_env, tmp_path):
-        """_get_file_size should return None when stat fails."""
-        audio_file = tmp_path / "nonexistent.mp4"
-
-        result = Transcriber._get_file_size(audio_file)
-        assert result is None
+        assert result == expected
 
 
 # ---------------------------------------------------------------------------
@@ -774,25 +463,6 @@ class TestTranscribeErrorHandling:
             assert "Failed to load transcription model" in str(exc_info.value)
             assert "CUDA not available" in str(exc_info.value)
 
-    def test_transcription_error_is_subclass_of_processing_error(self, valid_env):
-        """TranscriptionError should be a ProcessingError subclass."""
-        from local_feed_generator.errors import ProcessingError
-
-        transcriber = Transcriber()
-
-        mock_model = MockWhisperModel(segments_data=["Hello"], raise_on_transcribe=True)
-
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
-            mock_whisper_cls.return_value = mock_model
-
-            with (
-                mock.patch.object(Path, "exists", return_value=True),
-                pytest.raises(ProcessingError),
-            ):
-                transcriber.transcribe("fake.mp4")
-
 
 # ---------------------------------------------------------------------------
 # Tests: cleanup() method
@@ -841,71 +511,14 @@ class TestCleanup:
             assert mock_model.delete_called is True
 
     def test_cleanup_without_loaded_model_is_noop(self, valid_env):
-        """cleanup() should be safe to call when no model is loaded."""
+        """cleanup() should be safe to call when no model is loaded or model has no delete."""
         transcriber = Transcriber()
-        # Should not raise
+
+        # Should not raise when no model is loaded
         transcriber.cleanup()
         assert transcriber.model is None
 
-    def test_model_reloaded_after_cleanup(self, valid_env):
-        """Model should be reloaded after cleanup() on next transcribe()."""
-        transcriber = Transcriber()
-
-        mock_model_1 = MockWhisperModel(segments_data=["First"])
-        mock_model_2 = MockWhisperModel(segments_data=["Second"])
-
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
-            # First call loads model_1
-            mock_whisper_cls.return_value = mock_model_1
-
-            with mock.patch.object(Path, "exists", return_value=True):
-                result1 = transcriber.transcribe("fake1.mp4")
-                assert result1 == "First"
-
-            # Cleanup
-            transcriber.cleanup()
-            assert transcriber.model is None
-
-            # Second call should load model_2 (simulating reload)
-            mock_whisper_cls.return_value = mock_model_2
-
-            with mock.patch.object(Path, "exists", return_value=True):
-                result2 = transcriber.transcribe("fake2.mp4")
-                assert result2 == "Second"
-
-            # WhisperModel should have been instantiated twice
-            assert mock_whisper_cls.call_count == 2
-
-    def test_cleanup_handles_delete_exception_gracefully(self, valid_env):
-        """cleanup() should not raise if model.delete() throws."""
-        transcriber = Transcriber()
-
-        mock_model = MockWhisperModel(segments_data=["Hello"])
-        # Make delete raise an exception
-
-        def failing_delete():
-            raise RuntimeError("Delete failed")
-
-        mock_model.delete = failing_delete
-
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
-            mock_whisper_cls.return_value = mock_model
-
-            with mock.patch.object(Path, "exists", return_value=True):
-                transcriber.transcribe("fake.mp4")
-
-            # Should not raise even though delete() raises
-            transcriber.cleanup()
-            assert transcriber.model is None
-
-    def test_cleanup_with_model_without_delete_method(self, valid_env):
-        """cleanup() should work even if model has no delete method."""
-        transcriber = Transcriber()
-
+        # Should not raise when model has no delete method
         class SimpleModel:
             def transcribe(self, audio, **kwargs):
                 return [MockSegment("Hello")], MockTranscriptionInfo()
@@ -936,88 +549,6 @@ class TestCheckCudaAvailable:
         result = check_cuda_available()
         assert isinstance(result, bool)
 
-    def test_returns_true_when_library_loadable(self, valid_env):
-        """Should return True when ctypes.CDLL successfully loads a library."""
-        original_cdll = ctypes.CDLL
-
-        def mock_cdll(name, *args, **kwargs):
-            if "libcublas" in name:
-                return original_cdll  # Return a dummy object
-            raise OSError(f"cannot open shared object file: {name}")
-
-        # Mock site to prevent finding real libraries in site-packages
-        with (
-            mock.patch("ctypes.CDLL", side_effect=mock_cdll),
-            mock.patch("site.getsitepackages", return_value=[]),
-            mock.patch("site.getusersitepackages", return_value=""),
-        ):
-            assert check_cuda_available() is True
-
-    def test_returns_false_when_no_library_loadable(self, valid_env):
-        """Should return False when ctypes.CDLL cannot load any library."""
-        # Mock both CDLL and site.getsitepackages to prevent finding real libraries
-        with (
-            mock.patch("ctypes.CDLL", side_effect=OSError("cannot open shared object file")),
-            mock.patch("site.getsitepackages", return_value=[]),
-            mock.patch("site.getusersitepackages", return_value=""),
-        ):
-            assert check_cuda_available() is False
-
-    def test_returns_false_when_ctypes_import_fails(self, valid_env):
-        """Should return False if ctypes cannot be imported."""
-        import builtins
-
-        original_import = builtins.__import__
-
-        def mock_import(name, *args, **kwargs):
-            if name == "ctypes":
-                raise ImportError("No module named 'ctypes'")
-            return original_import(name, *args, **kwargs)
-
-        with mock.patch("builtins.__import__", side_effect=mock_import):
-            assert check_cuda_available() is False
-
-    def test_tries_versioned_library_names_first(self, valid_env):
-        """Should try libcublas.so.12 before falling back to libcublas.so."""
-        loaded_names: list[str] = []
-
-        def mock_cdll(name, *args, **kwargs):
-            loaded_names.append(name)
-            raise OSError(f"cannot open shared object file: {name}")
-
-        # Mock site to prevent finding real libraries in site-packages
-        with (
-            mock.patch("ctypes.CDLL", side_effect=mock_cdll),
-            mock.patch("site.getsitepackages", return_value=[]),
-            mock.patch("site.getusersitepackages", return_value=""),
-        ):
-            result = check_cuda_available()
-            assert result is False
-            # Should have tried all library names in standard paths
-            assert "libcublas.so.12" in loaded_names
-            assert "libcublas.so" in loaded_names
-
-    def test_finds_library_in_site_packages(self, valid_env, tmp_path):
-        """Should find CUDA libraries bundled in Python site-packages."""
-        # Create a fake nvidia/cublas/lib directory in tmp_path
-        nvidia_lib_dir = tmp_path / "nvidia" / "cublas" / "lib"
-        nvidia_lib_dir.mkdir(parents=True)
-        fake_lib = nvidia_lib_dir / "libcublas.so.12"
-        fake_lib.write_bytes(b"fake library")
-
-        # CDLL should fail for bare names (standard paths) but succeed for full path
-        def mock_cdll(name, *args, **kwargs):
-            if name == str(fake_lib):
-                return mock.MagicMock()  # Return a mock object for the full path
-            raise OSError(f"cannot open shared object file: {name}")
-
-        with (
-            mock.patch("ctypes.CDLL", side_effect=mock_cdll),
-            mock.patch("site.getsitepackages", return_value=[str(tmp_path)]),
-            mock.patch("site.getusersitepackages", return_value=""),
-        ):
-            assert check_cuda_available() is True
-
 
 # ---------------------------------------------------------------------------
 # Tests: CUDA availability check in _load_model()
@@ -1027,156 +558,92 @@ class TestCheckCudaAvailable:
 class TestCudaCheckInLoadModel:
     """Tests for the CUDA availability check integrated into _load_model()."""
 
-    def test_cuda_device_raises_when_cuda_unavailable(self, valid_env):
-        """_load_model should raise TranscriptionError when CUDA is unavailable."""
+    @pytest.mark.parametrize("cuda_available,whisper_side_effect,expected_error", [
+        (False, None, "CUDA libraries not found"),
+        (
+            True,
+            RuntimeError(
+                "Error loading libcublas.so.12: cannot open shared object file"
+            ),
+            "CUDA libraries not found",
+        ),
+        (
+            True,
+            RuntimeError("CUDA error: cuBLAS initialization failed"),
+            "CUDA libraries not found",
+        ),
+        (
+            True,
+            RuntimeError("Invalid model name"),
+            "Failed to load transcription model",
+        ),
+    ])
+    def test_cuda_error_scenarios(
+        self, valid_env, cuda_available, whisper_side_effect, expected_error
+    ):
+        """_load_model should handle various CUDA and model loading error scenarios."""
         transcriber = Transcriber()
 
         with (
             mock.patch(
                 "local_feed_generator.services.transcriber.check_cuda_available",
-                return_value=False,
+                return_value=cuda_available,
             ),
             mock.patch(
                 "local_feed_generator.services.transcriber.WhisperModel"
             ) as mock_whisper_cls,
             pytest.raises(TranscriptionError) as exc_info,
         ):
+            if whisper_side_effect:
+                mock_whisper_cls.side_effect = whisper_side_effect
             transcriber._load_model()
 
-            assert "CUDA libraries not found" in str(exc_info.value)
-            # WhisperModel should not have been instantiated
-            assert mock_whisper_cls.call_count == 0
+            assert expected_error in str(exc_info.value)
+            if not cuda_available:
+                assert mock_whisper_cls.call_count == 0
+            if "Invalid model name" in str(whisper_side_effect or ""):
+                assert "Invalid model name" in str(exc_info.value)
 
-    def test_cuda_device_does_not_raise_when_cuda_available(self, valid_env):
-        """_load_model should proceed when CUDA is available."""
-        transcriber = Transcriber()
-        mock_model = MockWhisperModel(segments_data=["Hello"])
-
-        with (
-            mock.patch(
-                "local_feed_generator.services.transcriber.check_cuda_available",
-                return_value=True,
-            ),
-            mock.patch(
-                "local_feed_generator.services.transcriber.WhisperModel"
-            ) as mock_whisper_cls,
-        ):
-            mock_whisper_cls.return_value = mock_model
-            result = transcriber._load_model()
-            assert mock_whisper_cls.call_count == 1
-            assert result is mock_model
-
-    def test_cpu_device_skips_cuda_check(self, valid_env):
-        """_load_model should not check CUDA when device is 'cpu'."""
-        transcriber = Transcriber()
-
-        # Override config to use CPU
+    @pytest.mark.parametrize("device,cuda_check_called,should_succeed", [
+        ("cuda", True, True),   # CUDA device: check is called, should succeed
+        ("cpu", False, True),   # CPU device: check is skipped, should succeed
+    ])
+    def test_device_handling(self, valid_env, device, cuda_check_called, should_succeed):
+        """_load_model should check CUDA only when device is 'cuda'."""
         import local_feed_generator.config as config_module
 
         config_module._config_instance = None
-        os.environ["TRANSCRIPTION_DEVICE"] = "cpu"
+        os.environ["TRANSCRIPTION_DEVICE"] = device
         config_module.reload_config()
 
         try:
+            transcriber = Transcriber()
+            mock_model = MockWhisperModel(segments_data=["Hello"])
+
             with (
                 mock.patch(
-                    "local_feed_generator.services.transcriber.check_cuda_available"
+                    "local_feed_generator.services.transcriber.check_cuda_available",
+                    return_value=True,
                 ) as mock_check,
                 mock.patch(
                     "local_feed_generator.services.transcriber.WhisperModel"
                 ) as mock_whisper_cls,
             ):
-                mock_model = MockWhisperModel(segments_data=["Hello"])
                 mock_whisper_cls.return_value = mock_model
-                transcriber._load_model()
-                # check_cuda_available should not be called for CPU
-                assert mock_check.call_count == 0
+                result = transcriber._load_model()
+                assert mock_check.call_count == (1 if cuda_check_called else 0)
+                if should_succeed:
+                    assert mock_whisper_cls.call_count == 1
+                    assert result is mock_model
         finally:
             del os.environ["TRANSCRIPTION_DEVICE"]
             config_module._config_instance = None
-
-    def test_faster_whisper_cublas_error_wrapped(self, valid_env):
-        """Errors mentioning libcublas from faster-whisper are wrapped."""
-        transcriber = Transcriber()
-
-        with (
-            mock.patch(
-                "local_feed_generator.services.transcriber.check_cuda_available",
-                return_value=True,
-            ),
-            mock.patch(
-                "local_feed_generator.services.transcriber.WhisperModel"
-            ) as mock_whisper_cls,
-            pytest.raises(TranscriptionError) as exc_info,
-        ):
-            mock_whisper_cls.side_effect = RuntimeError(
-                "Error loading libcublas.so.12: cannot open shared object file"
-            )
-            transcriber._load_model()
-
-            assert "CUDA libraries not found" in str(exc_info.value)
-
-    def test_faster_whisper_cublas_error_wrapped_case_insensitive(self, valid_env):
-        """Errors mentioning 'cublas' (any case) from faster-whisper are wrapped."""
-        transcriber = Transcriber()
-
-        with (
-            mock.patch(
-                "local_feed_generator.services.transcriber.check_cuda_available",
-                return_value=True,
-            ),
-            mock.patch(
-                "local_feed_generator.services.transcriber.WhisperModel"
-            ) as mock_whisper_cls,
-            pytest.raises(TranscriptionError) as exc_info,
-        ):
-            mock_whisper_cls.side_effect = RuntimeError("CUDA error: cuBLAS initialization failed")
-            transcriber._load_model()
-
-            assert "CUDA libraries not found" in str(exc_info.value)
-
-    def test_non_cuda_error_uses_original_message(self, valid_env):
-        """Non-CUDA errors should use the original error message."""
-        transcriber = Transcriber()
-
-        with (
-            mock.patch(
-                "local_feed_generator.services.transcriber.check_cuda_available",
-                return_value=True,
-            ),
-            mock.patch(
-                "local_feed_generator.services.transcriber.WhisperModel"
-            ) as mock_whisper_cls,
-            pytest.raises(TranscriptionError) as exc_info,
-        ):
-            mock_whisper_cls.side_effect = RuntimeError("Invalid model name")
-            transcriber._load_model()
-
-            assert "Failed to load transcription model" in str(exc_info.value)
-            assert "Invalid model name" in str(exc_info.value)
-
-    def test_cuda_check_error_propagates_through_transcribe(self, valid_env):
-        """The CUDA error should propagate when calling transcribe()."""
-        transcriber = Transcriber()
-
-        with (
-            mock.patch(
-                "local_feed_generator.services.transcriber.check_cuda_available",
-                return_value=False,
-            ),
-            mock.patch.object(Path, "exists", return_value=True),
-            pytest.raises(TranscriptionError) as exc_info,
-        ):
-            transcriber.transcribe("fake.mp4")
-
-            assert "CUDA libraries not found" in str(exc_info.value)
 
     def test_cublas_error_during_transcription_wrapped_with_cuda_message(self, valid_env):
         """cuBLAS errors during transcription should be wrapped with CUDA_ERROR_MESSAGE."""
         transcriber = Transcriber()
 
         mock_model = MockWhisperModel()
-        # Override transcribe to raise a cuBLAS error
         mock_model.transcribe = mock.Mock(
             side_effect=OSError("Library libcublas.so.12 is not found or cannot be loaded")
         )

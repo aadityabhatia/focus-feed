@@ -229,7 +229,9 @@ class Scanner:
                     continue
 
                 # --- Source file handling ---
-                if not _is_supported_source_file(source_path):
+                # Use stripped filename for extension check to handle trailing
+                # whitespace in filenames (e.g., "file.mp4 ").
+                if not _is_supported_source_file(root_path / filename.strip()):
                     continue
 
                 _validate_filename(filename, source_path)

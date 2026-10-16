@@ -14,6 +14,7 @@ Error handling flow (design doc section 7.1):
 
 from datetime import UTC, datetime
 import logging
+from pathlib import Path
 import sys
 
 # ---------------------------------------------------------------------------
@@ -21,6 +22,21 @@ import sys
 # ---------------------------------------------------------------------------
 
 _logger = logging.getLogger("local_feed_generator")
+
+
+def _sanitize_error_filename(filename: str) -> str:
+    """Sanitize a filename for use as the 'filename' key in error title dicts.
+
+    Removes the file extension and replaces underscores with spaces,
+    matching the sanitization used in the Producer's title dict.
+
+    Args:
+        filename: The original filename with extension.
+
+    Returns:
+        The sanitized filename (no extension, no underscores).
+    """
+    return Path(filename).stem.replace("_", " ")
 
 
 def _configure_logger(logger: logging.Logger) -> None:
@@ -135,7 +151,11 @@ def create_error_metadata(
     error_message = str(exc) if str(exc) else exc.__class__.__name__
 
     # Convert string title to dict for backward compatibility.
-    title_dict: dict[str, str | None] = {"filename": filename}
+    title_dict: dict[str, str | None] = {
+        "filename": _sanitize_error_filename(filename),
+        "extracted": None,
+        "generated": None,
+    }
 
     return {
         "title": title_dict,

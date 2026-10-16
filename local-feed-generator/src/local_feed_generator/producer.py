@@ -22,6 +22,17 @@ precision.  Per-step timing is tracked within each step map's
 ``start_time`` and ``end_time`` fields, also as epoch floats with
 millisecond precision.
 
+The title field is a dict with exactly three keys:
+- ``filename``: sanitized filename (no extension, underscores→spaces)
+- ``extracted``: title from source metadata (PDF metadata, HTML <title>,
+  or MP4 metadata where available)
+- ``generated``: LLM-generated title (all file types when content is
+  available)
+
+Title precedence for the final title: generated > extracted > filename.
+The module name prefix is applied to the final title after precedence
+resolution.
+
 Design references:
 - design.md section 2.2 (Producer Pipeline responsibility)
 - design.md section 5.2 (Producer module responsibilities)
@@ -130,6 +141,23 @@ def _check_reflection_md(absolute_path: str) -> str | None:
         except OSError as e:
             _logger.warning("Failed to read reflection.md at %s: %s", reflection_path, e)
     return None
+
+
+def _sanitize_filename(filename: str) -> str:
+    """Sanitize a filename for use as a title.
+
+    Removes the file extension and replaces all underscores with spaces.
+
+    Example:
+        ``my_lecture.mp4`` -> ``my lecture``
+
+    Args:
+        filename: The original filename with extension.
+
+    Returns:
+        The sanitized filename (no extension, no underscores).
+    """
+    return _clean_title(Path(filename).stem) or ""
 
 
 class Producer:
@@ -361,6 +389,42 @@ class Producer:
         return results
 
     # ------------------------------------------------------------------
+    # Title dict building
+    # ------------------------------------------------------------------
+
+    def build_title_dict(
+        self,
+        filename_title: str,
+        extracted_title: str | None = None,
+        generated_title: str | None = None,
+    ) -> dict[str, str | None]:
+        """Build a title dict with the three required keys.
+
+        The dict always contains exactly three keys:
+
+        - ``filename``: sanitized filename (no extension, underscores→spaces)
+        - ``extracted``: title extracted from source metadata, or ``None``
+        - ``generated``: LLM-generated title, or ``None``
+
+        Args:
+            filename_title: The already-sanitized filename (no extension,
+                underscores replaced with spaces) to use as the ``filename``
+                key.
+            extracted_title: Title extracted from source metadata, or
+                ``None`` if not available.
+            generated_title: LLM-generated title, or ``None`` if not
+                generated.
+
+        Returns:
+            A dict with keys ``filename``, ``extracted``, and ``generated``.
+        """
+        return {
+            "filename": filename_title,
+            "extracted": extracted_title,
+            "generated": generated_title,
+        }
+
+    # ------------------------------------------------------------------
     # File-type-specific processing
     # ------------------------------------------------------------------
 
@@ -519,25 +583,12 @@ class Producer:
         metadata_dict["summarize"] = summarize_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
-        # Step 3: Generate a title.  For MP4 files the transcript is the
-        # best available content for title generation.  Pass the filename
-        # (without extension, underscores→spaces) as context to the LLM.
-        filename_title = _clean_title(Path(filename).stem)
-        generated_title, _, _ = self.summarizer.generate_title(
-            transcript,
-            filename=filename_title,
-            extracted_title=None,
-        )
-        generated_title = _clean_title(generated_title) or generated_title
-
-        # Apply module name prefix if needed.
-        generated_title = _apply_module_prefix(generated_title, filepath, filename)
-
-        # Step 4: Build metadata.
+        # Step 3: Extract audio metadata via ffprobe for duration and creation_time.
+        # This is done before title generation so the extracted title (if any)
+        # can be passed to the LLM for context.
         file_size = stat_result.st_size
         file_mtime = int(stat_result.st_mtime * 1000) / 1000.0
 
-        # Extract audio metadata via ffprobe for duration and creation_time.
         audio_meta = get_audio_metadata(absolute_path)
 
         # Use creation_time from media metadata as the date when available;
@@ -546,9 +597,11 @@ class Producer:
         file_date = file_mtime
         creation_time_str: str | None = None
         duration: float | None = None
+        extracted_title: str | None = None
         if audio_meta is not None:
             creation_time_str = audio_meta.get("creation_time")
             duration = audio_meta.get("duration")
+            extracted_title = audio_meta.get("title")
             if creation_time_str:
                 try:
                     parsed_date = datetime.fromisoformat(creation_time_str.replace("Z", "+00:00"))
@@ -563,11 +616,27 @@ class Producer:
                         absolute_path,
                     )
 
-        # Build title dict for MP4.
-        title_dict: dict[str, str | None] = {
-            "filename": filename_title,
-            "generated": generated_title,
-        }
+        # Step 4: Generate a title.  For MP4 files the transcript is the
+        # best available content for title generation.  Pass the filename
+        # (without extension, underscores→spaces) and any extracted title
+        # from audio metadata as context to the LLM.
+        filename_title = _sanitize_filename(filename)
+        generated_title, _, _ = self.summarizer.generate_title(
+            transcript,
+            filename=filename_title,
+            extracted_title=extracted_title,
+        )
+        generated_title = _clean_title(generated_title) or generated_title
+
+        # Apply module name prefix to the generated title.
+        generated_title = _apply_module_prefix(generated_title, filepath, filename)
+
+        # Build title dict for MP4 with all three keys.
+        title_dict = self.build_title_dict(
+            filename_title=filename_title,
+            extracted_title=extracted_title,
+            generated_title=generated_title,
+        )
 
         # On completion: update to final state with all fields.
         # For MP4 files, description is left blank and the LLM-generated
@@ -589,6 +658,7 @@ class Producer:
         # Return a Metadata object for in-memory use.
         metadata = Metadata(
             title=title_dict,
+            extracted_title=extracted_title,
             description="",  # MP4: leave description blank, use summary instead
             summary=summary,
             filename=filename,
@@ -674,10 +744,11 @@ class Producer:
         # Step 1: Extract metadata from the PDF.
         extracted = self.pdf_extractor.extract(absolute_path)
 
-        # Title is always the filename-derived title from the extractor.
-        # The extracted title from PDF metadata is stored separately.
+        # The filename-derived title is used as the actual title.
+        # The extracted title from PDF metadata is stored in the 'extracted'
+        # key of the title dict for tracking and precedence.
         # Fall back to filename stem if extractor returns empty title.
-        filename_title = extracted.get("title") or _clean_title(Path(filename).stem) or filename
+        filename_title = extracted.get("title") or _sanitize_filename(filename) or filename
         extracted_title = extracted.get("extracted_title")
         description = extracted.get("description") or ""
         file_date = extracted.get("date", 0)
@@ -708,12 +779,12 @@ class Producer:
         # Apply module name prefix to the generated title.
         generated_title = _apply_module_prefix(generated_title, filepath, filename)
 
-        # Build title dict for PDF.
-        title_dict: dict[str, str | None] = {
-            "filename": filename_title,
-            "extracted": extracted_title,
-            "generated": generated_title,
-        }
+        # Build title dict for PDF with all three keys.
+        title_dict = self.build_title_dict(
+            filename_title=filename_title,
+            extracted_title=extracted_title,
+            generated_title=generated_title,
+        )
 
         # On completion: update to final state.
         metadata_dict.update(
@@ -813,10 +884,11 @@ class Producer:
         # Step 1: Extract metadata from the HTML.
         extracted = self.html_extractor.extract(absolute_path)
 
-        # Title is always the filename-derived title from the extractor.
-        # The extracted title from <title> tag is stored separately.
+        # The filename-derived title is used as the actual title.
+        # The extracted title from <title> tag is stored in the 'extracted'
+        # key of the title dict for tracking and precedence.
         # Fall back to filename stem if extractor returns empty title.
-        filename_title = extracted.get("title") or _clean_title(Path(filename).stem) or filename
+        filename_title = extracted.get("title") or _sanitize_filename(filename) or filename
         extracted_title = extracted.get("extracted_title")
         description = extracted.get("description") or ""
         file_date = extracted.get("date", 0)
@@ -847,12 +919,12 @@ class Producer:
         # Apply module name prefix to the generated title.
         generated_title = _apply_module_prefix(generated_title, filepath, filename)
 
-        # Build title dict for HTML.
-        title_dict: dict[str, str | None] = {
-            "filename": filename_title,
-            "extracted": extracted_title,
-            "generated": generated_title,
-        }
+        # Build title dict for HTML with all three keys.
+        title_dict = self.build_title_dict(
+            filename_title=filename_title,
+            extracted_title=extracted_title,
+            generated_title=generated_title,
+        )
 
         # On completion: update to final state.
         metadata_dict.update(
@@ -934,7 +1006,7 @@ class Producer:
         path = Path(filepath)
         # Read a reasonable chunk of the file for title generation.
         content = path.read_text(encoding="utf-8", errors="replace")[:8000]
-        filename = _clean_title(path.stem)
+        filename = _sanitize_filename(path.name)
         return self.generate_title(content, filename=filename)
 
     def _write_metadata(self, metadata: Metadata, source_path: str) -> None:

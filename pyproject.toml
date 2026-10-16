@@ -68,6 +68,10 @@ select = [
     "S101",  # assert is fine in tests
     "N806",  # Variable naming (MockProducer, etc. are common in tests)
 ]
+"local-feed-generator/tests/**" = [
+    "S101",  # assert is fine in tests
+    "N806",  # Variable naming (MockProducer, etc. are common in tests)
+]
 
 [tool.ruff.lint.isort]
 force-sort-within-sections = true

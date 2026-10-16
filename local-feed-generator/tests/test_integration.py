@@ -574,7 +574,7 @@ class TestErrorPathHandling:
             assert field in error_dict
 
         assert error_dict["error"] == "Test error"
-        assert error_dict["title"] == {"filename": "test.pdf"}
+        assert error_dict["title"] == {"filename": "test", "extracted": None, "generated": None}
         assert error_dict["size"] == 0
 
     def test_producer_handles_error_gracefully(self, tmp_path):

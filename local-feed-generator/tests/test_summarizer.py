@@ -12,6 +12,7 @@ from openai import (
     AuthenticationError,
     BadRequestError,
     InternalServerError,
+    NotFoundError,
     OpenAI,
     PermissionDeniedError,
     RateLimitError,
@@ -139,33 +140,18 @@ class TestSummarize:
         result = summarizer.summarize("This is a transcript about ILE courses.")
         assert result == ("Key takeaways: This is a test summary.", 100, 50)
 
-    def test_uses_system_prompt_from_config(self, summarizer, mock_response):
-        """summarize() should use the system prompt from configuration."""
-        summarizer._client.chat.completions.create.return_value = mock_response
-        summarizer.summarize("Test transcript")
-
-        call_kwargs = summarizer._client.chat.completions.create.call_args
-        messages = call_kwargs.kwargs["messages"]
-        system_msg = messages[0]
-        assert system_msg["role"] == "system"
-        assert system_msg["content"] == "Summarize key takeaways from this document."
-
-    def test_uses_llm_model_from_config(self, summarizer, mock_response):
-        """summarize() should pass the configured model name."""
-        summarizer._client.chat.completions.create.return_value = mock_response
-        summarizer.summarize("Test transcript")
-
-        call_kwargs = summarizer._client.chat.completions.create.call_args
-        assert call_kwargs.kwargs["model"] == "test-model"
-
-    def test_passes_transcript_as_user_content(self, summarizer, mock_response):
-        """summarize() should pass the transcript as user content."""
+    def test_api_call_parameters(self, summarizer, mock_response):
+        """summarize() should pass correct system prompt, model, and user content."""
         summarizer._client.chat.completions.create.return_value = mock_response
         transcript = "This is a long transcript about military education."
         summarizer.summarize(transcript)
 
         call_kwargs = summarizer._client.chat.completions.create.call_args
+        assert call_kwargs.kwargs["model"] == "test-model"
         messages = call_kwargs.kwargs["messages"]
+        system_msg = messages[0]
+        assert system_msg["role"] == "system"
+        assert system_msg["content"] == "Summarize key takeaways from this document."
         user_msg = messages[1]
         assert user_msg["role"] == "user"
         assert user_msg["content"] == transcript
@@ -180,15 +166,11 @@ class TestSummarize:
         result = summarizer.summarize("Test transcript")
         assert result == ("Summary with spaces", 20, 10)
 
-    def test_empty_transcript_raises_error(self, summarizer):
-        """summarize() should raise SummarizationError for empty transcript."""
+    @pytest.mark.parametrize("transcript", ["", "   \n\t  "])
+    def test_empty_or_whitespace_transcript_raises_error(self, summarizer, transcript):
+        """summarize() should raise SummarizationError for empty or whitespace-only transcript."""
         with pytest.raises(SummarizationError, match="must not be empty"):
-            summarizer.summarize("")
-
-    def test_whitespace_only_transcript_raises_error(self, summarizer):
-        """summarize() should raise SummarizationError for whitespace-only transcript."""
-        with pytest.raises(SummarizationError, match="must not be empty"):
-            summarizer.summarize("   \n\t  ")
+            summarizer.summarize(transcript)
 
     def test_none_content_raises_error(self, summarizer):
         """summarize() should raise SummarizationError when LLM returns None content."""
@@ -213,25 +195,17 @@ class TestGenerateTitle:
         result = summarizer.generate_title("Some content to generate a title from.")
         assert result == ("Test Title", 30, 5)
 
-    def test_uses_title_system_prompt(self, summarizer, mock_title_response):
-        """generate_title() should use a title-focused system prompt."""
-        summarizer._client.chat.completions.create.return_value = mock_title_response
-        summarizer.generate_title("Some content")
-
-        call_kwargs = summarizer._client.chat.completions.create.call_args
-        messages = call_kwargs.kwargs["messages"]
-        system_msg = messages[0]
-        assert system_msg["role"] == "system"
-        assert "title" in system_msg["content"].lower()
-
-    def test_passes_content_as_user_content(self, summarizer, mock_title_response):
-        """generate_title() should pass the content as user content."""
+    def test_api_call_parameters(self, summarizer, mock_title_response):
+        """generate_title() should use title-focused system prompt and pass content."""
         summarizer._client.chat.completions.create.return_value = mock_title_response
         content = "Content about military strategy and tactics."
         summarizer.generate_title(content)
 
         call_kwargs = summarizer._client.chat.completions.create.call_args
         messages = call_kwargs.kwargs["messages"]
+        system_msg = messages[0]
+        assert system_msg["role"] == "system"
+        assert "title" in system_msg["content"].lower()
         user_msg = messages[1]
         assert user_msg["role"] == "user"
         assert content in user_msg["content"]
@@ -249,45 +223,54 @@ class TestGenerateTitle:
         assert "x" * 4000 in user_msg["content"]
         assert "x" * 4001 not in user_msg["content"]
 
-    def test_passes_filename_in_user_content(self, summarizer, mock_title_response):
-        """generate_title() should include filename in user content when provided."""
+    @pytest.mark.parametrize("filename,extracted_title,should_include", [
+        ("lecture notes", "Lecture 1", True),
+        ("notes", None, False),
+        ("notes", "", False),
+    ])
+    def test_filename_and_extracted_title_in_content(
+        self, summarizer, mock_title_response, filename, extracted_title, should_include
+    ):
+        """generate_title() should include filename and extracted_title when provided."""
         summarizer._client.chat.completions.create.return_value = mock_title_response
-        summarizer.generate_title("Some content", filename="lecture notes")
+        summarizer.generate_title("Some content", filename=filename, extracted_title=extracted_title)
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        user_msg = call_kwargs.kwargs["messages"][1]
+        assert f"Filename: {filename}" in user_msg["content"]
+        if should_include:
+            assert "Extracted Title: Lecture 1" in user_msg["content"]
+        else:
+            assert "Extracted Title" not in user_msg["content"]
+
+    def test_includes_filename_and_extracted_title_before_content(
+        self, summarizer, mock_title_response
+    ):
+        """generate_title() should include both filename and extracted title before content."""
+        summarizer._client.chat.completions.create.return_value = mock_title_response
+        summarizer.generate_title(
+            "Some content here", filename="lecture notes", extracted_title="Lecture 1"
+        )
 
         call_kwargs = summarizer._client.chat.completions.create.call_args
         messages = call_kwargs.kwargs["messages"]
         user_msg = messages[1]
-        assert "Filename: lecture notes" in user_msg["content"]
+        user_content = user_msg["content"]
+        # Filename and extracted title should appear before the content
+        assert "Filename: lecture notes" in user_content
+        assert "Extracted Title: Lecture 1" in user_content
+        assert user_content.index("Filename:") < user_content.index("Some content here")
+        assert user_content.index("Extracted Title:") < user_content.index("Some content here")
 
-    def test_passes_extracted_title_in_user_content(self, summarizer, mock_title_response):
-        """generate_title() should include extracted_title in user content when provided."""
+    def test_omits_content_label(self, summarizer, mock_title_response):
+        """generate_title() should not include a 'Content:' label before the content."""
         summarizer._client.chat.completions.create.return_value = mock_title_response
-        summarizer.generate_title("Some content", filename="lecture", extracted_title="Lecture 1")
+        summarizer.generate_title("Some content here", filename="notes")
 
         call_kwargs = summarizer._client.chat.completions.create.call_args
         messages = call_kwargs.kwargs["messages"]
         user_msg = messages[1]
-        assert "Extracted title: Lecture 1" in user_msg["content"]
-
-    def test_omits_extracted_title_when_none(self, summarizer, mock_title_response):
-        """generate_title() should not include extracted_title when it is None."""
-        summarizer._client.chat.completions.create.return_value = mock_title_response
-        summarizer.generate_title("Some content", filename="notes", extracted_title=None)
-
-        call_kwargs = summarizer._client.chat.completions.create.call_args
-        messages = call_kwargs.kwargs["messages"]
-        user_msg = messages[1]
-        assert "Extracted title" not in user_msg["content"]
-
-    def test_omits_extracted_title_when_empty(self, summarizer, mock_title_response):
-        """generate_title() should not include extracted_title when it is empty."""
-        summarizer._client.chat.completions.create.return_value = mock_title_response
-        summarizer.generate_title("Some content", filename="notes", extracted_title="")
-
-        call_kwargs = summarizer._client.chat.completions.create.call_args
-        messages = call_kwargs.kwargs["messages"]
-        user_msg = messages[1]
-        assert "Extracted title" not in user_msg["content"]
+        assert "Content:\n" not in user_msg["content"]
 
     def test_empty_content_raises_error(self, summarizer):
         """generate_title() should raise SummarizationError for empty content."""
@@ -308,96 +291,28 @@ class TestGenerateTitle:
 class TestRetryLogic:
     """Tests for exponential backoff retry logic."""
 
-    def test_retries_on_api_connection_error(self, summarizer, mock_response):
-        """summarize() should retry on APIConnectionError and eventually succeed."""
-        summarizer._client.chat.completions.create.side_effect = [
-            APIConnectionError(message="Connection failed", request=mock.MagicMock()),
-            mock_response,
-        ]
+    @pytest.mark.parametrize("error_factory", [
+        lambda: APIConnectionError(message="Connection failed", request=mock.MagicMock()),
+        lambda: APITimeoutError(request=mock.MagicMock()),
+        lambda: RateLimitError(message="Rate limited", response=mock.MagicMock(status_code=429), body=None),
+        lambda: InternalServerError(message="Server error", response=mock.MagicMock(status_code=500), body=None),
+    ])
+    def test_retries_on_retryable_error(self, summarizer, mock_response, error_factory):
+        """summarize() should retry on retryable errors and eventually succeed."""
+        summarizer._client.chat.completions.create.side_effect = [error_factory(), mock_response]
         result = summarizer.summarize("Test transcript")
         assert result == ("Key takeaways: This is a test summary.", 100, 50)
         assert summarizer._client.chat.completions.create.call_count == 2
 
-    def test_retries_on_timeout_error(self, summarizer, mock_response):
-        """summarize() should retry on APITimeoutError and eventually succeed."""
-        summarizer._client.chat.completions.create.side_effect = [
-            APITimeoutError(request=mock.MagicMock()),
-            mock_response,
-        ]
-        result = summarizer.summarize("Test transcript")
-        assert result == ("Key takeaways: This is a test summary.", 100, 50)
-        assert summarizer._client.chat.completions.create.call_count == 2
-
-    def test_retries_on_rate_limit_error(self, summarizer, mock_response):
-        """summarize() should retry on RateLimitError and eventually succeed."""
-        summarizer._client.chat.completions.create.side_effect = [
-            RateLimitError(
-                message="Rate limited",
-                response=mock.MagicMock(status_code=429),
-                body=None,
-            ),
-            mock_response,
-        ]
-        result = summarizer.summarize("Test transcript")
-        assert result == ("Key takeaways: This is a test summary.", 100, 50)
-        assert summarizer._client.chat.completions.create.call_count == 2
-
-    def test_retries_on_internal_server_error(self, summarizer, mock_response):
-        """summarize() should retry on InternalServerError and eventually succeed."""
-        summarizer._client.chat.completions.create.side_effect = [
-            InternalServerError(
-                message="Server error",
-                response=mock.MagicMock(status_code=500),
-                body=None,
-            ),
-            mock_response,
-        ]
-        result = summarizer.summarize("Test transcript")
-        assert result == ("Key takeaways: This is a test summary.", 100, 50)
-        assert summarizer._client.chat.completions.create.call_count == 2
-
-    def test_does_not_retry_on_authentication_error(self, summarizer):
-        """summarize() should not retry on AuthenticationError."""
-        summarizer._client.chat.completions.create.side_effect = AuthenticationError(
-            message="Invalid API key",
-            response=mock.MagicMock(status_code=401),
-            body=None,
-        )
-        with pytest.raises(SummarizationError, match="non-retryable"):
-            summarizer.summarize("Test transcript")
-        assert summarizer._client.chat.completions.create.call_count == 1
-
-    def test_does_not_retry_on_bad_request_error(self, summarizer):
-        """summarize() should not retry on BadRequestError."""
-        summarizer._client.chat.completions.create.side_effect = BadRequestError(
-            message="Bad request",
-            response=mock.MagicMock(status_code=400),
-            body=None,
-        )
-        with pytest.raises(SummarizationError, match="non-retryable"):
-            summarizer.summarize("Test transcript")
-        assert summarizer._client.chat.completions.create.call_count == 1
-
-    def test_does_not_retry_on_permission_denied_error(self, summarizer):
-        """summarize() should not retry on PermissionDeniedError."""
-        summarizer._client.chat.completions.create.side_effect = PermissionDeniedError(
-            message="Forbidden",
-            response=mock.MagicMock(status_code=403),
-            body=None,
-        )
-        with pytest.raises(SummarizationError, match="non-retryable"):
-            summarizer.summarize("Test transcript")
-        assert summarizer._client.chat.completions.create.call_count == 1
-
-    def test_does_not_retry_on_not_found_error(self, summarizer):
-        """summarize() should not retry on NotFoundError."""
-        from openai import NotFoundError
-
-        summarizer._client.chat.completions.create.side_effect = NotFoundError(
-            message="Not found",
-            response=mock.MagicMock(status_code=404),
-            body=None,
-        )
+    @pytest.mark.parametrize("error_factory", [
+        lambda: AuthenticationError(message="Invalid API key", response=mock.MagicMock(status_code=401), body=None),
+        lambda: BadRequestError(message="Bad request", response=mock.MagicMock(status_code=400), body=None),
+        lambda: PermissionDeniedError(message="Forbidden", response=mock.MagicMock(status_code=403), body=None),
+        lambda: NotFoundError(message="Not found", response=mock.MagicMock(status_code=404), body=None),
+    ])
+    def test_does_not_retry_on_non_retryable_error(self, summarizer, error_factory):
+        """summarize() should not retry on non-retryable errors."""
+        summarizer._client.chat.completions.create.side_effect = error_factory()
         with pytest.raises(SummarizationError, match="non-retryable"):
             summarizer.summarize("Test transcript")
         assert summarizer._client.chat.completions.create.call_count == 1
@@ -587,29 +502,17 @@ class TestModelParameter:
 class TestTokenTracking:
     """Tests for LLM token usage tracking."""
 
-    def test_summarize_returns_prompt_tokens(self, summarizer, mock_response):
-        """summarize() should return prompt_tokens from the API response."""
-        summarizer._client.chat.completions.create.return_value = mock_response
-        result = summarizer.summarize("Test transcript")
-        assert result[1] == 100
-
-    def test_summarize_returns_completion_tokens(self, summarizer, mock_response):
-        """summarize() should return completion_tokens from the API response."""
-        summarizer._client.chat.completions.create.return_value = mock_response
-        result = summarizer.summarize("Test transcript")
-        assert result[2] == 50
-
-    def test_generate_title_returns_prompt_tokens(self, summarizer, mock_title_response):
-        """generate_title() should return prompt_tokens from the API response."""
-        summarizer._client.chat.completions.create.return_value = mock_title_response
-        result = summarizer.generate_title("Some content")
-        assert result[1] == 30
-
-    def test_generate_title_returns_completion_tokens(self, summarizer, mock_title_response):
-        """generate_title() should return completion_tokens from the API response."""
-        summarizer._client.chat.completions.create.return_value = mock_title_response
-        result = summarizer.generate_title("Some content")
-        assert result[2] == 5
+    @pytest.mark.parametrize("method,response_fixture,expected_tokens", [
+        ("summarize", "mock_response", (100, 50)),
+        ("generate_title", "mock_title_response", (30, 5)),
+    ])
+    def test_returns_token_counts(self, request, summarizer, method, response_fixture, expected_tokens):
+        """Methods should return (text, prompt_tokens, completion_tokens) tuples."""
+        response = request.getfixturevalue(response_fixture)
+        summarizer._client.chat.completions.create.return_value = response
+        result = getattr(summarizer, method)("Test content")
+        assert result[1] == expected_tokens[0]
+        assert result[2] == expected_tokens[1]
 
     def test_summarize_returns_zero_tokens_when_usage_is_none(self, summarizer):
         """summarize() should return 0 tokens when usage is None."""

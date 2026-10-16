@@ -25,9 +25,9 @@ millisecond precision.
     Schema:
         {
             "title": {
-                "filename": "lecture",      # filename-derived (underscores→spaces)
-                "extracted": "Lecture 1",    # from source metadata (PDF/HTML only)
-                "generated": "LLM Title"     # LLM-generated (all file types)
+                "filename": "lecture",      # sanitized filename, no extension/underscores
+                "extracted": "Lecture 1",    # from source metadata (PDF/HTML/MP4)
+                "generated": "LLM Title"     # LLM-generated with filename and extracted title
             },
             "extracted_title": "Lecture 1",  # extracted title stored separately (optional)
             "description": "string (optional, extracted from source for PDF/HTML, empty for MP4)",
@@ -78,6 +78,7 @@ millisecond precision.
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any, Literal
 
@@ -86,6 +87,11 @@ from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validat
 # Step status values.
 _STEP_STATUS_IN_PROGRESS = "in_progress"
 _STEP_STATUS_COMPLETE = "complete"
+
+_logger = logging.getLogger("local_feed_generator")
+
+# Required keys for the title dict (design doc section 3.3).
+_TITLE_DICT_KEYS: frozenset[str] = frozenset({"filename", "extracted", "generated"})
 
 
 class StepMap(BaseModel):
@@ -173,13 +179,14 @@ class Metadata(BaseModel):
 
     Field Descriptions:
         title: Human-readable title as a dict with keys 'filename', 'extracted',
-            and 'generated', or a plain string (backward compatibility). The
-            'filename' key holds the filename-derived title (underscores replaced
-            with spaces). The 'extracted' key holds the title extracted from
-            source metadata (PDF/HTML only). The 'generated' key holds the
-            LLM-generated title (all file types). The 'final' key is no longer
-            used; the final title is determined by the :attr:`final_title`
-            computed property using the fallback: ``generated`` → ``filename``.
+            and 'generated', or a plain string (backward compatibility, emits
+            a deprecation warning). The 'filename' key holds the
+            filename-derived title (underscores replaced with spaces). The
+            'extracted' key holds the title from source metadata (PDF metadata,
+            HTML <title>, or MP4 metadata where available). The 'generated' key
+            holds the LLM-generated title (all file types). The
+            :attr:`final_title` computed property resolves the final title
+            using precedence: generated > extracted > filename.
         extracted_title: Title extracted from source metadata (PDF metadata,
             HTML <title>), if available. Not used as the actual title for
             PDF/HTML files; the filename-derived title is used instead.
@@ -209,14 +216,12 @@ class Metadata(BaseModel):
 
     title: dict[str, str | None] | str = Field(
         ...,
-        description="Human-readable title. Can be a dict with keys "
-        "'filename', 'extracted', 'generated' or a plain string "
-        "(backward compatibility). The 'filename' key holds the "
-        "filename-derived title (underscores replaced with spaces). "
-        "The 'extracted' key holds the title from source metadata "
-        "(PDF/HTML only). The 'generated' key holds the LLM-generated "
-        "title (all file types). The final title uses the fallback: "
-        "'generated' → 'filename'.",
+        description="Human-readable title. Must be a dict with keys "
+        "'filename' (sanitized filename with no extension, no underscores), "
+        "'extracted' (title from source metadata), and 'generated' "
+        "(LLM-generated title). A plain string is accepted for backward "
+        "compatibility but emits a deprecation warning. The final title "
+        "uses the precedence: generated > extracted > filename.",
     )
     extracted_title: str | None = Field(
         default=None,
@@ -292,6 +297,38 @@ class Metadata(BaseModel):
             raise ValueError("error must not be empty or whitespace-only")
         return v
 
+    @field_validator("title", mode="before")
+    @classmethod
+    def _validate_title(cls, v: Any) -> Any:
+        """Validate the title field.
+
+        - If *v* is a plain string, emit a deprecation warning (backward
+          compatibility) and return it unchanged.
+        - If *v* is a dict, ensure it has all three required keys
+          (``filename``, ``extracted``, ``generated``).  Missing keys are
+          added with empty-string values so that downstream code can rely
+          on the dict always having exactly those keys.
+        """
+        if isinstance(v, str):
+            _logger.warning(
+                "Title is a plain string; string titles are deprecated. "
+                "Use a dict with 'filename', 'extracted', 'generated' keys.",
+            )
+            return v
+
+        if isinstance(v, dict):
+            missing = _TITLE_DICT_KEYS - set(v.keys())
+            if missing:
+                _logger.warning(
+                    "Title dict is missing keys %s; adding them with empty values.",
+                    sorted(missing),
+                )
+                for key in missing:
+                    v[key] = ""
+            return v
+
+        return v
+
     # ------------------------------------------------------------------
     # Computed properties
     # ------------------------------------------------------------------
@@ -330,15 +367,19 @@ class Metadata(BaseModel):
     def final_title(self) -> str:
         """Return the final title string from the title field.
 
-        If ``title`` is a dict, the ``"generated"`` key is preferred; if
-        absent or empty, falls back to ``"filename"``.  The ``"extracted"``
-        key is intentionally not used as the final title.  If ``title`` is a
-        plain string, it is returned as-is (backward compatibility).
-        Returns an empty string when the title is empty or no suitable key
+        If ``title`` is a dict, the precedence is:
+
+        1. ``generated`` — LLM-generated title (highest precedence)
+        2. ``extracted`` — title from source metadata
+        3. ``filename`` — filename-derived title (lowest precedence)
+
+        The first non-empty value (after stripping whitespace) is returned.
+        If ``title`` is a plain string, it is returned as-is (backward
+        compatibility).  Returns an empty string when no suitable value
         is found.
         """
         if isinstance(self.title, dict):
-            for key in ("generated", "filename"):
+            for key in ("generated", "extracted", "filename"):
                 value = self.title.get(key)
                 if value and value.strip():
                     return value
@@ -354,16 +395,22 @@ class Metadata(BaseModel):
 
         None values are excluded to match the exact schema from design doc
         section 3.3 (e.g., error field is not present when there is no error).
+        None values nested inside the title dict are also excluded, since
+        pydantic's ``exclude_none`` only applies to top-level fields.
         """
-        return self.model_dump(exclude_none=True, exclude={"feed_eligible", "final_title"})
+        data = self.model_dump(exclude_none=True, exclude={"feed_eligible", "final_title"})
+        if isinstance(data.get("title"), dict):
+            data["title"] = {k: v for k, v in data["title"].items() if v is not None}
+        return data
 
     def to_json(self) -> str:
         """Serialize metadata to a JSON string.
 
         None values are excluded to match the exact schema from design doc
         section 3.3 (e.g., error field is not present when there is no error).
+        None values nested inside the title dict are also excluded.
         """
-        return self.model_dump_json(exclude_none=True, exclude={"feed_eligible", "final_title"})
+        return json.dumps(self.to_dict(), indent=2)
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> Metadata:

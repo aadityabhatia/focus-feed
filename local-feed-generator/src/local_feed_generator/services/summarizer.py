@@ -198,14 +198,24 @@ class Summarizer:
         Uses the title-generation system prompt from configuration
         (``TITLE_PROMPT``) to produce a short, descriptive title.  When
         *filename* and/or *extracted_title* are provided, they are included
-        in the user prompt as context so the LLM can produce a more
-        accurate title.  Only the first ~4000 characters of *content* are
-        passed to the LLM.
+        in the user prompt **before** the content so the LLM can produce a
+        more accurate title.  The ``TITLE_PROMPT`` system prompt already
+        contains instructions to use the extracted or filename titles while
+        generating, so providing them as context improves results.
+
+        The user-content format is::
+
+            Filename: {filename}
+            Extracted Title: {extracted_title}
+
+            {content}
+
+        Only the first ~4000 characters of *content* are passed to the LLM.
 
         Args:
             content: The content text to generate a title from.
             filename: Optional filename (without extension, underscores
-                replaced with spaces) to provide as context.
+                replaced with spaces) to provide as context to the LLM.
             extracted_title: Optional title extracted from source metadata
                 (PDF metadata title, HTML ``<title>`` tag).  Only included
                 if not ``None`` and not empty.
@@ -220,15 +230,17 @@ class Summarizer:
         if not content or not content.strip():
             raise SummarizationError("Content text must not be empty")
 
-        # Build user content with optional context.
-        if filename and extracted_title and extracted_title.strip():
-            prompt_context = f"Filename: {filename}\nExtracted title: {extracted_title}\n\n"
-        elif filename:
-            prompt_context = f"Filename: {filename}\n\n"
-        else:
-            prompt_context = ""
-
-        user_content = prompt_context + f"Content:\n{content[:4000]}"
+        # Build user content with filename and extracted title before the
+        # content, as specified in design doc section 6.1 / tasks.
+        # Format: "Filename: {filename}\nExtracted Title: {extracted}\n\n{content}"
+        parts: list[str] = []
+        if filename:
+            parts.append(f"Filename: {filename}")
+        if extracted_title and extracted_title.strip():
+            parts.append(f"Extracted Title: {extracted_title}")
+        user_content = (
+            "\n".join(parts) + "\n\n" + content[:4000] if parts else content[:4000]
+        )
 
         result = self._chat_completion(
             system_prompt=self._config.title_prompt,
