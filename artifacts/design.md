@@ -65,8 +65,8 @@ Note: Root-level feeds (podcast.xml, articles.xml, index.html) are ONLY generate
   - **Transcription Service** (`faster-whisper` + CUDA or OpenAI-compatible API): Converts MP4 audio to markdown text using either local (faster-whisper) or remote (OpenAI-compatible API) mode. The system implements a dual-mode architecture with the `RemoteTranscriber` class for API-based transcription and the local `Transcriber` class for GPU-accelerated transcription.
 - **Summarization Service** (`openai` client \=> local LLM): Generates key takeaways from transcripts; supports reflection questions from `reflection.md` files; works with both MP4 transcripts and PDF/HTML extracted content
 - **Extraction Service** (`pypdf`, `beautifulsoup4`, `ffprobe`): Extracts metadata AND content from PDF/HTML files; extracts audio metadata (duration, creation_time) from MP4 files
-  - **Feed Generator** (`feedgen`): Aggregates metadata; generates RSS feeds; supports per-folder feeds via `feed.json`; converts markdown to HTML; only generates feeds where feed.json exists and applicable files are present
- - **Index Generator**: Generates root-level index.html with all available feeds; lists feeds with titles and descriptions
+  - **Feed Generator** (`feedgen`): Aggregates metadata; generates RSS feeds; supports per-folder feeds via `feed.json`; converts markdown to HTML; only generates feeds where feed.json exists and applicable files are present. Each feed aggregates content from its entire directory subtree (inner feeds are subsets of parent feeds).
+  - **Index Generator**: Generates **single root-level** index.html with all available feeds from all folders; lists feeds with titles and descriptions. No index.html files are generated in subfolders.
  - **Configuration** (`pydantic-settings` + `.env`): Manages runtime settings including new prompt variables
 - **CLI** (`click`): Command-line interface with granular subcommands
 
@@ -248,6 +248,7 @@ Each processed file has a corresponding `.json` file with the same name in the s
   "filepath": "Course1/lecture.mp4",
   "filetype": "mp4|pdf|html",
   "date": 1728931200.123,          // UNIX epoch (float, millisecond precision)
+  "publication_date": 1728931200.0,  // UNIX epoch (float, millisecond precision, optional - extracted from PDF/HTML metadata)
   "duration": 3600.5,             // For MP4: duration in seconds (float, optional)
   "creation_time": "2024-01-15T10:30:00.000000Z",  // ISO-8601 (MP4 only, from audio metadata)
   "size": 12345678,
@@ -298,6 +299,7 @@ Each processed file has a corresponding `.json` file with the same name in the s
 - `content`: For MP4 files, this contains the full transcript. **NEW: For PDF/HTML files, this contains extracted plaintext content.**
 - `filepath`: Relative path from `data/` directory root
 - `date`: Publication/creation date stored as UNIX epoch **float with millisecond precision** (e.g., 1728931200.123)
+- `publication_date`: Publication date extracted from PDF/HTML metadata when available (optional), stored as UNIX epoch float with millisecond precision; used as primary source for feed pubDate for PDF/HTML files
 - `creation_time`: ISO-8601 formatted creation timestamp (from audio metadata via ffprobe)
 - `duration`: For MP4 files, duration in seconds (float). Extracted via ffprobe when available.
 - `size`: File size in bytes (for podcast enclosure `length`)
@@ -337,16 +339,16 @@ For podcast feed items:
 
 For articles feed items:
 - Title from metadata title dict's final title computation
-- Description from `content` field (if available) or `description` field
+- Description from `summary` field (if available) or `description` field
 - Link to the source file
-- Publication date from metadata `date` field
+- Publication date from metadata `publication_date` field when available, falling back to `date` field
 
- **NEW Features:**
- - **Markdown to HTML conversion**: Descriptions are converted from markdown to HTML with XSS protection
- - **Per-folder feeds**: When a folder contains `feed.json`, feeds are generated in that folder with custom titles/descriptions
- - **Conditional feed generation**: Feeds only generated if both feed.json exists AND applicable file types are present
- - **Index page**: Root-level index.html listing all available feeds
- - **Safe links**: Only allows safe URL schemes (http, https, mailto, relative paths, fragments)
+  **NEW Features:**
+  - **Markdown to HTML conversion**: Descriptions are converted from markdown to HTML with XSS protection; the conversion strips outer `<p>` wrappers while preserving legitimate paragraph tags
+  - **Per-folder feeds**: When a folder contains `feed.json`, feeds are generated in that folder with custom titles/descriptions
+  - **Conditional feed generation**: Feeds only generated if both feed.json exists AND applicable file types are present
+  - **Index page**: Single root-level index.html listing all available feeds from all folders (no per-folder index.html files)
+  - **Safe links**: Only allows safe URL schemes (http, https, mailto, relative paths, fragments)
 
 **Feed Item Sorting:** Folder name (ascending), then filename (ascending)
 
@@ -376,10 +378,10 @@ The `feed.json` file can contain:
 - `description`: Custom description for the feeds generated in this folder (optional)
 - `language`: Language code for the feed (optional, e.g., "en-us")
 - `author`: Feed author name (optional)
-- `link`: URL to the feed's homepage (optional - if omitted, defaults to BASE_URL; if provided, overrides BASE_URL for the channel link)
+- `link`: URL to the feed's homepage (optional - if not provided, defaults to BASE_URL; if provided, acts as an override for the channel link)
 - `image`: Feed image/logo with `url`, `title`, and `link` subfields (optional)
 
-**Note:** The `create-feed` CLI subcommand generates a template with only `title` and `description`. The channel link in generated feeds is derived from BASE_URL + relative path by default, but can be overridden by the `link` field in feed.json.
+**Note:** The `create-feed` CLI subcommand generates a template with only `title` and `description`. The channel link in generated feeds defaults to BASE_URL + relative path when the `link` field is not provided in feed.json. The `link` field acts as an optional override for the channel link.
 
 When `feed.json` exists:
  - `podcast.xml` is generated in that folder **only if MP4 files with feed_eligible=true exist in the subtree**
@@ -388,7 +390,9 @@ When `feed.json` exists:
  - Custom title and description from `feed.json` are used
  - Root-level feeds require their own feed.json (not generated by default)
 
-### 3.6 Reflection Questions (reflection.md)
+### 3.6 Reflection Questions (reflection.md) - OPTIONAL
+
+Reflection questions allow users to focus summarization on specific aspects of the content. **`reflection.md` is optional and helpful but NOT a prerequisite for summarization.** Files can be summarized without reflection questions.
 
 When a `reflection.md` file exists in a folder containing MP4, PDF, or HTML files, the system uses its content as reflection questions for summarization:
 
@@ -406,6 +410,8 @@ When processing files in that folder:
 - System uses `SUMMARY_REFLECTION_PROMPT` (or falls back to `SUMMARY_PROMPT`)
 - LLM focuses summary on answering the reflection questions
 - Works with both MP4 files (transcripts) and PDF/HTML files (extracted content) via the `summarize` command
+
+**If no `reflection.md` exists**, the system uses `SUMMARY_PROMPT` with just the content. The `summarize` command works with MP4, PDF, and HTML files regardless of `reflection.md` presence.
 
 ### 3.7 Index.html Generation
 
@@ -439,28 +445,20 @@ The system automatically generates a root-level `index.html` file to provide a d
 - **`pypdf`**: PDF metadata and content extraction
 - **`beautifulsoup4`**: HTML metadata and content extraction
 - **`python-dotenv`**: For loading .env files
-
+- **`av`**: Audio/video library for extracting audio metadata (duration, creation_time, etc.)
 **Optional dependencies:**
+
 - **`faster-whisper`**: GPU-accelerated audio transcription (local mode)
-- **`av`**: Audio/video library for media decoding (required by faster-whisper, pinned to compatible version)
 - **`markdown`**: Enhanced markdown to HTML conversion (fallback to built-in converter if not installed)
 - **`ffprobe`**: Command-line tool for audio metadata extraction (duration, creation_time, bit_rate)
 
-#### 4.1.1 AV Library Compatibility Issue
+#### 4.1.1 AV Library for Audio Metadata
 
-**Issue:** `faster-whisper` passes `metadata_errors="ignore"` to `av.open()`, but a newer `av` release removed this parameter.
+The `av` library (PyAV) is used for extracting audio metadata (duration, creation_time, bit_rate, format) from MP4 files via ffprobe-like functionality. 
 
-**Error:** `TypeError: av.open() got an unexpected keyword argument 'metadata_errors'`
+**Note:** `av` is now a **required dependency** (not optional) to ensure audio metadata extraction works consistently. The library should be installed at the latest compatible version to access the most recent features and bug fixes.
 
-**Root Cause:** Breaking change in `av` library between releases.
-
-**Context:** `faster-whisper` uses CTranslate2 which handles audio decoding through the `av` library. The parameter `metadata_errors` was valid in an earlier release but was removed in a later release.
-
-**Fix Applied:** Pinned `av` in `pyproject.toml` dependencies to `av>=11.0,<19.0` to prevent installation of incompatible releases.
-
-**Recommendation:** Pin `av` in production deployments. Users should be aware of this dependency conflict when managing their environments.
-
-**Future Consideration:** Monitor `faster-whisper` updates that may resolve this compatibility issue with newer `av` releases.
+**Important:** When using `av` for metadata extraction (not for transcription via faster-whisper), the library provides robust access to audio file metadata regardless of the version, as the system gracefully falls back to file modification time if metadata extraction fails.
 
 ### 4.2 Transcription Engine Selection
 
@@ -678,15 +676,15 @@ data/
 
 #### Producer
 - Orchestrates file processing based on file type
-- For MP4 files: Requests transcription, then summarization (with optional reflection questions), extracts audio metadata, generates title dict with sources (filename, extracted, generated) and precedence (filename < extracted < generated), applies module prefix
-- For PDF/HTML files: Extracts metadata AND content, generates title dict with sources (filename, extracted, generated) and precedence (filename < extracted < generated), set summary to null (unless explicitly summarized), applies module prefix
+- For MP4 files: Requests transcription, then summarization (with optional reflection questions), extracts audio metadata, generates title dict with sources (filename, extracted, generated) and precedence (filename < extracted < generated), applies module prefix to final title
+- For PDF/HTML files: Extracts metadata AND content, generates title dict with sources (filename, extracted, generated) and precedence (filename < extracted < generated), set summary to null (unless explicitly summarized), applies module prefix to final title
 - **NEW:** Can generate summaries for PDF/HTML files when explicitly requested via summarize command
 - Generates JSON metadata file adjacent to source file with step maps, millisecond precision timestamps, title dict
 - Handles errors gracefully, writing error metadata
 - **NEW:** Checks for `reflection.md` files and passes questions to summarizer
 - **NEW:** Extracts audio metadata (duration, creation_time) using ffprobe
 - **NEW:** Builds title as dict with sources (filename=sanitized no extension/no underscores, extracted=from metadata, generated=LLM with filename+extracted in prompt)
-- **NEW:** Applies module name prefix to titles when appropriate
+- **NEW:** Applies module name prefix to final title (after precedence resolution) when appropriate
 
 #### Transcription Service
 - Converts MP4 audio to markdown text
@@ -726,12 +724,14 @@ data/
 - Reads all JSON metadata files from data directory
 - Filters entries by feed_eligible computed property (which checks the step map status values)
 - For MP4: Uses `summary` field for feed item descriptions
-- For PDF/HTML: Uses `content` field (if available) or `description` field for feed item descriptions
+- For PDF/HTML: Uses `summary` field (if available) or `description` field for feed item descriptions
+- For PDF/HTML pubDate: Uses `publication_date` when available, falling back to `date` field
 - Generates podcast feed for MP4 files with enclosures
 - Generates articles feed for PDF/HTML files
 - Sorts items by folder name, then filename
 - Writes feeds to data directory root and optionally to subfolders with feed.json
 - **NEW:** Only generates feeds where feed.json exists AND applicable files are present
+- **NEW:** Converts markdown to HTML for descriptions, stripping outer `<p>` wrappers while preserving legitimate paragraph tags
 - **NEW:** Converts markdown in descriptions to HTML with XSS protection
 - **NEW:** Supports per-folder feed generation via feed.json files
 - **NEW:** Validates feeds for XML well-formedness and RSS compliance
@@ -806,7 +806,7 @@ flowchart TD
 3. For MP4: Transcribe => Summarize (with optional reflection) => Extract audio metadata => Build title dict (filename, extracted, generated with prompt including filename+extracted) with precedence (filename < extracted < generated) => Build metadata
 4. For PDF/HTML: Extract metadata & content => Build title dict (filename, extracted, generated with prompt including filename+extracted) with precedence (filename < extracted < generated) => Build metadata
 5. All steps populate step maps with millisecond precision timestamps
-6. Feed generator creates feeds from all valid metadata, with markdown to HTML conversion
+6. Feed generator creates feeds from all valid metadata, with markdown to HTML conversion (stripping outer `<p>` wrappers while preserving legitimate paragraph tags)
 7. Index generator creates root-level index.html with all feeds
 8. Per-folder feeds generated when feed.json exists AND applicable files are present
 
@@ -1140,13 +1140,14 @@ SUMMARY_REFLECTION_PROMPT="Summarize key takeaways focusing on: frameworks, anal
 
 ### 13.3 Module Name Prefixing
 
-**Decision:** Automatically prepend parent folder name to titles when the filename doesn't already start with it.
+**Decision:** Automatically prepend parent folder name to the final title (after precedence resolution) when the final title doesn't already start with it (case-insensitive, underscores normalized to spaces).
 
 **Rationale:**
 - Better organization in feed readers
 - Clearer context for each item
 - Automatic categorization without manual effort
 - Handles common naming patterns (Course1/lecture.mp4 vs Course1/Course1_lecture.mp4)
+- Applied to final title after precedence resolution (filename < extracted < generated)
 
 ### 13.4 Feed Regeneration
 

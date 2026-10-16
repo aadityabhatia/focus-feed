@@ -57,6 +57,7 @@ This system processes education content files in the `data` directory and genera
   "filepath": "videos/lecture.mp4",
   "filetype": "pdf|html|mp4",
   "date": 1728931200.123,       // UNIX epoch (float or int, millisecond precision)
+  "publication_date": 1728931200.0,  // UNIX epoch (float, millisecond precision, optional - extracted from PDF/HTML metadata)
   "duration": 3600.5,          // For MP4: duration in seconds (float, optional)
   "creation_time": "2024-01-15T10:30:00.000000Z", // ISO-8601 (MP4 only, optional)
   "size": 12345678,
@@ -119,13 +120,15 @@ This system processes education content files in the `data` directory and genera
 
 **FR-010e**: The system SHALL extract plaintext content from PDF and HTML files and store it in the `content` field (in addition to metadata in `description`).
 
-**FR-010f**: The system SHALL automatically prepend the parent folder name (module name) to titles when the filename doesn't already start with it (after normalization).
+**FR-010f**: The system SHALL automatically prepend the parent folder name (module name) to the final title (after precedence resolution) when the final title doesn't already start with the folder name (case-insensitive, underscores normalized to spaces).
 
-**FR-010g**: The system SHALL check for `reflection.md` files in the source file's directory and use their content as reflection questions for summarization when available.
+**FR-010g**: The system SHALL check for `reflection.md` files in the source file's directory and use their content as reflection questions for summarization when available. `reflection.md` is NOT a prerequisite for summarization - files can be summarized without reflection questions.
 
 **FR-010h**: The system SHALL remove control characters (0x00-0x1f except tab/newline/CR, and 0x7f) from extracted PDF/HTML content to prevent XML validation errors.
 
 **FR-010i**: The system SHALL generate summaries for PDF/HTML files when the `summarize` command is explicitly invoked on those files.
+
+**FR-010k**: For PDF/HTML files, the system SHALL use publication_date from document metadata for feed pubDate when available, falling back to the date field.
 
 ### Audio Processing
 
@@ -172,9 +175,9 @@ This system processes education content files in the `data` directory and genera
 
 **FR-020**: Each feed item SHALL include:
 - Title (from JSON metadata title dict's final title computation)
-- Description (from JSON metadata: for MP4 use summary field, for PDF/HTML use content field or description)
+- Description (from JSON metadata: for MP4 use summary field, for PDF/HTML use summary field or description)
 - Link to the source file (computed as BASE_URL + filepath)
-- Publication date (from JSON metadata date field)
+- Publication date (from JSON metadata: for MP4 use date field, for PDF/HTML use publication_date field when available, falling back to date field)
 - Unique identifier (file path)
 
 **FR-021**: Feed items SHALL be sorted by folder name, then filename (alphabetical)
@@ -300,7 +303,7 @@ This system processes education content files in the `data` directory and genera
 
 **C-002**: By default, open-weight models must be used for all AI processing. When using remote transcription via `TRANSCRIPTION_ENDPOINT`, the remote endpoint may use any model, but local processing still requires open-weight models.
 
-**C-003**: Output feeds must be placed in `data` directory root (and optionally in subfolders with feed.json). **Feeds are only generated where feed.json exists and applicable files are present.**
+**C-003**: Output feeds must be placed in `data` directory root (and optionally in subfolders with feed.json). **Feeds are only generated where feed.json exists and applicable files are present.** Each feed aggregates content from its entire directory subtree, so per-folder feeds are subsets of any parent folder feeds.
 
 **C-004**: Input files and their JSON metadata must maintain existing directory structure
 
@@ -323,6 +326,8 @@ This system processes education content files in the `data` directory and genera
 **C-012**: **Root feeds require a feed.json file in the root data directory**
 
 **C-013**: **Feeds are only generated if applicable files exist**: podcast.xml only if MP4 files present, articles.xml only if PDF/HTML files present
+
+**C-014**: **`index.html` is maintained at root level only** and is NOT generated in subfolders. It lists all feeds from all folders.
 
 ---
 
@@ -398,7 +403,7 @@ These variables have sensible defaults and may be omitted.
 - **`TRANSCRIPTION_MODEL`**: Transcription model to use (Default: `large-v3-turbo`)
 - **`TRANSCRIPTION_DEVICE`**: Device for transcription (`cpu` or `cuda`) (Default: `cuda`)
 - **`TRANSCRIPTION_COMPUTE_TYPE`**: Compute type for transcription (Default: `float16`)
-- **`TRANSCRIPTION_ENDPOINT`**: OpenAI-compatible API endpoint for remote transcription. When configured, enables remote transcription mode. Uses RFC 2606 compliant example domain. (Example: `https://transcription.example.com/v1`)
+- **`TRANSCRIPTION_ENDPOINT`**: OpenAI-compatible API endpoint for remote transcription. When configured, enables remote transcription mode instead of local faster-whisper. Uses RFC 2606 compliant example domain. (Example: `https://transcription.example.com/v1`)
 - **`TRANSCRIPTION_API_KEY`**: API key for authenticating with the remote transcription endpoint. Required if `TRANSCRIPTION_ENDPOINT` is configured. (Example: `your-transcription-api-key-here`)
 - **`TRANSCRIPTION_REMOTE_MODEL`**: Model identifier override for remote transcription. Optional; if not provided, the remote endpoint decides the model. (Example: `whisper-1`)
 
@@ -617,6 +622,7 @@ This section documents the evolution of the JSON metadata schema through multipl
   "filepath": "c100/lecture.mp4",
   "filetype": "mp4",
   "date": 1710000000.123,
+  "publication_date": 1710000000.0,  // Extracted from PDF/HTML metadata (optional)
   "duration": 45.5,
   "creation_time": "2024-01-01T00:00:00.000000Z",
   "size": 12345678,
@@ -655,13 +661,14 @@ This section documents the evolution of the JSON metadata schema through multipl
 
 **Field Usage by Filetype:**
 - **MP4**: `description = ""`, `summary` = LLM-generated key takeaways, `content` = full transcript
-- **PDF/HTML**: `title` = dict with sources (filename, extracted, generated with precedence filename < extracted < generated), `extracted_title` = source metadata title, `description` = extracted metadata, `content` = extracted plaintext, `summary` = null (unless summarized)
+- **PDF/HTML**: `title` = dict with sources (filename, extracted, generated with precedence filename < extracted < generated), `extracted_title` = source metadata title, `description` = extracted metadata, `content` = extracted plaintext, `summary` = null (unless summarized), `publication_date` = extracted from document metadata when available
 **Key Changes in Current Schema:**
 
 - `title` is now a dict with sources: filename, extracted, generated
 - `extracted_title` field added for storing source metadata titles separately
 - `content` field now used for both MP4 (transcript) and PDF/HTML (extracted text)
 - Timestamps now have millisecond precision (float with 3 decimal places)
+- `publication_date` field added for PDF/HTML files (extracted from document metadata)
 - `duration` and `creation_time` fields added for MP4 files
 - Step maps include `start_time` and `end_time` with millisecond precision
 
@@ -845,7 +852,12 @@ data/
 ```
 
 **Required fields:** `title`
-**Optional fields:** `description`, `language`, `author`, `link`, `image` (with `url`, `title`, `link` subfields)
+**Optional fields:** `description`, `language`, `author`, `link` (optional, defaults to BASE_URL if not provided), `image` (with `url`, `title`, `link` subfields)
+
+**Folder Subtree Aggregation:**
+- Each feed includes all content files (MP4, PDF, HTML) from its own folder and all subfolders within it
+- This means per-folder feeds are subsets of their parent folder feeds
+- Example: A feed.json in `Course1/` will include files from `Course1/`, `Course1/Week1/`, `Course1/Week2/`, etc.
 
 **Benefits:**
 - Better organization in feed readers
@@ -853,10 +865,11 @@ data/
 - Conditional feed generation based on file types
 - Explicit configuration required (no accidental feeds)
 - Maintains predictability (feeds only where configured)
+- Nested feed hierarchy allows for flexible organization
 
 ### Appendix F: Reflection Questions Support
 
-Reflection questions allow users to focus summarization on specific aspects of the content.
+Reflection questions allow users to focus summarization on specific aspects of the content. **`reflection.md` is optional and helpful but NOT a prerequisite for summarization.**
 
 **Mechanism:**
 1. Create a `reflection.md` file in any folder containing MP4 or PDF/HTML files
@@ -866,6 +879,7 @@ Reflection questions allow users to focus summarization on specific aspects of t
    - They are prepended to the transcript or extracted content
    - The system uses `SUMMARY_REFLECTION_PROMPT` (or falls back to `SUMMARY_PROMPT`)
    - The LLM focuses its summary on answering the reflection questions
+4. **If no `reflection.md` exists**, the system uses `SUMMARY_PROMPT` with just the content
 
 **Example reflection.md:**
 ```markdown
@@ -877,8 +891,14 @@ Reflection questions allow users to focus summarization on specific aspects of t
 4. What are the practical applications of these concepts?
 ```
 
+**Key Points:**
+- PDF/HTML files CAN be summarized without `reflection.md`
+- MP4 files CAN be transcribed and summarized without `reflection.md`
+- `reflection.md` is purely optional for all file types
+- The `summarize` command works with MP4, PDF, and HTML files regardless of `reflection.md` presence
+
 **Benefits:**
-- More focused summaries
+- More focused summaries when reflection questions are present
 - Customizable per course/module
 - Encourages deeper engagement with content
 - Can be used for educational purposes
@@ -916,7 +936,7 @@ Feeds are only generated based on explicit configuration and file availability.
 **Rules:**
 - `podcast.xml` is generated ONLY IF: (feed.json exists) AND (at least one MP4 file with `feed_eligible=true` exists in the folder subtree)
 - `articles.xml` is generated ONLY IF: (feed.json exists) AND (at least one PDF/HTML file with `feed_eligible=true` exists in the folder subtree)
-- `index.html` is generated ONLY IF: feed.json exists (regardless of file types)
+- **Root-level `index.html`** is generated ONLY IF: **at least one feed.json exists anywhere in the data directory** (regardless of file types). Note: index.html is maintained at the root level only, not in subfolders.
 
 **Example Scenarios:**
 
@@ -938,13 +958,16 @@ Feeds are only generated based on explicit configuration and file availability.
 
 ### Appendix I: Index.html Generation
 
-The system automatically generates a **root-level** `index.html` file to provide a discovery mechanism for all available feeds.
+The system automatically generates a **single root-level** `index.html` file to provide a discovery mechanism for all available feeds. **No index.html files are generated in subfolders.**
 
 **Generation Rules:**
-- Root-level `index.html` is generated listing all feeds from all folders containing `feed.json`
+- Root-level `index.html` is generated **only in the data directory root**
+- Lists all feeds from all folders containing `feed.json` (including nested folders)
 - Contains links only to feeds that exist (based on conditional generation rules)
 - Includes feed titles and descriptions from each `feed.json`
-- Lists all available feeds from all folders
+- Lists all available podcast.xml and articles.xml feeds from all folders
+- Automatically updated each time feeds are regenerated
+- Generated whenever at least one feed.json exists in the data directory tree
 
 **Content:**
 ```html

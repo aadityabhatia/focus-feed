@@ -15,23 +15,26 @@ This document provides a detailed, executable implementation plan for building `
   - Added create-feed CLI subcommand to create template feed.json files with title and description placeholders
   - Feed links derived from BASE_URL + relative path (not hardcoded). Channel link can be overridden via optional link field in feed.json
   - feed.json supports metadata fields: title (required), description (optional), language (optional), author (optional), link (optional), image (optional)
-- Added expected metadata fields to feed.json: title (required), description, language, author, link, and image (with url, title, link subfields)
-- Added support for title as dict with source tracking (filename, extracted, generated)
-- Added new config variables: SUMMARY_PROMPT, TITLE_PROMPT, SUMMARY_REFLECTION_PROMPT
-- Added reflection.md support for reflection questions in summarization
-- Added per-folder feed generation with feed.json configuration
-- Added markdown to HTML conversion for feed descriptions
-- Added millisecond precision timestamps (UNIX epoch with float)
-- Added module name prefixing for titles
-- Added whitespace/control character normalization in extracted content
-- Added content extraction for PDF/HTML files (not just metadata)
-- Added ffprobe integration for audio metadata (duration, creation_time)
-- Added conditional feed generation: feeds only where feed.json exists AND applicable files present
-- Added index.html generation for feed discovery
-- Added NO root feeds without feed.json requirement
-- Optional dependencies: faster-whisper, av in separate group
-- HTML/PDF files now get content extracted and included in feeds
-- summarize command now processes PDF/HTML files
+  - Added expected metadata fields to feed.json: title (required), description, language, author, link, and image (with url, title, link subfields)
+  - Added support for title as dict with source tracking (filename, extracted, generated)
+  - Added new config variables: SUMMARY_PROMPT, TITLE_PROMPT, SUMMARY_REFLECTION_PROMPT
+  - Added reflection.md support for reflection questions in summarization (OPTIONAL - not a prerequisite)
+  - Added per-folder feed generation with feed.json configuration
+  - Added markdown to HTML conversion for feed descriptions
+  - Added millisecond precision timestamps (UNIX epoch with float)
+  - Added module name prefixing for titles
+  - Added whitespace/control character normalization in extracted content
+  - Added content extraction for PDF/HTML files (not just metadata)
+  - Added ffprobe integration for audio metadata
+  - Added conditional feed generation: feeds only where feed.json exists AND applicable files present
+  - Added **root-level only** index.html generation for feed discovery
+  - Added NO root feeds without feed.json requirement
+  - **Updated:** av library moved from optional to required dependency (no version pinning)
+  - **Updated:** index.html is maintained ONLY at root level, not in subfolders
+  - **Updated:** Nested feeds aggregate all subdirectory content (inner feeds are subsets of outer feeds)
+  - **Clarified:** PDF/HTML files CAN be summarized without reflection.md
+  - HTML/PDF files now get content extracted and included in feeds
+  - summarize command now processes PDF/HTML files
 
 ---
 
@@ -61,15 +64,17 @@ Establish the project foundation with dependency management, directory structure
   - Create `pyproject.toml` with project name `local-feed-generator`
   - Specify Python requirement
   - Add all dependencies from design doc section 4.1
-  - Add optional dependency group for local transcription (faster-whisper, av)
+  - Add optional dependency group for local transcription (faster-whisper only)
+  - **Updated:** Add `av` as required dependency (not optional) with no version pinning
   - Configure uv as the build system
 - **Dependencies:**
-  - Required packages: `feedgen`, `watchdog`, `openai`, `pydantic-settings`, `pydantic`, `click`, `pypdf`, `beautifulsoup4`, `python-dotenv`
-  - Optional group `local-transcription`: `faster-whisper`, `av>=11.0,<19.0`
+  - Required packages: `feedgen`, `watchdog`, `openai`, `pydantic-settings`, `pydantic`, `click`, `pypdf`, `beautifulsoup4`, `python-dotenv`, `av>=11.0`
+  - Optional group `local-transcription`: `faster-whisper`
 - **Completion Criteria:**
   - `pyproject.toml` is valid and can be parsed by uv
   - All dependencies are listed
   - Optional dependency group configured
+  - `av` is in required dependencies
   - `uv lock` succeeds without errors
 
 - [x] T1.3: Set Up Development Environment
@@ -90,9 +95,10 @@ Establish the project foundation with dependency management, directory structure
   - Run `uv sync` to install dependencies
   - Verify all packages import successfully
   - Test basic functionality of each dependency
+  - **Updated:** Verify `av` library imports successfully as required dependency
 - **Completion Criteria:**
   - All packages install without errors
-  - `import feedgen`, `import watchdog`, `import openai`, etc. all succeed
+  - `import feedgen`, `import watchdog`, `import openai`, `import av`, etc. all succeed
   - Optional dependencies install with `uv sync --optional-group local-transcription`
 
 ---
@@ -849,7 +855,7 @@ Implement comprehensive validation and robust error handling throughout the syst
   - Validate podcast enclosure tags
   - Check for proper XML escaping of special characters
   - Verify podcast feed uses summary field for descriptions
-  - Verify articles feed uses content or description field for descriptions
+  - Verify articles feed uses summary field (if available) or description field for descriptions
   - **NEW:** Validate markdown to HTML conversion output
   - **NEW:** Validate safe URL scheme usage in links
   - **NEW:** Validate conditional feed generation (no empty feeds)
@@ -1336,21 +1342,22 @@ The following tasks can be worked on concurrently:
 
 ### New Features Requirements
 1. **Per-folder feeds**: Require feed.json file in folder
-2. **Reflection questions**: Require reflection.md file in folder
+2. **Reflection questions**: Use reflection.md file in folder **if present** (OPTIONAL - not required for summarization)
 3. **Module prefixing**: Automatic based on parent folder name
 4. **Markdown conversion**: Automatic for feed descriptions with XSS protection
 5. **Content extraction**: PDF/HTML files have content extracted to content field
 6. **Conditional feed generation**: Feeds only generated where feed.json exists AND applicable files present
-7. **Index.html generation**: Auto-generated in folders with feed.json
+7. **Index.html generation**: Auto-generated **only at root level**, lists all feeds from all folders
 8. **No root feeds without feed.json**: Root-level feeds require explicit feed.json configuration
-9. **summarize command**: Works with MP4 (transcripts), PDF (extracted content), and HTML (extracted content)
-10. **create-feed command**: CLI subcommand to create template feed.json files with optional metadata fields
-11. **feed.json metadata fields**: Supports optional fields: title, description, language, author, link, image
-12. **Feed link derivation**: Links derived from BASE_URL + relative path (not hardcoded)
+9. **Nested feed aggregation**: Each feed includes all content from its entire subtree (inner feeds are subsets of outer feeds)
+10. **summarize command**: Works with MP4 (transcripts), PDF (extracted content), and HTML (extracted content) - **without requiring reflection.md**
+11. **create-feed command**: CLI subcommand to create template feed.json files with optional metadata fields
+12. **feed.json metadata fields**: Supports optional fields: title, description, language, author, link, image
+13. **Feed link derivation**: Links derived from BASE_URL + relative path (not hardcoded)
 
 ### Other Constraints
 1. **Dependencies:** Use uv for all dependency management
-2. **Optional dependencies:** faster-whisper, av in separate group; markdown library optional
+2. **Required dependencies:** av is now required (moved from optional group); faster-whisper remains optional
 3. **Python:** Target Python 3.14 or later
 4. **Transcription:** Use faster-whisper with large-v3-turbo, CUDA, float16 (local); or remote API (when configured)
 5. **No quantization:** Best quality transcription, no quantization
@@ -1360,6 +1367,92 @@ The following tasks can be worked on concurrently:
 10. **URLs:** Absolute URLs = BASE_URL + filepath
 11. **Errors:** Error state written to JSON with step map status = null, excluded from feeds
 12. **Directory Structure:** Follow design doc section 5.1
+
+---
+
+## Phase 10: Implementation Review Tasks
+
+### Objective
+Add review tasks to ensure all clarifications and updates are properly implemented and tested.
+
+### Tasks
+
+- [ ] T10.1: Review index.html Root-Level Only Implementation
+- **Description:** Verify index.html is generated ONLY at root level, not in subfolders
+- **Actions:**
+  - Check that index.html generation code only writes to root data directory
+  - Verify no index.html files are created in subfolders with feed.json
+  - Ensure root-level index.html lists feeds from all folders (including nested)
+  - Update any code that might generate per-folder index.html files
+- **Verification:**
+  - Run `feeds` command and confirm only root-level index.html exists
+  - Check that subfolders with feed.json do NOT get index.html files
+  - Verify root index.html contains links to all feeds from all folders
+- **Dependencies:**
+  - T4.7 (Index generation)
+
+- [ ] T10.2: Review Reflection.md Optional Nature
+- **Description:** Verify reflection.md is optional and NOT a prerequisite for summarization
+- **Actions:**
+  - Review summarization logic to ensure it works without reflection.md
+  - Check that PDF/HTML files can be summarized without reflection.md present
+  - Ensure reflection.md is only used to select the prompt (SUMMARY_REFLECTION_PROMPT vs SUMMARY_PROMPT)
+  - Verify summarize command works on PDF/HTML files in folders without reflection.md
+- **Verification:**
+  - Test summarization of PDF/HTML file in folder without reflection.md
+  - Confirm summary is generated using SUMMARY_PROMPT
+  - Test summarization with reflection.md present
+  - Confirm summary uses SUMMARY_REFLECTION_PROMPT when available
+- **Dependencies:**
+  - T3.3 (Summarizer)
+  - T3.1 (Producer)
+
+- [ ] T10.3: Review Nested Feed Subtree Aggregation
+- **Description:** Verify each feed picks up all subdirectory content (inner feeds are subsets of outer feeds)
+- **Actions:**
+  - Review feed generation code to ensure subtree aggregation works correctly
+  - Check that feed.json in a folder includes files from all subfolders
+  - Verify nested feed structure: parent feed contains all, child feed contains subset
+  - Ensure feed generation scans the entire subtree for each feed.json
+- **Verification:**
+  - Create test structure: data/Course1/feed.json, data/Course1/lecture.mp4, data/Course1/Week1/lecture2.mp4
+  - Run feeds command
+  - Verify Course1 podcast.xml includes both lecture.mp4 and Week1/lecture2.mp4
+  - Create child feed.json in Week1 and verify it includes only Week1/lecture2.mp4
+- **Dependencies:**
+  - T4.4 (Per-folder feed generation)
+  - T4.6 (Feed generation method)
+
+- [ ] T10.4: Update av Library Dependency
+- **Description:** Verify av is moved from optional to required dependency with no version pinning
+- **Actions:**
+  - Update pyproject.toml to move av from optional-dependencies to main dependencies
+  - Remove version pinning (>=11.0,<19.0) and use latest version specifier
+  - Update all documentation mentioning av as optional
+  - Ensure av is used for audio metadata extraction
+- **Verification:**
+  - pyproject.toml shows av in main dependencies without version pinning
+  - Install succeeds without --optional-group flag
+  - Audio metadata extraction works with latest av version
+  - Documentation updated in README, specs, design docs
+- **Dependencies:**
+  - T1.2 (pyproject.toml)
+  - T1.4 (Verify installation)
+
+- [ ] T10.5: Review and Update All Documentation
+- **Description:** Ensure all documentation reflects the clarifications
+- **Actions:**
+  - Review README.md for accuracy regarding index.html, reflection.md, subtree aggregation
+  - Review specs.md for consistency with clarifications
+  - Review design.md for consistency with clarifications
+  - Update any conflicting information
+  - Ensure all examples and use cases reflect the clarifications
+- **Verification:**
+  - All documentation is consistent
+  - No contradictions between docs
+  - All clarifications properly documented
+- **Dependencies:**
+  - T10.1, T10.2, T10.3, T10.4
 
 ---
 
@@ -1435,16 +1528,18 @@ The following tasks can be worked on concurrently:
 ### Notes
 - Remote transcription is fully implemented and tested
 - Per-folder feeds work with feed.json configuration
-- Reflection questions are supported via reflection.md files
+- Reflection questions are supported via reflection.md files (OPTIONAL - not required for summarization)
 - Markdown to HTML conversion has both enhanced (with markdown library) and fallback implementations
 - Control characters are automatically removed from extracted content to prevent XML errors
 - All timestamps use millisecond precision
 - Module name prefixing is automatic and intelligent (doesn't double-prefix)
-- Audio metadata extraction via ffprobe is optional (graceful fallback if not installed)
+- Audio metadata extraction via ffprobe and `av` library (now required dependency) with graceful fallback
 - Conditional feed generation: feeds only generated where feed.json exists AND applicable file types present
-- Root-level index.html auto-generated listing all feeds for easy feed discovery
+- **Root-level only** index.html auto-generated listing all feeds for easy feed discovery
 - Root-level feeds require explicit feed.json configuration
-- summarize command works with both MP4 transcripts and PDF/HTML extracted content
+- Nested feeds: each feed aggregates all content from its entire subtree (inner feeds are subsets of outer feeds)
+- summarize command works with MP4 transcripts, PDF/HTML extracted content WITHOUT requiring reflection.md
 - create-feed command generates template feed.json files with optional metadata fields
 - feed.json supports optional metadata: title, description, language, author, link, image
 - Feed links are derived from BASE_URL + relative path (not hardcoded)
+- `av` library is now a required dependency (not optional) with no version pinning
