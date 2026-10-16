@@ -285,28 +285,29 @@ def _find_files_needing_transcription(data_dir: Path, force: bool = False) -> li
 
 
 def _find_files_needing_summary(data_dir: Path, force: bool = False) -> list[Path]:
-    """Find MP4 files that have a transcript but need a summary.
+    """Find MP4, PDF, and HTML files that have content but need a summary.
 
     A file needs summarization when:
     - The JSON metadata file exists, **and**
-    - It has a non-empty ``content`` field (the transcript), **and**
+    - It has a non-empty ``content`` field (transcript for MP4, extracted
+      text for PDF/HTML), **and**
     - The ``summarize`` step map's ``status`` is not ``"complete"``.
 
-    When *force* is ``True``, all MP4 files with a transcript are returned
-    regardless of their current summarization status.
+    When *force* is ``True``, all files with content are returned regardless
+    of their current summarization status.
     """
-    mp4_files = _find_source_files(data_dir, ("mp4",))
+    source_files = _find_source_files(data_dir, ("mp4", "pdf", "html"))
     needs: list[Path] = []
-    for mp4_file in mp4_files:
-        json_path = mp4_file.with_name(mp4_file.name + ".json")
+    for source_file in source_files:
+        json_path = source_file.with_name(source_file.name + ".json")
         metadata = _get_json_metadata(json_path)
         if metadata is None:
             continue
-        transcript = metadata.get("content")
-        if not transcript:
+        content = metadata.get("content")
+        if not content:
             continue
         if force or not _is_step_complete(metadata, "summarize"):
-            needs.append(mp4_file)
+            needs.append(source_file)
     return needs
 
 
@@ -326,9 +327,12 @@ def _find_files_needing_metadata_extraction(data_dir: Path, force: bool = False)
     for doc_file in doc_files:
         json_path = doc_file.with_name(doc_file.name + ".json")
         metadata = _get_json_metadata(json_path)
-        if force:
-            needs.append(doc_file)
-        elif metadata is None or not _is_step_complete(metadata, "extract") or not metadata.get("title"):
+        if (
+            force
+            or metadata is None
+            or not _is_step_complete(metadata, "extract")
+            or not metadata.get("title")
+        ):
             needs.append(doc_file)
     return needs
 
@@ -349,9 +353,11 @@ def _find_files_needing_json_generation(data_dir: Path, force: bool = False) -> 
     for source_file in source_files:
         json_path = source_file.with_name(source_file.name + ".json")
         metadata = _get_json_metadata(json_path)
-        if force:
-            needs.append(source_file)
-        elif metadata is None or not _is_dict_feed_eligible(metadata, source_file.suffix.lower().lstrip(".")):
+        if (
+            force
+            or metadata is None
+            or not _is_dict_feed_eligible(metadata, source_file.suffix.lower().lstrip("."))
+        ):
             needs.append(source_file)
     return needs
 
@@ -363,15 +369,14 @@ def _find_files_needing_title(data_dir: Path, force: bool = False) -> list[Path]
     - A JSON metadata file exists for it, **and**
     - The source file exists, **and**
     - The source file has a supported extension (``.mp4``, ``.pdf``, ``.html``), **and**
-    - The title is empty/missing, **or** the title equals the filename stem
-      (with underscores replaced by spaces), **or** *force* is ``True``.
+    - The title does not have a ``generated`` field, **or** *force* is ``True``.
 
     When *force* is ``True``, all source files with JSON metadata are returned
     regardless of their current title.
 
     Args:
         data_dir: Absolute path to the data directory.
-        force: When ``True``, include files that already have a proper title.
+        force: When ``True``, include files that already have a generated title.
 
     Returns:
         A sorted list of absolute paths to source files needing title
@@ -383,7 +388,7 @@ def _find_files_needing_title(data_dir: Path, force: bool = False) -> list[Path]
             continue
         try:
             metadata_dict = json.loads(json_file.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError):
+        except json.JSONDecodeError, OSError:
             continue
         source_file = json_file.with_name(json_file.stem)
         if not source_file.exists():
@@ -391,8 +396,12 @@ def _find_files_needing_title(data_dir: Path, force: bool = False) -> list[Path]
         if source_file.suffix.lower() not in SOURCE_EXTENSIONS:
             continue
         title = metadata_dict.get("title", "")
-        filename_stem = source_file.stem.replace("_", " ")
-        if force or not title or title == filename_stem:
+        # Normalize string title to dict for backward compatibility.
+        if isinstance(title, str):
+            title = {"filename": title}
+        # A file needs a title if 'generated' is not set or empty.
+        has_generated = isinstance(title, dict) and bool(title.get("generated", "").strip())
+        if force or not has_generated:
             needs.append(source_file)
     return needs
 
@@ -537,7 +546,7 @@ def _file_option(func: Any) -> Any:
         required=False,
         default=None,
         type=click.Path(),
-        help="Process only the specified file. Takes precedence over --data-dir for file selection.",
+        help="Process only the specified file. Takes precedence over --data-dir.",
     )(func)
 
 
@@ -897,7 +906,9 @@ class _WatchHandler(FileSystemEventHandler):
                 if result is not None and result.feed_eligible:
                     click.echo(f"Rescan: Processed {file.filepath} successfully.")
                 else:
-                    click.echo(f"Rescan: Processing {file.filepath} resulted in ineligible metadata.")
+                    click.echo(
+                        f"Rescan: Processing {file.filepath} resulted in ineligible metadata."
+                    )
             except Exception as exc:
                 self._log_processing_error(
                     exc,
@@ -1509,7 +1520,6 @@ def extract(
     """
     _load_config(config_file, data_dir)
 
-    from local_feed_generator.config import get_config
     from local_feed_generator.services.extractors import HTMLExtractor, PDFExtractor
 
     data_dir_path = _resolve_data_dir(data_dir, file_path)
@@ -1680,8 +1690,11 @@ def title(
             # Check if title needs generation (redundant with _find_files_needing_title
             # but needed for the --file case).
             title = metadata_dict.get("title", "")
-            filename_stem = source_file.stem.replace("_", " ")
-            if title and title != filename_stem and not force:
+            # Normalize string title to dict for backward compatibility.
+            if isinstance(title, str):
+                title = {"filename": title}
+            has_generated = isinstance(title, dict) and bool(title.get("generated", "").strip())
+            if has_generated and not force:
                 click.echo("  Already has a proper title; skipping.")
                 continue
 
@@ -1692,11 +1705,23 @@ def title(
                 error_count += 1
                 continue
 
-            new_title, _, _ = summarizer.generate_title(content)
+            # Get filename and extracted_title from existing metadata for context.
+            filename_title = _clean_title(source_file.stem)
+            extracted_title = metadata_dict.get("extracted_title")
+
+            new_title, _, _ = summarizer.generate_title(
+                content,
+                filename=filename_title,
+                extracted_title=extracted_title,
+            )
             new_title = _clean_title(new_title) or new_title
 
-            # Update metadata.
-            metadata_dict["title"] = new_title
+            # Update metadata title dict with generated title.
+            if isinstance(title, dict):
+                title["generated"] = new_title
+            else:
+                title = {"filename": filename_title, "generated": new_title}
+            metadata_dict["title"] = title
 
             _write_json_metadata(metadata_dict, source_file)
 
@@ -1782,16 +1807,47 @@ def _finalize_incomplete_json(
             config = get_config()
 
             # Ensure required fields are present.
-            title = metadata.get("title") or ""
-            if not title.strip():
-                if filetype == "mp4":
-                    content = metadata.get("content") or ""
-                    if content.strip():
-                        title, _, _ = summarizer.generate_title(content)
+            title = metadata.get("title")
+            # Normalize string title to dict for backward compatibility.
+            if isinstance(title, str):
+                title = {"filename": title}
+            if not isinstance(title, dict):
+                title = {}
+            filename_title = title.get("filename") or _clean_title(source_file.stem)
+            extracted_title = title.get("extracted") or metadata.get("extracted_title")
+
+            # Generate title via LLM if not already present.
+            if not title.get("generated") or not title["generated"].strip():
+                generated = filename_title
+                try:
+                    if filetype == "mp4":
+                        content = metadata.get("content") or ""
+                        if content.strip():
+                            generated, _, _ = summarizer.generate_title(
+                                content,
+                                filename=filename_title,
+                            )
+                            generated = _clean_title(generated) or generated
                     else:
-                        title = source_file.stem
-                else:
-                    title = source_file.stem
+                        content = _get_content_for_title(source_file, metadata)
+                        if content.strip():
+                            generated, _, _ = summarizer.generate_title(
+                                content,
+                                filename=filename_title,
+                                extracted_title=extracted_title,
+                            )
+                            generated = _clean_title(generated) or generated
+                except Exception as gen_exc:
+                    _logger.warning(
+                        "Failed to generate title for %s: %s; falling back to filename",
+                        source_file,
+                        gen_exc,
+                    )
+                    generated = filename_title
+                title["generated"] = generated
+
+            # Ensure filename key is set.
+            title["filename"] = filename_title
 
             description = metadata.get("description")
             summary = metadata.get("summary")

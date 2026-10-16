@@ -55,7 +55,7 @@ _SPECIAL_CHAR_PATTERN = re.compile(r'[<>&"\'\x00-\x1f]')
 # Filenames that should be ignored entirely (not treated as metadata or source).
 # Comparison is case-insensitive (see ``scan_directory``).
 _IGNORE_FILENAMES = frozenset(
-    {"podcast.xml", "articles.xml", "podcast.atom", "articles.atom", "index.html"}
+    {"podcast.xml", "articles.xml", "podcast.atom", "articles.atom", "index.html", "feed.json"}
 )
 
 # JSON status values that indicate a step is complete.
@@ -333,12 +333,10 @@ class Scanner:
             transcribe = metadata.get("transcribe")
             summarize = metadata.get("summarize")
             transcribe_complete = (
-                isinstance(transcribe, dict)
-                and transcribe.get("status") == _COMPLETED_STEP_STATUS
+                isinstance(transcribe, dict) and transcribe.get("status") == _COMPLETED_STEP_STATUS
             )
             summarize_complete = (
-                isinstance(summarize, dict)
-                and summarize.get("status") == _COMPLETED_STEP_STATUS
+                isinstance(summarize, dict) and summarize.get("status") == _COMPLETED_STEP_STATUS
             )
             # Legacy schema support
             if not transcribe_complete:
@@ -350,8 +348,7 @@ class Scanner:
             # New schema
             extract = metadata.get("extract")
             extract_complete = (
-                isinstance(extract, dict)
-                and extract.get("status") == _COMPLETED_STEP_STATUS
+                isinstance(extract, dict) and extract.get("status") == _COMPLETED_STEP_STATUS
             )
             # Legacy schema support
             if not extract_complete:

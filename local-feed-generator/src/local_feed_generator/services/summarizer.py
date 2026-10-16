@@ -9,6 +9,10 @@ Configuration (from config.py / design doc section 3.2):
     LLM_API_KEY         - API key for authentication
     LLM_MODEL           - Model identifier (optional; falls back to endpoint default)
     LLM_SYSTEM_PROMPT   - System prompt for summarization (default from design doc)
+    SUMMARY_PROMPT      - System prompt for regular summarization (required)
+    SUMMARY_REFLECTION_PROMPT - System prompt for summarization with reflection
+        questions (optional; falls back to SUMMARY_PROMPT)
+    TITLE_PROMPT        - System prompt for LLM title generation (required)
 """
 
 import logging
@@ -48,6 +52,7 @@ class LLmResponse(NamedTuple):
     prompt_tokens: int
     completion_tokens: int
 
+
 # ---------------------------------------------------------------------------
 # Retry configuration constants
 # ---------------------------------------------------------------------------
@@ -60,13 +65,6 @@ DEFAULT_BASE_DELAY = 1.0
 
 #: Maximum jitter factor applied on top of the exponential delay (0 to 1).
 DEFAULT_JITTER = 0.1
-
-#: Title-generation system prompt — focused and concise.
-TITLE_SYSTEM_PROMPT = (
-    "Generate a concise, descriptive title (5-10 words) for the given content. "
-    "The title should capture the main topic or theme. "
-    "Do not include any formatting, quotes, or extra text — just the title."
-)
 
 # ---------------------------------------------------------------------------
 # Retryable vs. non-retryable exception mapping
@@ -144,15 +142,24 @@ class Summarizer:
     # Public API
     # ------------------------------------------------------------------
 
-    def summarize(self, transcript: str) -> tuple[str, int, int]:
+    def summarize(
+        self,
+        transcript: str,
+        reflection_questions: str | None = None,
+    ) -> tuple[str, int, int]:
         """Generate key takeaways from a transcript.
 
-        Sends the transcript to the configured LLM with the system prompt
-        from configuration (``LLM_SYSTEM_PROMPT``) and returns the generated
-        summary along with token usage data.
+        Sends the transcript to the configured LLM with a system prompt
+        from configuration.  When *reflection_questions* is provided,
+        ``config.summary_reflection_prompt`` is used as the system prompt
+        and the reflection questions are prepended to the transcript.
+        Otherwise, ``config.summary_prompt`` is used.
 
         Args:
             transcript: The transcript text to summarize.
+            reflection_questions: Optional reflection questions to focus the
+                summary.  When provided, the summary_reflection_prompt is used
+                and the questions are prepended to the user content.
 
         Returns:
             A tuple of ``(summary, prompt_tokens, completion_tokens)``.
@@ -164,21 +171,44 @@ class Summarizer:
         if not transcript or not transcript.strip():
             raise SummarizationError("Transcript text must not be empty")
 
+        if reflection_questions:
+            system_prompt = self._config.summary_reflection_prompt or self._config.summary_prompt
+            user_content = (
+                "Consider the following reflection questions while summarizing:\n\n"
+                f"{reflection_questions}\n\n{transcript}"
+            )
+        else:
+            system_prompt = self._config.summary_prompt
+            user_content = transcript
+
         result = self._chat_completion(
-            system_prompt=self._config.llm_system_prompt,
-            user_content=transcript,
+            system_prompt=system_prompt,
+            user_content=user_content,
         )
         return result.content, result.prompt_tokens, result.completion_tokens
 
-    def generate_title(self, content: str) -> tuple[str, int, int]:
+    def generate_title(
+        self,
+        content: str,
+        filename: str | None = None,
+        extracted_title: str | None = None,
+    ) -> tuple[str, int, int]:
         """Generate a concise title from content.
 
-        Uses a dedicated title-generation system prompt to produce a short,
-        descriptive title. This is used as a fallback when source metadata
-        (e.g., PDF title, HTML ``<title>``) is unavailable.
+        Uses the title-generation system prompt from configuration
+        (``TITLE_PROMPT``) to produce a short, descriptive title.  When
+        *filename* and/or *extracted_title* are provided, they are included
+        in the user prompt as context so the LLM can produce a more
+        accurate title.  Only the first ~4000 characters of *content* are
+        passed to the LLM.
 
         Args:
             content: The content text to generate a title from.
+            filename: Optional filename (without extension, underscores
+                replaced with spaces) to provide as context.
+            extracted_title: Optional title extracted from source metadata
+                (PDF metadata title, HTML ``<title>`` tag).  Only included
+                if not ``None`` and not empty.
 
         Returns:
             A tuple of ``(title, prompt_tokens, completion_tokens)``.
@@ -190,9 +220,19 @@ class Summarizer:
         if not content or not content.strip():
             raise SummarizationError("Content text must not be empty")
 
+        # Build user content with optional context.
+        if filename and extracted_title and extracted_title.strip():
+            prompt_context = f"Filename: {filename}\nExtracted title: {extracted_title}\n\n"
+        elif filename:
+            prompt_context = f"Filename: {filename}\n\n"
+        else:
+            prompt_context = ""
+
+        user_content = prompt_context + f"Content:\n{content[:4000]}"
+
         result = self._chat_completion(
-            system_prompt=TITLE_SYSTEM_PROMPT,
-            user_content=content,
+            system_prompt=self._config.title_prompt,
+            user_content=user_content,
         )
         return result.content, result.prompt_tokens, result.completion_tokens
 
@@ -234,7 +274,7 @@ class Summarizer:
         for attempt in range(self._max_retries + 1):
             try:
                 response = self._client.chat.completions.create(
-                    model=self._config.llm_model,  # type: ignore[arg-type]
+                    model=self._config.llm_model,
                     messages=messages,  # type: ignore[arg-type]
                 )
                 content = response.choices[0].message.content

@@ -24,6 +24,7 @@ import os
 from pathlib import Path
 import random
 import time
+from typing import Any
 
 from openai import (
     APIConnectionError,
@@ -234,7 +235,7 @@ class RemoteTranscriber:
             try:
                 # Pass the Path object directly; the OpenAI SDK handles
                 # reading the file contents.
-                kwargs: dict[str, object] = {
+                kwargs: dict[str, Any] = {
                     "file": path,
                     "response_format": "text",
                 }
@@ -263,7 +264,7 @@ class RemoteTranscriber:
                     return response.strip()
                 else:
                     # Response is an object with a .text attribute
-                    return response.text.strip()
+                    return str(response.text).strip()
 
             except _NON_RETRYABLE_ERRORS as exc:
                 # Permanent failures — do not retry.

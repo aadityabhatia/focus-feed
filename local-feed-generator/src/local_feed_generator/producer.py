@@ -3,7 +3,10 @@
 Orchestrates file processing based on file type. For MP4 files, it
 transcribes audio to markdown, then generates key-takeaways summary via
 LLM. For PDF/HTML files, it extracts metadata from the source file and
-uses LLM to generate a title if source metadata is unavailable.
+uses the filename (without extension, underscores→spaces) as the
+``title.filename``. For all file types, it generates a descriptive title
+via LLM using the filename, extracted title (if available), and content
+as context, stored as ``title.generated``.
 
 The Producer writes a JSON metadata file adjacent to each source file,
 following the schema defined in design doc section 3.3. On errors, it
@@ -14,9 +17,10 @@ Processing progress is tracked through separate step maps:
 - ``summarize``: StepMap for summarization (MP4 only).
 - ``extract``: StepMap for metadata extraction (PDF/HTML only).
 
-Date fields (``date``) are stored as UNIX epoch integers (seconds since
-1970-01-01 UTC).  Per-step timing is tracked within each step map's
-``start_time`` and ``end_time`` fields.
+Date fields (``date``) are stored as UNIX epoch floats with millisecond
+precision.  Per-step timing is tracked within each step map's
+``start_time`` and ``end_time`` fields, also as epoch floats with
+millisecond precision.
 
 Design references:
 - design.md section 2.2 (Producer Pipeline responsibility)
@@ -52,6 +56,80 @@ _logger = logging.getLogger("local_feed_generator")
 
 # File types supported by the producer, mapped to their processing methods.
 SUPPORTED_FILETYPES: frozenset[str] = frozenset({"mp4", "pdf", "html"})
+
+
+def _now_timestamp() -> float:
+    """Return the current UNIX epoch timestamp with millisecond precision."""
+    return int(datetime.now(UTC).timestamp() * 1000) / 1000.0
+
+
+def _should_prepend_module(filepath: str, filename: str) -> tuple[bool, str]:
+    """Determine whether the module name should be prepended to the title.
+
+    Extracts the module name from the parent directory of *filepath*.
+    Checks if the filename (without extension, underscores→spaces) starts
+    with the module name (case-insensitive, handling underscores).
+
+    Args:
+        filepath: Relative path from the data directory root.
+        filename: The source filename including extension.
+
+    Returns:
+        A tuple of ``(should_prepend, module_name)``.  When
+        *should_prepend* is ``False``, the module name is already part of
+        the filename and should not be prepended.
+    """
+    path = Path(filepath)
+    parent = path.parent
+    module_name = parent.name if parent.name else ""
+    if not module_name:
+        return False, ""
+
+    # Normalize: replace underscores with spaces, lowercase for comparison.
+    module_normalized = module_name.replace("_", " ").lower()
+    filename_stem = path.stem.replace("_", " ").lower()
+
+    # Check if filename starts with module name (case-insensitive).
+    if filename_stem.startswith(module_normalized):
+        return False, ""
+
+    return True, module_name.replace("_", " ")
+
+
+def _apply_module_prefix(title: str, filepath: str, filename: str) -> str:
+    """Prepend the module name to *title* if appropriate.
+
+    Args:
+        title: The base title string.
+        filepath: Relative path from the data directory root.
+        filename: The source filename including extension.
+
+    Returns:
+        The title with module prefix if needed, otherwise the original title.
+    """
+    should_prepend, module = _should_prepend_module(filepath, filename)
+    if should_prepend:
+        return f"{module}: {title}"
+    return title
+
+
+def _check_reflection_md(absolute_path: str) -> str | None:
+    """Check if a ``reflection.md`` file exists next to the source file.
+
+    Args:
+        absolute_path: Absolute path to the source file.
+
+    Returns:
+        The contents of ``reflection.md`` if it exists, otherwise ``None``.
+    """
+    source_dir = Path(absolute_path).parent
+    reflection_path = source_dir / "reflection.md"
+    if reflection_path.exists():
+        try:
+            return reflection_path.read_text(encoding="utf-8")
+        except OSError as e:
+            _logger.warning("Failed to read reflection.md at %s: %s", reflection_path, e)
+    return None
 
 
 class Producer:
@@ -115,12 +193,15 @@ class Producer:
         Determines the file type from the extension and dispatches to the
         appropriate processing path:
 
-        - **MP4**: transcribe -> summarize -> generate metadata with
-          content (transcript) and description (summary).
-        - **PDF**: extract metadata -> generate metadata without
-          content.
-        - **HTML**: extract metadata -> generate metadata without
-          content.
+        - **MP4**: transcribe -> summarize -> generate title -> generate
+          metadata with content (transcript) and description (summary).
+        - **PDF**: extract metadata -> generate title -> generate metadata
+          with content (extracted text).
+        - **HTML**: extract metadata -> generate title -> generate metadata
+          with content (extracted text).
+
+        For all file types, title generation uses the LLM with the
+        filename, extracted title (if available), and content as context.
 
         On any exception, an error-state metadata file is written and the
         error is logged to stderr.
@@ -167,7 +248,7 @@ class Producer:
                     existing_summarize = existing_data.get("summarize")
                     existing_extract = existing_data.get("extract")
                     existing_content = existing_data.get("content")
-            except (json.JSONDecodeError, OSError):
+            except json.JSONDecodeError, OSError:
                 pass
 
         partial_metadata: dict[str, Any] = {
@@ -177,7 +258,7 @@ class Producer:
         }
         # Set the initial step status based on file type, preserving
         # existing step maps so completed steps are not overwritten.
-        now_ts = int(datetime.now(UTC).timestamp())
+        now_ts = _now_timestamp()
         if filetype == "mp4":
             partial_metadata["transcribe"] = {
                 "status": "in_progress",
@@ -290,11 +371,17 @@ class Producer:
         absolute_path: str,
         json_path: str,
     ) -> Metadata:
-        """Process an MP4 file: transcribe -> summarize -> build metadata.
+        """Process an MP4 file: transcribe -> summarize -> generate title -> build metadata.
 
         Writes intermediate JSON states at each processing stage so that
         progress can be tracked. Uses :meth:`_write_metadata_partial` to
         bypass :class:`Metadata` validation for in-progress states.
+
+        The transcript is used as content for LLM title generation, with
+        the filename (without extension, underscores→spaces) passed as
+        context. The ``title.generated`` field holds the LLM-generated
+        title (with module prefix applied). The ``title.filename`` field
+        holds the filename-derived title.
 
         Args:
             filepath: Relative path from the data directory root.
@@ -318,7 +405,7 @@ class Producer:
         if json_path_obj.exists():
             metadata_dict: dict[str, Any] = json.loads(json_path_obj.read_text(encoding="utf-8"))
         else:
-            now_ts = int(datetime.now(UTC).timestamp())
+            now_ts = _now_timestamp()
             metadata_dict = {
                 "transcribe": {
                     "status": "in_progress",
@@ -378,7 +465,7 @@ class Producer:
             transcript = metadata_dict.get("content", "")
         else:
             transcribe_step["status"] = "in_progress"
-            transcribe_step["start_time"] = int(datetime.now(UTC).timestamp())
+            transcribe_step["start_time"] = _now_timestamp()
             transcribe_step["input_size"] = input_size
             transcribe_step["output_size"] = 0
             transcribe_step["words"] = 0
@@ -394,7 +481,7 @@ class Producer:
 
             # Update transcribe step with completion info.
             transcribe_step["status"] = "complete"
-            transcribe_step["end_time"] = int(transcribe_end.timestamp())
+            transcribe_step["end_time"] = int(transcribe_end.timestamp() * 1000) / 1000.0
             transcribe_step["output_size"] = len(transcript.encode("utf-8")) if transcript else 0
             transcribe_step["words"] = len(transcript.split()) if transcript else 0
             metadata_dict["transcribe"] = transcribe_step
@@ -403,7 +490,7 @@ class Producer:
         metadata_dict["content"] = transcript
         summarize_step = metadata_dict.get("summarize") or {}
         summarize_step["status"] = "in_progress"
-        summarize_step["start_time"] = int(datetime.now(UTC).timestamp())
+        summarize_step["start_time"] = _now_timestamp()
         summarize_step["input_size"] = len(transcript.encode("utf-8")) if transcript else 0
         summarize_step["output_size"] = 0
         summarize_step["words"] = 0
@@ -414,12 +501,16 @@ class Producer:
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Step 2: Summarize the transcript via LLM.
-        summary, prompt_tokens, completion_tokens = self.summarizer.summarize(transcript)
+        # Check for reflection.md in the source file's directory.
+        reflection_questions = _check_reflection_md(absolute_path)
+        summary, prompt_tokens, completion_tokens = self.summarizer.summarize(
+            transcript, reflection_questions=reflection_questions
+        )
         summarize_end = datetime.now(UTC)
 
         # Update summarize step with completion info.
         summarize_step["status"] = "complete"
-        summarize_step["end_time"] = int(summarize_end.timestamp())
+        summarize_step["end_time"] = int(summarize_end.timestamp() * 1000) / 1000.0
         summarize_step["output_size"] = len(summary.encode("utf-8")) if summary else 0
         summarize_step["words"] = len(summary.split()) if summary else 0
         summarize_step["model"] = config.llm_model
@@ -429,13 +520,22 @@ class Producer:
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Step 3: Generate a title.  For MP4 files the transcript is the
-        # best available content for title generation.
-        title, _, _ = self.generate_title(transcript)
-        title = _clean_title(title)
+        # best available content for title generation.  Pass the filename
+        # (without extension, underscores→spaces) as context to the LLM.
+        filename_title = _clean_title(Path(filename).stem)
+        generated_title, _, _ = self.summarizer.generate_title(
+            transcript,
+            filename=filename_title,
+            extracted_title=None,
+        )
+        generated_title = _clean_title(generated_title) or generated_title
+
+        # Apply module name prefix if needed.
+        generated_title = _apply_module_prefix(generated_title, filepath, filename)
 
         # Step 4: Build metadata.
         file_size = stat_result.st_size
-        file_mtime = int(stat_result.st_mtime)
+        file_mtime = int(stat_result.st_mtime * 1000) / 1000.0
 
         # Extract audio metadata via ffprobe for duration and creation_time.
         audio_meta = get_audio_metadata(absolute_path)
@@ -451,13 +551,11 @@ class Producer:
             duration = audio_meta.get("duration")
             if creation_time_str:
                 try:
-                    parsed_date = datetime.fromisoformat(
-                        creation_time_str.replace("Z", "+00:00")
-                    )
+                    parsed_date = datetime.fromisoformat(creation_time_str.replace("Z", "+00:00"))
                     if parsed_date.tzinfo is None:
                         parsed_date = parsed_date.replace(tzinfo=UTC)
-                    file_date = int(parsed_date.timestamp())
-                except (ValueError, TypeError):
+                    file_date = int(parsed_date.timestamp() * 1000) / 1000.0
+                except ValueError, TypeError:
                     _logger.warning(
                         "Failed to parse creation_time '%s' for %s; "
                         "falling back to file modification time",
@@ -465,12 +563,18 @@ class Producer:
                         absolute_path,
                     )
 
+        # Build title dict for MP4.
+        title_dict: dict[str, str | None] = {
+            "filename": filename_title,
+            "generated": generated_title,
+        }
+
         # On completion: update to final state with all fields.
         # For MP4 files, description is left blank and the LLM-generated
         # summary is stored in the summary field instead.
         metadata_dict.update(
             {
-                "title": title,
+                "title": title_dict,
                 "description": "",  # MP4: leave description blank, use summary instead
                 "summary": summary,
                 "date": file_date,
@@ -484,7 +588,7 @@ class Producer:
 
         # Return a Metadata object for in-memory use.
         metadata = Metadata(
-            title=title,
+            title=title_dict,
             description="",  # MP4: leave description blank, use summary instead
             summary=summary,
             filename=filename,
@@ -507,15 +611,18 @@ class Producer:
         absolute_path: str,
         json_path: str,
     ) -> Metadata:
-        """Process a PDF file: extract metadata -> build metadata.
+        """Process a PDF file: extract metadata -> generate title -> build metadata.
 
         Writes intermediate JSON states at each processing stage. Uses
         :meth:`_write_metadata_partial` to bypass :class:`Metadata`
         validation for in-progress states.
 
         Uses :class:`PDFExtractor` to obtain title, description, date, and
-        size. If the extractor returns no title (empty or None), the LLM
-        is used as a fallback via :meth:`generate_title`.
+        size. The title is built using the filename-derived title and
+        extracted title (from PDF metadata) as context for LLM title
+        generation. The ``title.generated`` field holds the LLM-generated
+        title (with module prefix applied). The ``title.extracted`` field
+        stores the title from PDF metadata but is NOT used as the final title.
 
         Args:
             filepath: Relative path from the data directory root.
@@ -528,15 +635,15 @@ class Producer:
             A :class:`Metadata` instance without transcript/summary.
 
         Raises:
-            Exception: Any exception from extraction, title generation,
-                or metadata construction is propagated to the caller.
+            Exception: Any exception from extraction or metadata
+                construction is propagated to the caller.
         """
         # Read the initial metadata dict written by process_file.
         json_path_obj = Path(json_path)
         if json_path_obj.exists():
             metadata_dict: dict[str, Any] = json.loads(json_path_obj.read_text(encoding="utf-8"))
         else:
-            now_ts = int(datetime.now(UTC).timestamp())
+            now_ts = _now_timestamp()
             metadata_dict = {
                 "extract": {
                     "status": "in_progress",
@@ -557,7 +664,7 @@ class Producer:
         # Before extraction: set extract status to in_progress.
         extract_step = metadata_dict.get("extract") or {}
         extract_step["status"] = "in_progress"
-        extract_step["start_time"] = int(datetime.now(UTC).timestamp())
+        extract_step["start_time"] = _now_timestamp()
         extract_step["input_size"] = input_size
         extract_step["output_size"] = 0
         extract_step["words"] = 0
@@ -567,34 +674,51 @@ class Producer:
         # Step 1: Extract metadata from the PDF.
         extracted = self.pdf_extractor.extract(absolute_path)
 
-        title = extracted.get("title") or ""
-        if not title.strip():
-            # After extraction, before title generation: update status.
-            self._write_metadata_partial(metadata_dict, absolute_path)
-
-            # LLM fallback for title generation.
-            title, _, _ = self.generate_title_from_file(absolute_path)
-            title = _clean_title(title)
-
+        # Title is always the filename-derived title from the extractor.
+        # The extracted title from PDF metadata is stored separately.
+        # Fall back to filename stem if extractor returns empty title.
+        filename_title = extracted.get("title") or _clean_title(Path(filename).stem) or filename
+        extracted_title = extracted.get("extracted_title")
         description = extracted.get("description") or ""
         file_date = extracted.get("date", 0)
         file_size = extracted.get("size", 0)
         file_content = extracted.get("content")
 
-        # After extraction (including title fallback): mark extract as complete.
+        # After extraction: mark extract as complete.
         extract_step["status"] = "complete"
-        extract_step["end_time"] = int(datetime.now(UTC).timestamp())
+        extract_step["end_time"] = _now_timestamp()
         extract_step["output_size"] = len(file_content.encode("utf-8")) if file_content else 0
         extract_step["words"] = len(file_content.split()) if file_content else 0
         metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
-        # Step 2: Build final metadata.
+        # Step 2: Generate title via LLM using filename, extracted title,
+        # and the extracted content (summarizer truncates to ~4000 chars).
+        if file_content and file_content.strip():
+            generated_title, _, _ = self.summarizer.generate_title(
+                file_content,
+                filename=filename_title,
+                extracted_title=extracted_title,
+            )
+            generated_title = _clean_title(generated_title) or generated_title
+        else:
+            # No content available; fall back to filename-derived title.
+            generated_title = filename_title
+
+        # Apply module name prefix to the generated title.
+        generated_title = _apply_module_prefix(generated_title, filepath, filename)
+
+        # Build title dict for PDF.
+        title_dict: dict[str, str | None] = {
+            "filename": filename_title,
+            "extracted": extracted_title,
+            "generated": generated_title,
+        }
 
         # On completion: update to final state.
         metadata_dict.update(
             {
-                "title": title,
+                "title": title_dict,
                 "description": description,
                 "date": file_date,
                 "size": file_size,
@@ -605,7 +729,8 @@ class Producer:
 
         # Return a Metadata object for in-memory use.
         metadata = Metadata(
-            title=title,
+            title=title_dict,
+            extracted_title=extracted_title,
             description=description,
             filename=filename,
             filepath=filepath,
@@ -624,15 +749,19 @@ class Producer:
         absolute_path: str,
         json_path: str,
     ) -> Metadata:
-        """Process an HTML file: extract metadata -> build metadata.
+        """Process an HTML file: extract metadata -> generate title -> build metadata.
 
         Writes intermediate JSON states at each processing stage. Uses
         :meth:`_write_metadata_partial` to bypass :class:`Metadata`
         validation for in-progress states.
 
         Uses :class:`HTMLExtractor` to obtain title, description, date, and
-        size. If the extractor returns no title (empty or None), the LLM
-        is used as a fallback via :meth:`generate_title`.
+        size. The title is built using the filename-derived title and
+        extracted title (from the HTML ``<title>`` tag) as context for
+        LLM title generation. The ``title.generated`` field holds the
+        LLM-generated title (with module prefix applied). The
+        ``title.extracted`` field stores the title from the HTML
+        ``<title>`` tag but is NOT used as the final title.
 
         Args:
             filepath: Relative path from the data directory root.
@@ -645,15 +774,15 @@ class Producer:
             A :class:`Metadata` instance without transcript/summary.
 
         Raises:
-            Exception: Any exception from extraction, title generation,
-                or metadata construction is propagated to the caller.
+            Exception: Any exception from extraction or metadata
+                construction is propagated to the caller.
         """
         # Read the initial metadata dict written by process_file.
         json_path_obj = Path(json_path)
         if json_path_obj.exists():
             metadata_dict: dict[str, Any] = json.loads(json_path_obj.read_text(encoding="utf-8"))
         else:
-            now_ts = int(datetime.now(UTC).timestamp())
+            now_ts = _now_timestamp()
             metadata_dict = {
                 "extract": {
                     "status": "in_progress",
@@ -674,7 +803,7 @@ class Producer:
         # Before extraction: set extract status to in_progress.
         extract_step = metadata_dict.get("extract") or {}
         extract_step["status"] = "in_progress"
-        extract_step["start_time"] = int(datetime.now(UTC).timestamp())
+        extract_step["start_time"] = _now_timestamp()
         extract_step["input_size"] = input_size
         extract_step["output_size"] = 0
         extract_step["words"] = 0
@@ -684,34 +813,51 @@ class Producer:
         # Step 1: Extract metadata from the HTML.
         extracted = self.html_extractor.extract(absolute_path)
 
-        title = extracted.get("title") or ""
-        if not title.strip():
-            # After extraction, before title generation: update status.
-            self._write_metadata_partial(metadata_dict, absolute_path)
-
-            # LLM fallback for title generation.
-            title, _, _ = self.generate_title_from_file(absolute_path)
-            title = _clean_title(title)
-
+        # Title is always the filename-derived title from the extractor.
+        # The extracted title from <title> tag is stored separately.
+        # Fall back to filename stem if extractor returns empty title.
+        filename_title = extracted.get("title") or _clean_title(Path(filename).stem) or filename
+        extracted_title = extracted.get("extracted_title")
         description = extracted.get("description") or ""
         file_date = extracted.get("date", 0)
         file_size = extracted.get("size", 0)
         file_content = extracted.get("content")
 
-        # After extraction (including title fallback): mark extract as complete.
+        # After extraction: mark extract as complete.
         extract_step["status"] = "complete"
-        extract_step["end_time"] = int(datetime.now(UTC).timestamp())
+        extract_step["end_time"] = _now_timestamp()
         extract_step["output_size"] = len(file_content.encode("utf-8")) if file_content else 0
         extract_step["words"] = len(file_content.split()) if file_content else 0
         metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
-        # Step 2: Build final metadata.
+        # Step 2: Generate title via LLM using filename, extracted title,
+        # and the extracted content (summarizer truncates to ~4000 chars).
+        if file_content and file_content.strip():
+            generated_title, _, _ = self.summarizer.generate_title(
+                file_content,
+                filename=filename_title,
+                extracted_title=extracted_title,
+            )
+            generated_title = _clean_title(generated_title) or generated_title
+        else:
+            # No content available; fall back to filename-derived title.
+            generated_title = filename_title
+
+        # Apply module name prefix to the generated title.
+        generated_title = _apply_module_prefix(generated_title, filepath, filename)
+
+        # Build title dict for HTML.
+        title_dict: dict[str, str | None] = {
+            "filename": filename_title,
+            "extracted": extracted_title,
+            "generated": generated_title,
+        }
 
         # On completion: update to final state.
         metadata_dict.update(
             {
-                "title": title,
+                "title": title_dict,
                 "description": description,
                 "date": file_date,
                 "size": file_size,
@@ -722,7 +868,8 @@ class Producer:
 
         # Return a Metadata object for in-memory use.
         metadata = Metadata(
-            title=title,
+            title=title_dict,
+            extracted_title=extracted_title,
             description=description,
             filename=filename,
             filepath=filepath,
@@ -738,7 +885,12 @@ class Producer:
     # Helper methods
     # ------------------------------------------------------------------
 
-    def generate_title(self, content: str) -> tuple[str, int, int]:
+    def generate_title(
+        self,
+        content: str,
+        filename: str | None = None,
+        extracted_title: str | None = None,
+    ) -> tuple[str, int, int]:
         """Generate a title from content using the LLM.
 
         This is a thin wrapper around
@@ -748,6 +900,10 @@ class Producer:
         Args:
             content: The content text to generate a title from
                 (e.g. a transcript or file content).
+            filename: Optional filename (without extension, underscores
+                replaced with spaces) to provide as context to the LLM.
+            extracted_title: Optional title extracted from source metadata
+                (PDF metadata title, HTML ``<title>`` tag).
 
         Returns:
             A tuple of ``(title, prompt_tokens, completion_tokens)``.
@@ -755,7 +911,7 @@ class Producer:
         Raises:
             SummarizationError: If the LLM request fails.
         """
-        return self.summarizer.generate_title(content)
+        return self.summarizer.generate_title(content, filename, extracted_title)
 
     def generate_title_from_file(self, filepath: str | Path) -> tuple[str, int, int]:
         """Generate a title from a file's content using the LLM.
@@ -778,7 +934,8 @@ class Producer:
         path = Path(filepath)
         # Read a reasonable chunk of the file for title generation.
         content = path.read_text(encoding="utf-8", errors="replace")[:8000]
-        return self.generate_title(content)
+        filename = _clean_title(path.stem)
+        return self.generate_title(content, filename=filename)
 
     def _write_metadata(self, metadata: Metadata, source_path: str) -> None:
         """Write a metadata JSON file adjacent to the source file.

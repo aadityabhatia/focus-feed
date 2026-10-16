@@ -17,13 +17,17 @@ Design references:
     - Sorts items by folder name (ascending) then filename (ascending).
     - Calculates absolute URLs as ``BASE_URL + filepath``.
     - Writes feeds to ``DATA_DIR/podcast.xml`` and ``DATA_DIR/articles.xml``.
+    - Supports per-folder feed generation via ``feed.json`` files.
 """
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import html
+import json
 import logging
 import os
 from pathlib import Path
+import re
 import xml.etree.ElementTree as ET
 
 from feedgen.feed import FeedGenerator as _FeedGenerator
@@ -42,6 +46,226 @@ _ARTICLES_FEED_TITLE = "Local Articles Feed"
 
 # Dublin Core namespace URI (used for <dc:date> elements).
 _DC_NAMESPACE = "http://purl.org/dc/elements/1.1/"
+
+# URL schemes allowed in markdown links to prevent XSS (e.g. javascript:).
+# Only http, https, mailto, relative paths, and fragment identifiers are allowed.
+_SAFE_URL_SCHEMES = re.compile(r"^(https?://|mailto:|/|#|\.\.)")
+
+
+def _get_final_title(title: dict[str, str | None] | str | None) -> str:
+    """Extract the final title as a plain string from a title field.
+
+    Handles both the new dict format (``{"generated": "...", "filename": "..."}``)
+    and the legacy string format.  For dict titles, the ``"generated"`` key is
+    preferred; if absent or empty, falls back to ``"filename"``.  The
+    ``"extracted"`` key is intentionally not used as the final title.  If
+    *title* is a plain string, it is returned as-is.  Returns an empty string
+    when *title* is ``None`` or no suitable key is found.
+
+    Args:
+        title: A title dict, a title string, or ``None``.
+
+    Returns:
+        The final title string, or an empty string if not available.
+    """
+    if title is None:
+        return ""
+    if isinstance(title, dict):
+        for key in ("generated", "filename"):
+            value = title.get(key)
+            if value and value.strip():
+                return value
+        return ""
+    return str(title)
+
+
+def _markdown_to_html(text: str | None) -> str:
+    """Convert markdown text to HTML with XSS protection.
+
+    Attempts to use the third-party ``markdown`` library if it is installed.
+    If the library is not available, falls back to a built-in simple converter
+    that handles:
+
+    - **Headers**: ``#`` through ``######`` (h1-h6)
+    - **Bold**: ``**text**`` → ``<strong>text</strong>``
+    - *Italic*: ``*text*`` or ``_text_`` → ``<em>text</em>``
+    - Links: ``[text](url)`` → ``<a href="url">text</a>`` (safe schemes only)
+    - Lists: unordered (``-``, ``*``, ``+``) and ordered (``1.``)
+    - Paragraphs (double-newline separation) and line breaks (``<br>``)
+
+    All text content is HTML-escaped to prevent XSS vulnerabilities.  URLs
+    in links are validated to only allow safe schemes (``http://``,
+    ``https://``, ``mailto:``, relative paths, and fragment identifiers).
+
+    Args:
+        text: The markdown string to convert, or ``None``.
+
+    Returns:
+        An HTML string.  Returns an empty string when *text* is ``None``
+        or empty.
+    """
+    if text is None:
+        return ""
+
+    # Try to use the markdown library if available.
+    try:
+        import markdown as _md  # type: ignore[import-untyped]
+
+        result = _md.markdown(text)
+        return str(result)
+    except ImportError:
+        pass
+
+    # Fall back to the built-in simple converter.
+    return _simple_markdown_to_html(text)
+
+
+def _simple_markdown_to_html(text: str) -> str:
+    """Convert markdown to HTML using a simple built-in parser.
+
+    Handles basic markdown elements with proper HTML escaping to prevent
+    XSS.  Text is escaped first, then markdown syntax is applied to the
+    escaped text so that user-supplied HTML is always rendered as text.
+
+    Args:
+        text: The markdown string to convert.
+
+    Returns:
+        An HTML string.
+    """
+    # Escape HTML special characters first to prevent XSS.
+    # This ensures any raw HTML in the input is rendered as text.
+    text = html.escape(text)
+
+    lines = text.split("\n")
+    html_parts: list[str] = []
+    in_list: str | None = None  # 'ul', 'ol', or None
+    in_paragraph = False
+    paragraph_lines: list[str] = []
+
+    def _flush_paragraph() -> None:
+        nonlocal in_paragraph, paragraph_lines
+        if in_paragraph and paragraph_lines:
+            content = "\n".join(paragraph_lines)
+            content = _convert_inline_markdown(content)
+            # Convert single newlines within a paragraph to <br>.
+            content = content.replace("\n", "<br>\n")
+            html_parts.append(f"<p>{content}</p>")
+        in_paragraph = False
+        paragraph_lines = []
+
+    def _flush_list() -> None:
+        nonlocal in_list
+        if in_list:
+            html_parts.append(f"</{in_list}>")
+            in_list = None
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Empty line — close paragraph and list.
+        if not stripped:
+            _flush_paragraph()
+            _flush_list()
+            continue
+
+        # Headers (######, #####, ####, ###, ##, #).
+        # Check in reverse order so longer prefixes match first.
+        if stripped.startswith("###### "):
+            _flush_paragraph()
+            _flush_list()
+            html_parts.append(f"<h6>{_convert_inline_markdown(stripped[7:])}</h6>")
+        elif stripped.startswith("##### "):
+            _flush_paragraph()
+            _flush_list()
+            html_parts.append(f"<h5>{_convert_inline_markdown(stripped[6:])}</h5>")
+        elif stripped.startswith("#### "):
+            _flush_paragraph()
+            _flush_list()
+            html_parts.append(f"<h4>{_convert_inline_markdown(stripped[5:])}</h4>")
+        elif stripped.startswith("### "):
+            _flush_paragraph()
+            _flush_list()
+            html_parts.append(f"<h3>{_convert_inline_markdown(stripped[4:])}</h3>")
+        elif stripped.startswith("## "):
+            _flush_paragraph()
+            _flush_list()
+            html_parts.append(f"<h2>{_convert_inline_markdown(stripped[3:])}</h2>")
+        elif stripped.startswith("# "):
+            _flush_paragraph()
+            _flush_list()
+            html_parts.append(f"<h1>{_convert_inline_markdown(stripped[2:])}</h1>")
+        # Unordered list items (-, *, +).
+        elif re.match(r"^[-*+]\s", stripped):
+            _flush_paragraph()
+            if in_list != "ul":
+                _flush_list()
+                html_parts.append("<ul>")
+                in_list = "ul"
+            item_content = re.sub(r"^[-*+]\s", "", stripped)
+            html_parts.append(f"<li>{_convert_inline_markdown(item_content)}</li>")
+        # Ordered list items (1., 2., etc.).
+        elif re.match(r"^\d+\.\s", stripped):
+            _flush_paragraph()
+            if in_list != "ol":
+                _flush_list()
+                html_parts.append("<ol>")
+                in_list = "ol"
+            item_content = re.sub(r"^\d+\.\s", "", stripped)
+            html_parts.append(f"<li>{_convert_inline_markdown(item_content)}</li>")
+        # Regular text — part of a paragraph.
+        else:
+            if not in_paragraph:
+                _flush_list()
+                in_paragraph = True
+            paragraph_lines.append(line)
+
+    # Close any open tags.
+    _flush_paragraph()
+    _flush_list()
+
+    return "\n".join(html_parts)
+
+
+def _convert_inline_markdown(text: str) -> str:
+    """Convert inline markdown elements in text.
+
+    Handles ``**bold**``, ``*italic*``, ``_italic_``, and ``[text](url)``
+    links.  Text is assumed to be already HTML-escaped.  URLs are validated
+    to prevent XSS via ``javascript:`` or other dangerous schemes.
+
+    Args:
+        text: HTML-escaped text containing markdown inline syntax.
+
+    Returns:
+        Text with inline markdown converted to HTML.
+    """
+    # **bold** → <strong>bold</strong>
+    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
+
+    # *italic* → <em>italic</em>
+    # Match single asterisks that are not part of ** (already converted).
+    text = re.sub(r"(?<!\*)\*(?!\*)([^\*]+?)\*(?!\*)", r"<em>\1</em>", text)
+
+    # _italic_ → <em>italic</em>
+    # Match underscores that are not adjacent to word characters on the opening
+    # side (to avoid matching things like file_name or 100_thing).  Content
+    # can include spaces.
+    text = re.sub(r"(?<!\w)_([^_]+?)_(?!\w)", r"<em>\1</em>", text)
+
+    # [text](url) → <a href="url">text</a> (only safe URL schemes)
+    def _replace_link(match: re.Match[str]) -> str:
+        link_text = match.group(1)
+        url = match.group(2)
+        # Only allow safe URL schemes to prevent XSS.
+        if _SAFE_URL_SCHEMES.match(url):
+            return f'<a href="{url}">{link_text}</a>'
+        # Discard unsafe links but keep the text.
+        return link_text
+
+    text = re.sub(r"\[(.+?)\]\((.+?)\)", _replace_link, text)
+
+    return text
 
 
 @dataclass
@@ -217,6 +441,10 @@ class FeedGenerator:
     - ``podcast.xml`` — one item per MP4 file with an audio enclosure.
     - ``articles.xml`` — one item per PDF or HTML file.
 
+    Supports per-folder feed generation: when a folder contains a
+    ``feed.json`` file, feeds are generated inside that folder using the
+    title and description from the ``feed.json``.
+
     Attributes:
         data_dir: Absolute path to the data directory.
         base_url: Base URL used to construct absolute enclosure/source URLs.
@@ -368,11 +596,103 @@ class FeedGenerator:
         """
         return f"{self.base_url}/{filepath}"
 
+    def _feed_rel_path(self, output_dir: Path, feed_filename: str) -> str:
+        """Compute the feed file path relative to ``data_dir``.
+
+        Used for constructing the ``rel="self"`` link in the feed.  For
+        root-level feeds this is simply the feed filename (e.g.
+        ``"podcast.xml"``).  For per-folder feeds it includes the folder
+        prefix (e.g. ``"Course1/podcast.xml"``).
+
+        Args:
+            output_dir: The directory where the feed file will be written.
+            feed_filename: The feed file name (e.g. ``"podcast.xml"``).
+
+        Returns:
+            The feed file path relative to ``data_dir``.
+        """
+        if output_dir == self.data_dir:
+            return feed_filename
+        try:
+            rel_dir = output_dir.relative_to(self.data_dir)
+            return str(rel_dir / feed_filename)
+        except ValueError:
+            return feed_filename
+
+    # ------------------------------------------------------------------
+    # Per-folder feed.json discovery and metadata filtering
+    # ------------------------------------------------------------------
+
+    def _discover_feed_json_dirs(self) -> list[tuple[Path, dict[str, str]]]:
+        """Walk ``data_dir`` recursively and find all ``feed.json`` files.
+
+        Each ``feed.json`` provides a per-folder feed configuration with
+        ``title`` and ``description`` keys.  Folders without a ``feed.json``
+        are skipped (root-level feeds use default titles for backward
+        compatibility).
+
+        Returns:
+            A list of ``(folder_path, config)`` tuples where *folder_path*
+            is the directory containing the ``feed.json`` and *config* is
+            the parsed JSON content (with at least ``title`` and
+            ``description`` keys).  Invalid or unreadable ``feed.json``
+            files are logged as warnings and skipped.
+        """
+        results: list[tuple[Path, dict[str, str]]] = []
+
+        for feed_json_path in self.data_dir.rglob("feed.json"):
+            try:
+                config: dict[str, str] = json.loads(feed_json_path.read_text(encoding="utf-8"))
+                results.append((feed_json_path.parent, config))
+            except (json.JSONDecodeError, OSError) as exc:
+                _logger.warning("Failed to parse feed.json at %s: %s", feed_json_path, exc)
+
+        return results
+
+    def _filter_metadata_for_folder(
+        self,
+        metadata_list: list[Metadata],
+        folder: Path,
+    ) -> list[Metadata]:
+        """Filter a metadata list to only include items within *folder*.
+
+        The ``filepath`` field on each :class:`Metadata` is relative to
+        ``self.data_dir``.  This method returns only those items whose
+        filepath starts with the folder's relative path.
+
+        Args:
+            metadata_list: Full list of discovered metadata items.
+            folder: Absolute path to the folder to filter by.
+
+        Returns:
+            A filtered list containing only metadata items whose source
+            files reside within *folder* (or *folder* itself for root-level).
+        """
+        try:
+            rel_folder = folder.relative_to(self.data_dir)
+        except ValueError:
+            # Folder is not within data_dir — return empty.
+            return []
+
+        folder_str = str(rel_folder)
+        if folder_str == ".":
+            # Root data directory — include everything.
+            return list(metadata_list)
+
+        prefix = folder_str + "/"
+        return [m for m in metadata_list if m.filepath.startswith(prefix)]
+
     # ------------------------------------------------------------------
     # Podcast feed (MP4 files)
     # ------------------------------------------------------------------
 
-    def generate_podcast_feed(self) -> list[Metadata]:
+    def generate_podcast_feed(
+        self,
+        output_dir: Path | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        metadata_items: list[Metadata] | None = None,
+    ) -> list[Metadata]:
         """Generate the podcast RSS feed (``podcast.xml``).
 
         Uses the ``feedgen`` library with the podcast extension to produce
@@ -383,14 +703,23 @@ class FeedGenerator:
             - **title**: from metadata ``title``.
             - **description**: from metadata ``summary`` (LLM-generated key
               takeaways for MP4 files), falling back to ``description``
-              for backward compatibility.
+              for backward compatibility.  Markdown is converted to HTML.
             - **link**: absolute URL to the source MP4 file.
             - **enclosure**: URL, type ``audio/mp4``, and length (file size).
             - **publication date**: from metadata ``date``.
             - **GUID**: based on the filepath (as a permalink URL).
 
-        The feed is written to ``DATA_DIR/podcast.xml``, overwriting any
+        The feed is written to ``output_dir/podcast.xml``, overwriting any
         existing file (idempotent regeneration).
+
+        Args:
+            output_dir: Directory to write the feed file.  Defaults to
+                ``self.data_dir``.
+            title: Feed title.  Defaults to ``_PODCAST_FEED_TITLE``.
+            description: Feed description.  Defaults to ``_PODCAST_FEED_TITLE``.
+            metadata_items: Pre-discovered metadata items to use instead of
+                discovering them.  When ``None`` (default), metadata is
+                discovered via :meth:`_discover_metadata_files`.
 
         Returns:
             The list of :class:`Metadata` items included in the podcast feed.
@@ -398,29 +727,47 @@ class FeedGenerator:
         Raises:
             OSError: If the feed file cannot be written.
         """
-        all_metadata = self._discover_metadata_files()
-        mp4_items = [m for m in all_metadata if m.filetype == "mp4"]
+        if output_dir is None:
+            output_dir = self.data_dir
+        if title is None:
+            title = _PODCAST_FEED_TITLE
+        if description is None:
+            description = _PODCAST_FEED_TITLE
+
+        if metadata_items is None:
+            all_metadata = self._discover_metadata_files()
+            mp4_items = [m for m in all_metadata if m.filetype == "mp4"]
+        else:
+            mp4_items = [m for m in metadata_items if m.filetype == "mp4"]
+
+        if not mp4_items:
+            _logger.info("No MP4 files found; skipping podcast feed generation for %s", output_dir)
+            return []
 
         fg = _FeedGenerator()
         fg.load_extension("podcast")
 
+        # Compute the feed file path relative to data_dir for the self-link.
+        feed_rel_path = self._feed_rel_path(output_dir, "podcast.xml")
+
         # Feed-level metadata
-        fg.title(_PODCAST_FEED_TITLE)
-        fg.link(href=self._absolute_url("podcast.xml"), rel="self")
+        fg.title(title)
+        fg.link(href=self._absolute_url(feed_rel_path), rel="self")
         fg.link(href=self.base_url)
-        fg.description(_PODCAST_FEED_TITLE)
+        fg.description(description)
         fg.language("en")
 
         for metadata in mp4_items:
             entry = fg.add_entry()
             entry.id(str(metadata.filepath))
             entry.guid(self._absolute_url(metadata.filepath))
-            entry.title(metadata.title)
+            entry.title(_get_final_title(metadata.title))
 
             # Description from summary field (holds LLM key takeaways for MP4),
             # falling back to description for backward compatibility.
-            description = metadata.summary or metadata.description or ""
-            entry.description(description)
+            # Convert markdown to HTML for safe rendering in feed readers.
+            desc_text = metadata.summary or metadata.description or ""
+            entry.description(_markdown_to_html(desc_text))
 
             # Link to the source file.
             source_url = self._absolute_url(metadata.filepath)
@@ -434,10 +781,14 @@ class FeedGenerator:
             )
 
             # Publication date.
-            pub_date = datetime.fromtimestamp(metadata.date, tz=UTC) if metadata.date else datetime.now(UTC)
+            pub_date = (
+                datetime.fromtimestamp(metadata.date, tz=UTC)
+                if metadata.date
+                else datetime.now(UTC)
+            )
             entry.pubDate(pub_date)
 
-        output_path = self.data_dir / "podcast.xml"
+        output_path = output_dir / "podcast.xml"
         fg.rss_file(str(output_path), pretty=True)
         _logger.info("Generated podcast feed: %s (%d items)", output_path, len(mp4_items))
 
@@ -447,7 +798,13 @@ class FeedGenerator:
     # Articles feed (PDF/HTML files)
     # ------------------------------------------------------------------
 
-    def generate_articles_feed(self) -> list[Metadata]:
+    def generate_articles_feed(
+        self,
+        output_dir: Path | None = None,
+        title: str | None = None,
+        description: str | None = None,
+        metadata_items: list[Metadata] | None = None,
+    ) -> list[Metadata]:
         """Generate the articles RSS feed (``articles.xml``).
 
         Uses the ``feedgen`` library to produce a standard RSS 2.0 feed.
@@ -457,12 +814,23 @@ class FeedGenerator:
             - **title**: from metadata ``title``.
             - **description**: from metadata ``content`` (extracted text) if
               available, otherwise from ``description``, otherwise empty.
+              Markdown is converted to HTML.
             - **link**: absolute URL to the source file.
             - **publication date**: from metadata ``date``.
             - **GUID**: based on the filepath (as a permalink URL).
 
-        The feed is written to ``DATA_DIR/articles.xml``, overwriting any
+        The feed is written to ``output_dir/articles.xml``, overwriting any
         existing file (idempotent regeneration).
+
+        Args:
+            output_dir: Directory to write the feed file.  Defaults to
+                ``self.data_dir``.
+            title: Feed title.  Defaults to ``_ARTICLES_FEED_TITLE``.
+            description: Feed description.  Defaults to
+                ``_ARTICLES_FEED_TITLE``.
+            metadata_items: Pre-discovered metadata items to use instead of
+                discovering them.  When ``None`` (default), metadata is
+                discovered via :meth:`_discover_metadata_files`.
 
         Returns:
             The list of :class:`Metadata` items included in the articles feed.
@@ -470,38 +838,63 @@ class FeedGenerator:
         Raises:
             OSError: If the feed file cannot be written.
         """
-        all_metadata = self._discover_metadata_files()
-        article_items = [m for m in all_metadata if m.filetype in ("pdf", "html")]
+        if output_dir is None:
+            output_dir = self.data_dir
+        if title is None:
+            title = _ARTICLES_FEED_TITLE
+        if description is None:
+            description = _ARTICLES_FEED_TITLE
+
+        if metadata_items is None:
+            all_metadata = self._discover_metadata_files()
+            article_items = [m for m in all_metadata if m.filetype in ("pdf", "html")]
+        else:
+            article_items = [m for m in metadata_items if m.filetype in ("pdf", "html")]
+
+        if not article_items:
+            _logger.info(
+                "No PDF/HTML files found; skipping articles feed generation for %s",
+                output_dir,
+            )
+            return []
 
         fg = _FeedGenerator()
 
+        # Compute the feed file path relative to data_dir for the self-link.
+        feed_rel_path = self._feed_rel_path(output_dir, "articles.xml")
+
         # Feed-level metadata
-        fg.title(_ARTICLES_FEED_TITLE)
-        fg.link(href=self._absolute_url("articles.xml"), rel="self")
+        fg.title(title)
+        fg.link(href=self._absolute_url(feed_rel_path), rel="self")
         fg.link(href=self.base_url)
-        fg.description(_ARTICLES_FEED_TITLE)
+        fg.description(description)
         fg.language("en")
 
         for metadata in article_items:
             entry = fg.add_entry()
             entry.id(str(metadata.filepath))
             entry.guid(self._absolute_url(metadata.filepath))
-            entry.title(metadata.title)
+            entry.title(_get_final_title(metadata.title))
 
             # Description from content (if available), fallback to
             # description field, then empty string.
-            description = metadata.content or metadata.description or ""
-            entry.description(description)
+            # Convert markdown to HTML for safe rendering in feed readers.
+            desc_text = metadata.content or metadata.description or ""
+            entry.description(_markdown_to_html(desc_text))
 
             # Link to the source file.
             source_url = self._absolute_url(metadata.filepath)
             entry.link(href=source_url)
 
             # Publication date.
-            pub_date = datetime.fromtimestamp(metadata.date, tz=UTC) if metadata.date else datetime.now(UTC)
+            pub_date = (
+                datetime.fromtimestamp(metadata.date, tz=UTC)
+                if metadata.date
+                else datetime.now(UTC)
+            )
             entry.pubDate(pub_date)
 
-        output_path = self.data_dir / "articles.xml"
+        output_path = output_dir / "articles.xml"
         fg.rss_file(str(output_path), pretty=True)
         _logger.info(
             "Generated articles feed: %s (%d items)",
@@ -515,45 +908,200 @@ class FeedGenerator:
     # Combined feed generation
     # ------------------------------------------------------------------
 
-    def generate_all_feeds(self, validate: bool = False) -> dict[str, list[Metadata]]:
-        """Generate both podcast and articles feeds.
+    def _generate_feeds_for_folder(
+        self,
+        folder: Path,
+        title: str | None,
+        description: str | None,
+        metadata_items: list[Metadata],
+    ) -> dict[str, list[Metadata]]:
+        """Generate podcast and/or articles feeds for a specific folder.
 
-        Calls :meth:`generate_podcast_feed` and
-        :meth:`generate_articles_feed` in sequence. If one feed generation
-        fails, the error is logged and the other feed is still generated.
+        This method is used for per-folder feed generation when a folder
+        contains a ``feed.json`` file.  It generates:
 
-        When *validate* is ``True``, :meth:`validate_output` is called after
-        generation and any validation errors or warnings are logged.
+        - ``podcast.xml`` — only if MP4 files are present in the folder's
+          subtree.
+        - ``articles.xml`` — only if PDF or HTML files are present in the
+          folder's subtree.
 
-        This method is **idempotent**: feeds are always regenerated from the
-        current metadata, overwriting any existing feed files.
+        Feeds are written to *folder*.  If generation of either feed fails,
+        the error is logged and the other feed continues to be generated.
 
         Args:
-            validate: When ``True``, validate the generated feeds and log
-                any errors or warnings found.
+            folder: Absolute path to the folder where feeds will be written.
+            title: Feed title from ``feed.json``, or ``None`` to use the
+                default title for the feed type.
+            description: Feed description from ``feed.json``, or ``None`` to
+                use the default description for the feed type.
+            metadata_items: Pre-discovered metadata items to use for this
+                folder.
 
         Returns:
             A dictionary with keys ``"podcast"`` and ``"articles"``, each
             mapping to the list of :class:`Metadata` items included in the
-            respective feed. If a feed generation failed, its value will be
-            an empty list.
+            respective feed.  If a feed was not generated (no eligible files
+            of that type or generation failed), its value will be an empty
+            list.
         """
         results: dict[str, list[Metadata]] = {
             "podcast": [],
             "articles": [],
         }
 
-        # Generate podcast feed.
-        try:
-            results["podcast"] = self.generate_podcast_feed()
-        except Exception as exc:
-            _logger.error("Failed to generate podcast feed: %s", exc)
+        mp4_items = [m for m in metadata_items if m.filetype == "mp4"]
+        article_items = [m for m in metadata_items if m.filetype in ("pdf", "html")]
 
-        # Generate articles feed.
+        # Generate podcast.xml only if MP4 files are present.
+        if mp4_items:
+            try:
+                results["podcast"] = self.generate_podcast_feed(
+                    output_dir=folder,
+                    title=title,
+                    description=description,
+                    metadata_items=metadata_items,
+                )
+            except Exception as exc:
+                _logger.error(
+                    "Failed to generate podcast feed for %s: %s",
+                    folder,
+                    exc,
+                )
+
+        # Generate articles.xml only if PDF/HTML files are present.
+        if article_items:
+            try:
+                results["articles"] = self.generate_articles_feed(
+                    output_dir=folder,
+                    title=title,
+                    description=description,
+                    metadata_items=metadata_items,
+                )
+            except Exception as exc:
+                _logger.error(
+                    "Failed to generate articles feed for %s: %s",
+                    folder,
+                    exc,
+                )
+
+        return results
+
+    def generate_all_feeds(self, validate: bool = False) -> dict[str, list[Metadata]]:
+        """Generate root-level and per-folder RSS feeds.
+
+        This method performs two phases of feed generation:
+
+        1. **Root-level feeds**: Generates ``podcast.xml`` and
+           ``articles.xml`` in ``data_dir``.  Root-level feeds are only
+           generated if a ``data_dir/feed.json`` file exists; its
+           ``title`` and ``description`` are used for the root-level feeds.
+           ``podcast.xml`` is only created if MP4 files are present;
+           ``articles.xml`` is only created if PDF/HTML files are present.
+
+        2. **Per-folder feeds**: Walks ``data_dir`` recursively for
+           ``feed.json`` files.  For each folder containing a
+           ``feed.json``, generates ``podcast.xml`` (only if MP4 files
+           are present in that folder tree) and ``articles.xml`` (only
+           if PDF/HTML files are present).  Feeds are written to the
+           folder containing the ``feed.json``.
+
+        If any individual feed generation fails, the error is logged and
+        other feeds continue to be generated.
+
+        When *validate* is ``True``, :meth:`validate_output` is called after
+        generation and any validation errors or warnings are logged.  Note
+        that validation currently only covers root-level feeds.
+
+        This method is **idempotent**: feeds are always regenerated from the
+        current metadata, overwriting any existing feed files.
+
+        Args:
+            validate: When ``True``, validate the generated root-level feeds
+                and log any errors or warnings found.
+
+        Returns:
+            A dictionary with keys ``"podcast"`` and ``"articles"``, each
+            mapping to the list of :class:`Metadata` items included in the
+            respective root-level feed.  If a feed generation failed, its
+            value will be an empty list.
+        """
+        results: dict[str, list[Metadata]] = {
+            "podcast": [],
+            "articles": [],
+        }
+
+        # --- Phase 1: Root-level feeds (only if feed.json exists) ---
+        root_feed_json = self.data_dir / "feed.json"
+
+        # Only generate root-level feeds if feed.json exists
+        if root_feed_json.exists():
+            root_title: str | None = None
+            root_description: str | None = None
+            try:
+                root_config = json.loads(root_feed_json.read_text(encoding="utf-8"))
+                root_title = root_config.get("title")
+                root_description = root_config.get("description")
+            except (json.JSONDecodeError, OSError) as exc:
+                _logger.warning(
+                    "Failed to parse root feed.json at %s: %s",
+                    root_feed_json,
+                    exc,
+                )
+                root_title = None
+                root_description = None
+
+            # Generate podcast feed (only if MP4 files exist - handled in generate_podcast_feed)
+            try:
+                results["podcast"] = self.generate_podcast_feed(
+                    output_dir=self.data_dir,
+                    title=root_title,
+                    description=root_description,
+                )
+            except Exception as exc:
+                _logger.error("Failed to generate podcast feed: %s", exc)
+
+            # Generate articles feed (only if PDF/HTML files exist)
+            try:
+                results["articles"] = self.generate_articles_feed(
+                    output_dir=self.data_dir,
+                    title=root_title,
+                    description=root_description,
+                )
+            except Exception as exc:
+                _logger.error("Failed to generate articles feed: %s", exc)
+        else:
+            _logger.info("No feed.json at %s; skipping root-level feed generation", self.data_dir)
+
+        # --- Phase 2: Per-folder feeds ---
+        # Walk for feed.json files in subdirectories (skip root data_dir
+        # which is already handled above).
+        all_metadata = self._discover_metadata_files()
+
+        for folder_path, config in self._discover_feed_json_dirs():
+            # Skip root data_dir (already handled above).
+            if folder_path == self.data_dir:
+                continue
+
+            # Use None as default so the individual feed methods fall back
+            # to their own type-specific default titles/descriptions.
+            folder_title = config.get("title")
+            folder_description = config.get("description")
+
+            # Filter metadata to only items within this folder tree.
+            folder_metadata = self._filter_metadata_for_folder(all_metadata, folder_path)
+
+            self._generate_feeds_for_folder(
+                folder=folder_path,
+                title=folder_title,
+                description=folder_description,
+                metadata_items=folder_metadata,
+            )
+
+        # Generate index.html listing all feeds.
         try:
-            results["articles"] = self.generate_articles_feed()
+            self._generate_index_html()
         except Exception as exc:
-            _logger.error("Failed to generate articles feed: %s", exc)
+            _logger.error("Failed to generate index.html: %s", exc)
 
         # Optionally validate the generated feeds.
         if validate:
@@ -630,3 +1178,118 @@ class FeedGenerator:
                 _logger.warning("Feed validation warning [%s]: %s", name, warning)
             if result.is_valid:
                 _logger.info("Feed validation passed [%s]", name)
+
+    # ------------------------------------------------------------------
+    # Index HTML generation
+    # ------------------------------------------------------------------
+
+    def _generate_index_html(self) -> None:
+        """Generate or update an ``index.html`` listing all XML feed files.
+
+        Discovers all ``*.xml`` files in the data directory tree using
+        :meth:`Path.rglob`, categorizes them by feed type, and writes an HTML
+        index file to ``data_dir / index.html``.
+
+        The index includes:
+        - A title "Feed Index".
+        - Sections organized by feed type (Podcast Feeds, Articles Feeds,
+          and an "Other Feeds" section for any additional XML files).
+        - Links using absolute URLs (``BASE_URL + relative path``).
+        - HTML-escaped filenames and URLs for special characters.
+
+        If no XML feeds are found, an index with empty sections is still
+        generated.  An existing ``index.html`` is overwritten.
+
+        Raises:
+            OSError: If the index file cannot be written.
+        """
+        # Check if data directory exists.
+        if not self.data_dir.exists() or not self.data_dir.is_dir():
+            _logger.warning(
+                "Data directory does not exist, skipping index.html generation: %s",
+                self.data_dir,
+            )
+            return
+
+        # Discover all XML feed files in the data directory tree.
+        xml_files = sorted(self.data_dir.rglob("*.xml"))
+
+        # Categorize feeds by type based on filename.
+        podcast_feeds: list[tuple[str, str]] = []
+        articles_feeds: list[tuple[str, str]] = []
+        other_feeds: list[tuple[str, str]] = []
+
+        for xml_path in xml_files:
+            rel_path = str(xml_path.relative_to(self.data_dir))
+            abs_url = self._absolute_url(rel_path)
+            feed_name = xml_path.name
+
+            if feed_name == "podcast.xml":
+                podcast_feeds.append((rel_path, abs_url))
+            elif feed_name == "articles.xml":
+                articles_feeds.append((rel_path, abs_url))
+            else:
+                other_feeds.append((rel_path, abs_url))
+
+        # Sort each category by relative path for deterministic output.
+        podcast_feeds.sort(key=lambda x: x[0])
+        articles_feeds.sort(key=lambda x: x[0])
+        other_feeds.sort(key=lambda x: x[0])
+
+        # Build HTML content.
+        lines: list[str] = []
+        lines.append("<!DOCTYPE html>")
+        lines.append("<html>")
+        lines.append("<head>")
+        lines.append('    <meta charset="utf-8">')
+        lines.append("    <title>Feed Index</title>")
+        lines.append("    <style>")
+        lines.append("        body { font-family: Arial, sans-serif; margin: 20px; }")
+        lines.append("        h1 { color: #333; }")
+        lines.append("        ul { list-style: none; padding: 0; }")
+        lines.append("        li { margin: 10px 0; }")
+        lines.append("        a { color: #0066cc; }")
+        lines.append("    </style>")
+        lines.append("</head>")
+        lines.append("<body>")
+        lines.append("    <h1>Feed Index</h1>")
+
+        # Podcast Feeds section.
+        lines.append("    <h2>Podcast Feeds</h2>")
+        lines.append("    <ul>")
+        for rel_path, abs_url in podcast_feeds:
+            escaped_path = html.escape(rel_path)
+            escaped_url = html.escape(abs_url)
+            lines.append(f'        <li><a href="{escaped_url}">{escaped_path}</a></li>')
+        lines.append("    </ul>")
+
+        # Articles Feeds section.
+        lines.append("    <h2>Articles Feeds</h2>")
+        lines.append("    <ul>")
+        for rel_path, abs_url in articles_feeds:
+            escaped_path = html.escape(rel_path)
+            escaped_url = html.escape(abs_url)
+            lines.append(f'        <li><a href="{escaped_url}">{escaped_path}</a></li>')
+        lines.append("    </ul>")
+
+        # Other feeds section (only if there are non-standard XML files).
+        if other_feeds:
+            lines.append("    <h2>Other Feeds</h2>")
+            lines.append("    <ul>")
+            for rel_path, abs_url in other_feeds:
+                escaped_path = html.escape(rel_path)
+                escaped_url = html.escape(abs_url)
+                lines.append(f'        <li><a href="{escaped_url}">{escaped_path}</a></li>')
+            lines.append("    </ul>")
+
+        lines.append("</body>")
+        lines.append("</html>")
+
+        html_content = "\n".join(lines)
+        index_path = self.data_dir / "index.html"
+        index_path.write_text(html_content, encoding="utf-8")
+        _logger.info(
+            "Generated index.html: %s (%d feeds)",
+            index_path,
+            len(xml_files),
+        )

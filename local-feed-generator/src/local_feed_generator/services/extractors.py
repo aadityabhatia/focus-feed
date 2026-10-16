@@ -9,9 +9,14 @@ to extract metadata from MP4/audio files (type, duration, creation_time,
 bit_rate).
 
     Each extractor's ``extract`` method returns a dict with the following keys:
-    - title: str (always present; falls back to filename without extension)
+    - title: str — filename without extension, underscores replaced with spaces
+        (used as the actual/final title)
+    - extracted_title: str | None — title extracted from source metadata
+        (PDF metadata title, HTML <title> tag), or None if not available.
+        This is stored separately and NOT used as the actual title.
     - description: str | None (optional; may be None if not available)
-    - date: int (UNIX epoch seconds; falls back to file modification time)
+    - date: float (UNIX epoch with millisecond precision; falls back to file
+        modification time)
     - size: int (file size in bytes)
     - filetype: str (always "pdf" or "html")
     - content: str | None (plaintext content extracted from the source file,
@@ -97,11 +102,16 @@ class PDFExtractor:
             filepath: Path to the PDF file.
 
         Returns:
-            A dictionary with keys: title, description, date, size, filetype, content.
+            A dictionary with keys: title, extracted_title, description,
+            date, size, filetype, content.
 
-            - title: PDF metadata title, or filename without extension as fallback.
+            - title: Filename without extension (underscores replaced with
+              spaces). This is the actual/final title used.
+            - extracted_title: PDF metadata title, or None if not available.
+              Stored separately; not used as the actual title.
             - description: PDF metadata author, or None if not available.
-            - date: Creation date as UNIX epoch (seconds), or file modification time.
+            - date: Creation date as UNIX epoch (float, ms precision), or
+              file modification time.
             - size: File size in bytes.
             - filetype: Always "pdf".
             - content: Plaintext content extracted from all PDF pages, or None
@@ -113,7 +123,10 @@ class PDFExtractor:
         size = stat_result.st_size
         mtime = int(stat_result.st_mtime)
 
-        title = filename
+        # Title is always the filename (without extension, underscores→spaces).
+        # The extracted title from PDF metadata is stored separately.
+        title: str | None = _clean_title(filename)
+        extracted_title: str | None = None
         description: str | None = None
         date: datetime | None = None
         content: str | None = None
@@ -124,7 +137,7 @@ class PDFExtractor:
 
             if metadata is not None:
                 if metadata.title:
-                    title = str(metadata.title)
+                    extracted_title = _clean_title(str(metadata.title))
                 if metadata.author:
                     description = str(metadata.author)
                 if metadata.creation_date:
@@ -151,13 +164,11 @@ class PDFExtractor:
         if date.tzinfo is None:
             date = date.replace(tzinfo=UTC)
 
-        # Clean up title by replacing underscores with spaces
-        title = _clean_title(title)
-
         return {
             "title": title,
+            "extracted_title": extracted_title,
             "description": description,
-            "date": int(date.timestamp()),
+            "date": int(date.timestamp() * 1000) / 1000.0,
             "size": size,
             "filetype": "pdf",
             "content": content,
@@ -181,11 +192,17 @@ class HTMLExtractor:
             filepath: Path to the HTML file.
 
         Returns:
-            A dictionary with keys: title, description, date, size, filetype, content.
+            A dictionary with keys: title, extracted_title, description,
+            date, size, filetype, content.
 
-            - title: Content of ``<title>`` tag, or filename without extension as fallback.
-            - description: Content of ``<meta name="description">``, or None if not available.
-            - date: Date as UNIX epoch (seconds), or file modification time.
+            - title: Filename without extension (underscores replaced with
+              spaces). This is the actual/final title used.
+            - extracted_title: Content of ``<title>`` tag, or None if not
+              available. Stored separately; not used as the actual title.
+            - description: Content of ``<meta name="description">``, or None
+              if not available.
+            - date: Date as UNIX epoch (float, ms precision), or file
+              modification time.
             - size: File size in bytes.
             - filetype: Always "html".
             - content: Plaintext content extracted from the HTML document body
@@ -197,7 +214,10 @@ class HTMLExtractor:
         size = stat_result.st_size
         mtime = int(stat_result.st_mtime)
 
-        title = filename
+        # Title is always the filename (without extension, underscores→spaces).
+        # The extracted title from <title> tag is stored separately.
+        title: str | None = _clean_title(filename)
+        extracted_title: str | None = None
         description: str | None = None
         date: datetime | None = None
         text_content: str | None = None
@@ -206,12 +226,12 @@ class HTMLExtractor:
             html_content = filepath.read_text(encoding="utf-8")
             soup = BeautifulSoup(html_content, "html.parser")
 
-            # Extract title from <title> tag
+            # Extract title from <title> tag (stored as extracted_title, not used as actual title)
             title_tag = soup.title
             if title_tag:
                 title_text = title_tag.string or title_tag.get_text()
                 if title_text and title_text.strip():
-                    title = title_text.strip()
+                    extracted_title = _clean_title(title_text.strip())
 
             # Extract description from <meta name="description">
             desc_meta = soup.find("meta", attrs={"name": "description"})
@@ -237,13 +257,11 @@ class HTMLExtractor:
         if date.tzinfo is None:
             date = date.replace(tzinfo=UTC)
 
-        # Clean up title by replacing underscores with spaces
-        title = _clean_title(title)
-
         return {
             "title": title,
+            "extracted_title": extracted_title,
             "description": description,
-            "date": int(date.timestamp()),
+            "date": int(date.timestamp() * 1000) / 1000.0,
             "size": size,
             "filetype": "html",
             "content": text_content,

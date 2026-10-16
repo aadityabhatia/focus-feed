@@ -131,11 +131,14 @@ def create_error_metadata(
     Returns:
         A dictionary suitable for JSON serialization as an error metadata file.
     """
-    timestamp = int(datetime.now(UTC).timestamp())
+    timestamp = int(datetime.now(UTC).timestamp() * 1000) / 1000.0
     error_message = str(exc) if str(exc) else exc.__class__.__name__
 
+    # Convert string title to dict for backward compatibility.
+    title_dict: dict[str, str | None] = {"filename": filename}
+
     return {
-        "title": filename,
+        "title": title_dict,
         "description": "",
         "filename": filename,
         "filepath": filepath,
