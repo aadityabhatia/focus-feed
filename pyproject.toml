@@ -4,25 +4,30 @@ version = "0.1.0"
 description = "A local RSS/Atom feed generator for audio, HTML and PDF files"
 requires-python = ">=3.14"
 dependencies = [
-    "feedgen",
-    "watchdog",
-    "faster-whisper",
+    "feedgen>=1.0.0",
+    "watchdog>=3.0.0",
+    "openai>=2.48.0",
+    "pydantic-settings>=2.15.0",
+    "pydantic>=2.12.0",
+    "click>=8.5.0",
+    "pypdf>=4.0.0",
+    "beautifulsoup4>=4.12.0",
+    "python-dotenv>=1.0.0",
+]
+
+[project.optional-dependencies]
+local-transcription = [
+    "faster-whisper>=1.0.0",
     "av>=11.0,<19.0",  # Pin av to avoid metadata_errors removal in av 19+
-    "openai",
-    "pydantic-settings",
-    "pydantic",
-    "click",
-    "pypdf",
-    "beautifulsoup4",
 ]
 
 [dependency-groups]
 dev = [
-    "mypy>=1.13",
-    "pre-commit>=4.0",
-    "pytest>=8.0",
-    "pytest-cov>=5.0",
-    "ruff>=0.8",
+    "mypy>=1.13.0",
+    "pre-commit>=4.0.0",
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+    "ruff>=0.8.0",
 ]
 
 [build-system]

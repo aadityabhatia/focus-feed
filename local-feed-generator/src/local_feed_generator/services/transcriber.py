@@ -18,12 +18,22 @@ import logging
 import os
 from pathlib import Path
 import time
-
-from faster_whisper import WhisperModel
+from typing import TYPE_CHECKING
 
 from local_feed_generator.config import get_config
 from local_feed_generator.errors import TranscriptionError, log_error
 from local_feed_generator.services.remote_transcriber import RemoteTranscriber
+
+if TYPE_CHECKING:
+    from faster_whisper import WhisperModel
+
+# Runtime import with graceful fallback for optional dependency.
+# When faster-whisper is not installed (e.g. remote-only mode), WhisperModel
+# is None and LocalTranscriber._load_model() will raise a clear error.
+try:
+    from faster_whisper import WhisperModel
+except ImportError:
+    WhisperModel = None
 
 _logger = logging.getLogger("local_feed_generator")
 
@@ -161,6 +171,15 @@ class LocalTranscriber:
             compute_type,
         )
 
+        # Check that faster-whisper is installed before attempting to load
+        # the model.  This provides a clear, actionable error message instead
+        # of an opaque TypeError when WhisperModel is None.
+        if WhisperModel is None:
+            raise TranscriptionError(
+                "faster-whisper is not installed. "
+                "Install with: pip install local-feed-generator[local-transcription]"
+            )
+
         # Pre-emptive CUDA availability check: surface a clear, actionable
         # error before faster-whisper attempts to load the model and fails
         # with an opaque low-level exception.
@@ -242,7 +261,7 @@ class LocalTranscriber:
                     existing_transcript = existing_data.get("transcript")
                     if isinstance(existing_transcript, str) and existing_transcript:
                         return existing_transcript
-            except (json.JSONDecodeError, OSError):
+            except json.JSONDecodeError, OSError:
                 pass
 
         # Get audio file info for user-facing output.
@@ -322,9 +341,7 @@ class LocalTranscriber:
                 if container.streams.audio:
                     # duration_seconds is a runtime property on av streams;
                     # use getattr because av stubs may not include it.
-                    duration = getattr(
-                        container.streams.audio[0], "duration_seconds", None
-                    )
+                    duration = getattr(container.streams.audio[0], "duration_seconds", None)
                     if duration is not None:
                         return float(duration)
         except Exception:
@@ -382,9 +399,7 @@ class Transcriber(LocalTranscriber):
         """
         config = get_config()
         if config.transcription_endpoint:
-            self._remote_transcriber: RemoteTranscriber | None = RemoteTranscriber(
-                config=config
-            )
+            self._remote_transcriber: RemoteTranscriber | None = RemoteTranscriber(config=config)
         else:
             self._remote_transcriber = None
         super().__init__()
