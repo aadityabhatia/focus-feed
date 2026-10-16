@@ -11,10 +11,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class Settings(BaseSettings):
     """Application settings loaded from environment variables and .env file.
 
-    All fields are required and must be provided via environment variables
-    or .env file.  There are no optional fields with defaults in the
-    configuration — defaults for transcription settings are documented in
-    comments within the Settings class body.
+    Required fields must be provided via environment variables or .env file.
+    Optional fields have defaults as documented in the class body.
     """
 
     model_config = SettingsConfigDict(
@@ -31,10 +29,19 @@ class Settings(BaseSettings):
     llm_api_key: str
     llm_model: str
     llm_system_prompt: str
+    summary_prompt: str = (
+        "Summarize key takeaways from the given content. Output just the summary concisely."
+    )
+    title_prompt: str = (
+        "Generate a concise, descriptive title (5-10 words) for the given content. "
+        "Do not include any formatting, quotes, or extra text."
+    )
 
     # --- Optional fields with defaults ---
 
     feed_format: str = "rss"
+
+    summary_reflection_prompt: str | None = None
 
     transcription_model: str = "large-v3-turbo"
     transcription_device: str = "cuda"
@@ -45,7 +52,14 @@ class Settings(BaseSettings):
 
     # --- Validators ---
 
-    @field_validator("base_url", "data_dir", "llm_endpoint", "llm_api_key", "llm_model", "llm_system_prompt")
+    @field_validator(
+        "base_url",
+        "data_dir",
+        "llm_endpoint",
+        "llm_api_key",
+        "llm_model",
+        "llm_system_prompt",
+    )
     @classmethod
     def validate_required_non_empty(cls, v: str) -> str:
         """Ensure required fields are not empty strings."""
