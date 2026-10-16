@@ -70,6 +70,11 @@ def _markdown_to_html(text: str | None) -> str:
     in links are validated to only allow safe schemes (``http://``,
     ``https://``, ``mailto:``, relative paths, and fragment identifiers).
 
+    If the entire output is a single ``<p>`` wrapper (i.e. the input was a
+    plain paragraph with no other markdown elements), the outer ``<p>`` and
+    ``</p>`` tags are stripped to avoid redundant wrappers.  Legitimate
+    ``<p>`` tags from actual multi-paragraph markdown are preserved.
+
     Args:
         text: The markdown string to convert, or ``None``.
 
@@ -85,12 +90,49 @@ def _markdown_to_html(text: str | None) -> str:
         import markdown as _md  # type: ignore[import-untyped]
 
         result = _md.markdown(text)
-        return str(result)
     except ImportError:
-        pass
+        # Fall back to the built-in simple converter.
+        result = _simple_markdown_to_html(text)
 
-    # Fall back to the built-in simple converter.
-    return _simple_markdown_to_html(text)
+    # Strip the outer <p> wrapper when the entire output is a single
+    # <p> element.  This avoids redundant paragraph tags for plain-text
+    # descriptions while preserving legitimate <p> tags from actual
+    # multi-paragraph markdown content.
+    result = _strip_outer_p_wrapper(result)
+
+    return result
+
+
+def _strip_outer_p_wrapper(html: str) -> str:
+    """Strip the outer ``<p>``/``</p>`` wrapper from HTML if it is the only element.
+
+    If the HTML consists of exactly one ``<p>...</p>`` pair wrapping all
+    content (with no other block-level elements), the wrapper tags are
+    removed.  When the HTML contains multiple ``<p>`` tags or other
+    block-level elements (headers, lists, etc.), it is returned unchanged.
+
+    Args:
+        html: The HTML string to process.
+
+    Returns:
+        The HTML with the outer ``<p>`` wrapper removed if applicable,
+        otherwise the original HTML.
+    """
+    if not html:
+        return html
+
+    # Check if the entire output is exactly one <p>...</p> pair.
+    # Use regex to match: starts with <p>, ends with </p>, and there is
+    # exactly one <p> opening tag and one </p> closing tag.
+    if html.startswith("<p>") and html.endswith("</p>"):
+        # Count <p> and </p> tags to ensure there's only one pair.
+        open_count = html.count("<p>")
+        close_count = html.count("</p>")
+        if open_count == 1 and close_count == 1:
+            # Strip the outer <p> (3 chars) and </p> (4 chars).
+            return html[3:-4]
+
+    return html
 
 
 def _simple_markdown_to_html(text: str) -> str:
@@ -796,11 +838,13 @@ class FeedGenerator:
 
         For each item:
             - **title**: from metadata ``final_title`` computed property.
-            - **description**: from metadata ``content`` (extracted text) if
-              available, otherwise from ``description``, otherwise empty.
+            - **description**: from metadata ``summary`` if available,
+              otherwise from ``description``, otherwise empty.
               Markdown is converted to HTML.
             - **link**: absolute URL to the source file.
-            - **publication date**: from metadata ``date``.
+            - **publication date**: from metadata ``publication_date``
+              (document metadata date) if available, otherwise from
+              ``date`` (file modification time).
             - **GUID**: based on the filepath (as a permalink URL).
 
         The feed is written to ``output_dir/articles.xml``, overwriting any
@@ -865,20 +909,22 @@ class FeedGenerator:
             entry.guid(self._absolute_url(metadata.filepath))
             entry.title(metadata.final_title)
 
-            # Description from content (if available), fallback to
+            # Description from summary (if available), fallback to
             # description field, then empty string.
             # Convert markdown to HTML for safe rendering in feed readers.
-            desc_text = metadata.content or metadata.description or ""
+            desc_text = metadata.summary or metadata.description or ""
             entry.description(_markdown_to_html(desc_text))
 
             # Link to the source file.
             source_url = self._absolute_url(metadata.filepath)
             entry.link(href=source_url)
 
-            # Publication date.
+            # Publication date: use document metadata date if available,
+            # falling back to file modification date.
+            pub_date_value = metadata.publication_date or metadata.date
             pub_date = (
-                datetime.fromtimestamp(metadata.date, tz=UTC)
-                if metadata.date
+                datetime.fromtimestamp(pub_date_value, tz=UTC)
+                if pub_date_value
                 else datetime.now(UTC)
             )
             entry.pubDate(pub_date)

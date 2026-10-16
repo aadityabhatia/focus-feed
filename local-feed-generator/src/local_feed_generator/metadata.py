@@ -36,6 +36,7 @@ millisecond precision.
             "filepath": "videos/lecture.mp4",
             "filetype": "mp4|pdf|html",
             "date": 1728931200.123,          # UNIX epoch (float, millisecond precision)
+            "publication_date": 1728931200.123,  # Document metadata date (PDF/HTML, optional)
             "size": 12345678,
             "duration": 3600.5,          # Audio duration in seconds (MP4, optional)
             "creation_time": "2024-01-15T10:30:00.000000Z",  # Media creation time
@@ -92,6 +93,56 @@ _logger = logging.getLogger("local_feed_generator")
 
 # Required keys for the title dict (design doc section 3.3).
 _TITLE_DICT_KEYS: frozenset[str] = frozenset({"filename", "extracted", "generated"})
+
+
+def _should_prepend_module(title: str, filepath: str) -> tuple[bool, str]:
+    """Determine whether the module name should be prepended to the title.
+
+    Extracts the module name from the parent directory of *filepath*.
+    Checks if the *title* (the resolved final title after precedence
+    resolution) already starts with the module name (case-insensitive,
+    handling underscores and spaces).
+
+    Args:
+        title: The resolved base title string (after precedence resolution).
+        filepath: Relative path from the data directory root.
+
+    Returns:
+        A tuple of ``(should_prepend, module_name)``.  When
+        *should_prepend* is ``False``, the module name is already part of
+        the title and should not be prepended to avoid duplication.
+    """
+    path = Path(filepath)
+    parent = path.parent
+    module_name = parent.name if parent.name else ""
+    if not module_name:
+        return False, ""
+
+    # Normalize: replace underscores with spaces, lowercase for comparison.
+    module_normalized = module_name.replace("_", " ").lower()
+    title_normalized = title.replace("_", " ").lower()
+
+    # Check if title already starts with module name (case-insensitive).
+    if title_normalized.startswith(module_normalized):
+        return False, ""
+
+    return True, module_name.replace("_", " ")
+
+
+def _apply_module_prefix_to_title(title: str, filepath: str) -> str:
+    """Prepend the module name to *title* if appropriate.
+
+    Args:
+        title: The base title string (already resolved via precedence).
+        filepath: Relative path from the data directory root.
+
+    Returns:
+        The title with module prefix if needed, otherwise the original title.
+    """
+    should_prepend, module = _should_prepend_module(title, filepath)
+    if should_prepend:
+        return f"{module}: {title}"
+    return title
 
 
 class StepMap(BaseModel):
@@ -197,6 +248,8 @@ class Metadata(BaseModel):
         filepath: Relative path from data directory root
         filetype: Source file type: "mp4", "pdf", or "html"
         date: Publication/creation date as UNIX epoch (float, millisecond precision)
+        publication_date: Publication date from document metadata (PDF/HTML
+            only), or None if not available
         size: File size in bytes (for podcast enclosure length)
         duration: Audio duration in seconds (MP4 files only, optional)
         creation_time: ISO-8601 creation time string from media metadata
@@ -252,7 +305,15 @@ class Metadata(BaseModel):
     )
     date: float | None = Field(
         default=None,
-        description="Publication/creation date as UNIX epoch (millisecond precision)",
+        description="Publication/creation date as UNIX epoch (millisecond precision). "
+        "For MP4, this is the media creation_time or file mtime. For PDF/HTML, "
+        "this is the document metadata date or file mtime.",
+    )
+    publication_date: float | None = Field(
+        default=None,
+        description="Publication date extracted from document metadata (PDF/HTML only) "
+        "as UNIX epoch (millisecond precision). None when not available in "
+        "document metadata. Falls back to ``date`` for feed generation.",
     )
     size: int = Field(
         ...,
@@ -377,14 +438,23 @@ class Metadata(BaseModel):
         If ``title`` is a plain string, it is returned as-is (backward
         compatibility).  Returns an empty string when no suitable value
         is found.
+
+        After precedence resolution, the module prefix (derived from the
+        parent directory name of ``filepath``) is prepended if the final
+        title does not already start with the folder name.
         """
         if isinstance(self.title, dict):
             for key in ("generated", "extracted", "filename"):
                 value = self.title.get(key)
                 if value and value.strip():
-                    return value
-            return ""
-        return self.title
+                    base_title = value
+                    break
+            else:
+                base_title = ""
+        else:
+            base_title = self.title
+
+        return _apply_module_prefix_to_title(base_title, self.filepath)
 
     # ------------------------------------------------------------------
     # Serialization / Deserialization

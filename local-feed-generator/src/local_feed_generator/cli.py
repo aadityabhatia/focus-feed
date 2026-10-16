@@ -1595,6 +1595,10 @@ def extract(
             title = extracted.get("title") or source_file.stem
             if not title.strip():
                 title = source_file.stem
+            # Preserve existing title dict if present; otherwise use the
+            # extracted title as a plain string (will be finalized later).
+            if "title" not in metadata or not isinstance(metadata.get("title"), dict):
+                metadata["title"] = title
             # Initialize or update extract step map
             extract_step = metadata.get("extract") or {}
             extract_step["status"] = "in_progress"
@@ -1606,9 +1610,9 @@ def extract(
                     "filename": source_file.name,
                     "filepath": str(relative_path),
                     "filetype": filetype,
-                    "title": title,
                     "description": extracted.get("description") or "",
                     "date": extracted.get("date", 0),
+                    "publication_date": extracted.get("publication_date"),
                     "size": extracted.get("size", 0),
                 }
             )

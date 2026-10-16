@@ -1897,3 +1897,167 @@ class TestMP4AudioMetadata:
             producer.process_file(scanned)
 
         mock_get_meta.assert_called_once_with(str(source))
+
+
+# ---------------------------------------------------------------------------
+# publication_date tests
+# ---------------------------------------------------------------------------
+
+
+class TestPublicationDate:
+    """Tests for publication_date field in producer metadata."""
+
+    def test_pdf_publication_date_from_extractor(self, producer, mock_pdf_extractor, tmp_path):
+        """PDF metadata should include publication_date from extractor."""
+        mock_pdf_extractor.extract.return_value = {
+            "title": "doc",
+            "extracted_title": "PDF Title",
+            "description": "PDF Description",
+            "date": 1728931200,
+            "publication_date": 1719200000.0,
+            "size": 1024,
+            "filetype": "pdf",
+            "content": "PDF plaintext content",
+        }
+        source = tmp_path / "document.pdf"
+        source.write_bytes(b"pdf data")
+        scanned = _make_scanned_file(
+            "document.pdf",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.publication_date == 1719200000.0
+
+    def test_pdf_publication_date_none_when_extractor_returns_none(
+        self, producer, mock_pdf_extractor, tmp_path
+    ):
+        """PDF metadata should have publication_date=None when extractor returns None."""
+        mock_pdf_extractor.extract.return_value = {
+            "title": "doc",
+            "extracted_title": None,
+            "description": "PDF Description",
+            "date": 1728931200,
+            "publication_date": None,
+            "size": 1024,
+            "filetype": "pdf",
+            "content": "PDF plaintext content",
+        }
+        source = tmp_path / "document.pdf"
+        source.write_bytes(b"pdf data")
+        scanned = _make_scanned_file(
+            "document.pdf",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.publication_date is None
+
+    def test_html_publication_date_from_extractor(self, producer, mock_html_extractor, tmp_path):
+        """HTML metadata should include publication_date from extractor."""
+        mock_html_extractor.extract.return_value = {
+            "title": "article",
+            "extracted_title": "HTML Title",
+            "description": "HTML Description",
+            "date": 1728931200,
+            "publication_date": 1719200000.0,
+            "size": 512,
+            "filetype": "html",
+            "content": "HTML plaintext content",
+        }
+        source = tmp_path / "article.html"
+        source.write_text("<html>test</html>")
+        scanned = _make_scanned_file(
+            "article.html",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.publication_date == 1719200000.0
+
+    def test_html_publication_date_none_when_extractor_returns_none(
+        self, producer, mock_html_extractor, tmp_path
+    ):
+        """HTML metadata should have publication_date=None when extractor returns None."""
+        mock_html_extractor.extract.return_value = {
+            "title": "article",
+            "extracted_title": None,
+            "description": "HTML Description",
+            "date": 1728931200,
+            "publication_date": None,
+            "size": 512,
+            "filetype": "html",
+            "content": "HTML plaintext content",
+        }
+        source = tmp_path / "article.html"
+        source.write_text("<html>test</html>")
+        scanned = _make_scanned_file(
+            "article.html",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.publication_date is None
+
+    def test_pdf_metadata_json_includes_publication_date(
+        self, producer, mock_pdf_extractor, tmp_path
+    ):
+        """PDF JSON metadata should include publication_date field."""
+        mock_pdf_extractor.extract.return_value = {
+            "title": "doc",
+            "extracted_title": "PDF Title",
+            "description": "Desc",
+            "date": 1728931200,
+            "publication_date": 1719200000.0,
+            "size": 1024,
+            "filetype": "pdf",
+            "content": "Content",
+        }
+        source = tmp_path / "doc.pdf"
+        source.write_bytes(b"pdf data")
+        scanned = _make_scanned_file(
+            "doc.pdf",
+            absolute_path=str(source),
+        )
+
+        producer.process_file(scanned)
+
+        json_path = tmp_path / "doc.pdf.json"
+        data = json.loads(json_path.read_text())
+        assert "publication_date" in data
+        assert data["publication_date"] == 1719200000.0
+
+    def test_pdf_metadata_json_excludes_none_publication_date(
+        self, producer, mock_pdf_extractor, tmp_path
+    ):
+        """PDF JSON metadata should exclude publication_date when None."""
+        mock_pdf_extractor.extract.return_value = {
+            "title": "doc",
+            "extracted_title": None,
+            "description": "Desc",
+            "date": 1728931200,
+            "publication_date": None,
+            "size": 1024,
+            "filetype": "pdf",
+            "content": "Content",
+        }
+        source = tmp_path / "doc.pdf"
+        source.write_bytes(b"pdf data")
+        scanned = _make_scanned_file(
+            "doc.pdf",
+            absolute_path=str(source),
+        )
+
+        producer.process_file(scanned)
+
+        json_path = tmp_path / "doc.pdf.json"
+        data = json.loads(json_path.read_text())
+        assert "publication_date" not in data

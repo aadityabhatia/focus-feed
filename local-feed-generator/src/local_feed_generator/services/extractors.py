@@ -17,6 +17,8 @@ bit_rate).
     - description: str | None (optional; may be None if not available)
     - date: float (UNIX epoch with millisecond precision; falls back to file
         modification time)
+    - publication_date: float | None (UNIX epoch with millisecond precision;
+        document metadata date if available, None otherwise)
     - size: int (file size in bytes)
     - filetype: str (always "pdf" or "html")
     - content: str | None (plaintext content extracted from the source file,
@@ -103,7 +105,7 @@ class PDFExtractor:
 
         Returns:
             A dictionary with keys: title, extracted_title, description,
-            date, size, filetype, content.
+            date, publication_date, size, filetype, content.
 
             - title: Filename without extension (underscores replaced with
               spaces). This is the actual/final title used.
@@ -112,6 +114,8 @@ class PDFExtractor:
             - description: PDF metadata author, or None if not available.
             - date: Creation date as UNIX epoch (float, ms precision), or
               file modification time.
+            - publication_date: Creation date from PDF metadata as UNIX epoch
+              (float, ms precision), or None if not available.
             - size: File size in bytes.
             - filetype: Always "pdf".
             - content: Plaintext content extracted from all PDF pages, or None
@@ -129,6 +133,7 @@ class PDFExtractor:
         extracted_title: str | None = None
         description: str | None = None
         date: datetime | None = None
+        publication_date: datetime | None = None
         content: str | None = None
 
         try:
@@ -142,6 +147,7 @@ class PDFExtractor:
                     description = str(metadata.author)
                 if metadata.creation_date:
                     date = metadata.creation_date
+                    publication_date = metadata.creation_date
 
             # Extract plaintext content from all pages.
             content_parts: list[str] = []
@@ -164,11 +170,19 @@ class PDFExtractor:
         if date.tzinfo is None:
             date = date.replace(tzinfo=UTC)
 
+        # publication_date is only set if document metadata provided a date.
+        publication_date_epoch: float | None = None
+        if publication_date is not None:
+            if publication_date.tzinfo is None:
+                publication_date = publication_date.replace(tzinfo=UTC)
+            publication_date_epoch = int(publication_date.timestamp() * 1000) / 1000.0
+
         return {
             "title": title,
             "extracted_title": extracted_title,
             "description": description,
             "date": int(date.timestamp() * 1000) / 1000.0,
+            "publication_date": publication_date_epoch,
             "size": size,
             "filetype": "pdf",
             "content": content,
@@ -193,7 +207,7 @@ class HTMLExtractor:
 
         Returns:
             A dictionary with keys: title, extracted_title, description,
-            date, size, filetype, content.
+            date, publication_date, size, filetype, content.
 
             - title: Filename without extension (underscores replaced with
               spaces). This is the actual/final title used.
@@ -203,6 +217,9 @@ class HTMLExtractor:
               if not available.
             - date: Date as UNIX epoch (float, ms precision), or file
               modification time.
+            - publication_date: Date from HTML metadata (``<meta name="date">``,
+              ``<meta name="pubdate">``, or ``<time datetime="...">``) as UNIX
+              epoch (float, ms precision), or None if not available.
             - size: File size in bytes.
             - filetype: Always "html".
             - content: Plaintext content extracted from the HTML document body
@@ -220,6 +237,7 @@ class HTMLExtractor:
         extracted_title: str | None = None
         description: str | None = None
         date: datetime | None = None
+        publication_date: datetime | None = None
         text_content: str | None = None
 
         try:
@@ -246,6 +264,7 @@ class HTMLExtractor:
 
             # Extract date from various sources
             date = self._extract_date(soup)
+            publication_date = date
         except Exception as e:
             _logger.warning("Failed to extract HTML metadata from %s: %s", filepath, e)
 
@@ -257,11 +276,19 @@ class HTMLExtractor:
         if date.tzinfo is None:
             date = date.replace(tzinfo=UTC)
 
+        # publication_date is only set if document metadata provided a date.
+        publication_date_epoch: float | None = None
+        if publication_date is not None:
+            if publication_date.tzinfo is None:
+                publication_date = publication_date.replace(tzinfo=UTC)
+            publication_date_epoch = int(publication_date.timestamp() * 1000) / 1000.0
+
         return {
             "title": title,
             "extracted_title": extracted_title,
             "description": description,
             "date": int(date.timestamp() * 1000) / 1000.0,
+            "publication_date": publication_date_epoch,
             "size": size,
             "filetype": "html",
             "content": text_content,

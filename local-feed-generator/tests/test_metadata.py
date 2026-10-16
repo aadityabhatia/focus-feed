@@ -975,6 +975,88 @@ class TestSchemaCompliance:
         assert "input_size" in required
         assert "output_size" in required
 
+    def test_publication_date_field_exists(self):
+        """publication_date field should exist in the Metadata model."""
+        json_schema = Metadata.model_json_schema()
+        assert "publication_date" in json_schema["properties"]
+
+    def test_publication_date_defaults_to_none(self):
+        """publication_date should default to None when not provided."""
+        metadata = Metadata(
+            extract=StepMap(
+                status="complete",
+                input_size=5000,
+                output_size=1234,
+            ),
+            title={"filename": "test", "extracted": None, "generated": None},
+            description="Test",
+            filename="test.pdf",
+            filepath="docs/test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            size=5000,
+        )
+        assert metadata.publication_date is None
+
+    def test_publication_date_stored_when_provided(self):
+        """publication_date should be stored when provided."""
+        metadata = Metadata(
+            extract=StepMap(
+                status="complete",
+                input_size=5000,
+                output_size=1234,
+            ),
+            title={"filename": "test", "extracted": None, "generated": None},
+            description="Test",
+            filename="test.pdf",
+            filepath="docs/test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            publication_date=1728931200.0,
+            size=5000,
+        )
+        assert metadata.publication_date == 1728931200.0
+
+    def test_publication_date_serialized(self):
+        """publication_date should be included in JSON serialization when set."""
+        metadata = Metadata(
+            extract=StepMap(
+                status="complete",
+                input_size=5000,
+                output_size=1234,
+            ),
+            title={"filename": "test", "extracted": None, "generated": None},
+            description="Test",
+            filename="test.pdf",
+            filepath="docs/test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            publication_date=1728931200.0,
+            size=5000,
+        )
+        data = json.loads(metadata.to_json())
+        assert "publication_date" in data
+        assert data["publication_date"] == 1728931200.0
+
+    def test_publication_date_excluded_when_none(self):
+        """publication_date should be excluded from JSON when None."""
+        metadata = Metadata(
+            extract=StepMap(
+                status="complete",
+                input_size=5000,
+                output_size=1234,
+            ),
+            title={"filename": "test", "extracted": None, "generated": None},
+            description="Test",
+            filename="test.pdf",
+            filepath="docs/test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            size=5000,
+        )
+        data = json.loads(metadata.to_json())
+        assert "publication_date" not in data
+
 
 # ---------------------------------------------------------------------------
 # Title dict tests
@@ -1173,3 +1255,136 @@ class TestTitleDict:
         assert title["filename"] == "my file"
         assert title["extracted"] == "Ext"
         assert title["generated"] == "Gen"
+
+
+class TestModulePrefix:
+    """Tests for module prefix application in final_title.
+
+    The module prefix (parent directory name) is prepended to the resolved
+    title when the title itself does not already start with the module name.
+    This prevents duplicate prefixes when the LLM-generated or extracted
+    title already includes the module name.
+    """
+
+    def _make_metadata(
+        self,
+        title: dict[str, str | None] | str,
+        filepath: str,
+        filename: str,
+    ) -> Metadata:
+        """Create a Metadata instance with the given title and filepath."""
+        return Metadata(
+            extract=StepMap(status="complete", input_size=100, output_size=50),
+            title=title,
+            description="Test",
+            filename=filename,
+            filepath=filepath,
+            filetype="pdf",
+            date=1728931200,
+            size=100,
+        )
+
+    def test_module_prefix_applied_when_title_does_not_start_with_module(self):
+        """Module prefix should be applied when title doesn't start with folder name."""
+        metadata = self._make_metadata(
+            {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
+            filepath="videos/lecture.mp4",
+            filename="lecture.mp4",
+        )
+        assert metadata.final_title == "videos: My Lecture"
+
+    def test_module_prefix_not_applied_when_title_starts_with_module(self):
+        """Module prefix should NOT be applied when title already starts with folder name."""
+        metadata = self._make_metadata(
+            {"filename": "lecture", "extracted": None, "generated": "Videos My Lecture"},
+            filepath="videos/lecture.mp4",
+            filename="lecture.mp4",
+        )
+        # Title "Videos My Lecture" starts with "Videos" (case-insensitive),
+        # so no prefix is applied to avoid duplication.
+        assert metadata.final_title == "Videos My Lecture"
+
+    def test_module_prefix_applied_to_generated_title(self):
+        """Module prefix should be applied after precedence resolution (generated)."""
+        metadata = self._make_metadata(
+            {"filename": "lecture", "extracted": "Extracted", "generated": "Generated"},
+            filepath="course1/lecture.mp4",
+            filename="lecture.mp4",
+        )
+        assert metadata.final_title == "course1: Generated"
+
+    def test_module_prefix_applied_to_extracted_title(self):
+        """Module prefix should be applied after precedence resolution (extracted)."""
+        metadata = self._make_metadata(
+            {"filename": "lecture", "extracted": "Extracted", "generated": ""},
+            filepath="course1/lecture.mp4",
+            filename="lecture.mp4",
+        )
+        assert metadata.final_title == "course1: Extracted"
+
+    def test_module_prefix_applied_to_filename_title(self):
+        """Module prefix should be applied after precedence resolution (filename)."""
+        metadata = self._make_metadata(
+            {"filename": "lecture", "extracted": "", "generated": ""},
+            filepath="course1/lecture.mp4",
+            filename="lecture.mp4",
+        )
+        assert metadata.final_title == "course1: lecture"
+
+    def test_module_prefix_not_applied_at_root_level(self):
+        """Module prefix should not be applied when file is at root level (no parent dir)."""
+        metadata = self._make_metadata(
+            {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
+            filepath="lecture.mp4",
+            filename="lecture.mp4",
+        )
+        assert metadata.final_title == "My Lecture"
+
+    def test_module_prefix_handles_underscores_in_folder_name(self):
+        """Module prefix should handle underscores in folder name (replaced with spaces)."""
+        metadata = self._make_metadata(
+            {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
+            filepath="my_course/lecture.mp4",
+            filename="lecture.mp4",
+        )
+        assert metadata.final_title == "my course: My Lecture"
+
+    def test_module_prefix_case_insensitive_title_match(self):
+        """Module prefix should not be applied when title starts with module name (case-insensitive)."""
+        metadata = self._make_metadata(
+            {"filename": "lecture", "extracted": None, "generated": "Videos My Lecture"},
+            filepath="Videos/lecture.mp4",
+            filename="lecture.mp4",
+        )
+        # Title "Videos My Lecture" starts with "Videos" (case-insensitive),
+        # so no prefix is applied to avoid duplication.
+        assert metadata.final_title == "Videos My Lecture"
+
+    def test_module_prefix_not_applied_when_title_starts_with_module_underscored(self):
+        """Module prefix should not be applied when title starts with module name (underscores in title)."""
+        metadata = self._make_metadata(
+            {"filename": "lecture", "extracted": None, "generated": "Videos_my_topic"},
+            filepath="videos/lecture.mp4",
+            filename="lecture.mp4",
+        )
+        # Title "Videos_my_topic" → normalized "videos my topic" starts with "videos",
+        # so no prefix is applied to avoid duplication.
+        assert metadata.final_title == "Videos_my_topic"
+
+    def test_module_prefix_with_string_title(self):
+        """Module prefix should be applied to string titles (backward compat)."""
+        metadata = self._make_metadata(
+            "Plain Title",
+            filepath="videos/lecture.mp4",
+            filename="lecture.mp4",
+        )
+        assert metadata.final_title == "videos: Plain Title"
+
+    def test_module_prefix_not_applied_when_string_title_starts_with_module(self):
+        """Module prefix should NOT be applied when string title starts with module name."""
+        metadata = self._make_metadata(
+            "Videos Lecture",
+            filepath="videos/lecture.mp4",
+            filename="lecture.mp4",
+        )
+        assert metadata.final_title == "Videos Lecture"

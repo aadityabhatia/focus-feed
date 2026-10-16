@@ -74,56 +74,6 @@ def _now_timestamp() -> float:
     return int(datetime.now(UTC).timestamp() * 1000) / 1000.0
 
 
-def _should_prepend_module(filepath: str, filename: str) -> tuple[bool, str]:
-    """Determine whether the module name should be prepended to the title.
-
-    Extracts the module name from the parent directory of *filepath*.
-    Checks if the filename (without extension, underscores→spaces) starts
-    with the module name (case-insensitive, handling underscores).
-
-    Args:
-        filepath: Relative path from the data directory root.
-        filename: The source filename including extension.
-
-    Returns:
-        A tuple of ``(should_prepend, module_name)``.  When
-        *should_prepend* is ``False``, the module name is already part of
-        the filename and should not be prepended.
-    """
-    path = Path(filepath)
-    parent = path.parent
-    module_name = parent.name if parent.name else ""
-    if not module_name:
-        return False, ""
-
-    # Normalize: replace underscores with spaces, lowercase for comparison.
-    module_normalized = module_name.replace("_", " ").lower()
-    filename_stem = path.stem.replace("_", " ").lower()
-
-    # Check if filename starts with module name (case-insensitive).
-    if filename_stem.startswith(module_normalized):
-        return False, ""
-
-    return True, module_name.replace("_", " ")
-
-
-def _apply_module_prefix(title: str, filepath: str, filename: str) -> str:
-    """Prepend the module name to *title* if appropriate.
-
-    Args:
-        title: The base title string.
-        filepath: Relative path from the data directory root.
-        filename: The source filename including extension.
-
-    Returns:
-        The title with module prefix if needed, otherwise the original title.
-    """
-    should_prepend, module = _should_prepend_module(filepath, filename)
-    if should_prepend:
-        return f"{module}: {title}"
-    return title
-
-
 def _check_reflection_md(absolute_path: str) -> str | None:
     """Check if a ``reflection.md`` file exists next to the source file.
 
@@ -462,8 +412,8 @@ class Producer:
         The transcript is used as content for LLM title generation, with
         the filename (without extension, underscores→spaces) passed as
         context. The ``title.generated`` field holds the LLM-generated
-        title (with module prefix applied). The ``title.filename`` field
-        holds the filename-derived title.
+        title (module prefix is applied in ``Metadata.final_title``).
+        The ``title.filename`` field holds the filename-derived title.
 
         Args:
             filepath: Relative path from the data directory root.
@@ -649,8 +599,8 @@ class Producer:
         )
         generated_title = _clean_title(generated_title) or generated_title
 
-        # Apply module name prefix to the generated title.
-        generated_title = _apply_module_prefix(generated_title, filepath, filename)
+        # Module prefix is applied in Metadata.final_title after precedence
+        # resolution, so it is not applied here.
 
         # Build title dict for MP4 with all three keys.
         title_dict = self.build_title_dict(
@@ -713,8 +663,9 @@ class Producer:
         size. The title is built using the filename-derived title and
         extracted title (from PDF metadata) as context for LLM title
         generation. The ``title.generated`` field holds the LLM-generated
-        title (with module prefix applied). The ``title.extracted`` field
-        stores the title from PDF metadata but is NOT used as the final title.
+        title (module prefix is applied in ``Metadata.final_title``).
+        The ``title.extracted`` field stores the title from PDF metadata
+        but is NOT used as the final title.
 
         Args:
             filepath: Relative path from the data directory root.
@@ -776,6 +727,7 @@ class Producer:
         extracted_title = extracted.get("extracted_title")
         description = extracted.get("description") or ""
         file_date = extracted.get("date", 0)
+        file_publication_date = extracted.get("publication_date")
         file_size = extracted.get("size", 0)
         file_content = extracted.get("content")
 
@@ -800,8 +752,8 @@ class Producer:
             # No content available; fall back to filename-derived title.
             generated_title = filename_title
 
-        # Apply module name prefix to the generated title.
-        generated_title = _apply_module_prefix(generated_title, filepath, filename)
+        # Module prefix is applied in Metadata.final_title after precedence
+        # resolution, so it is not applied here.
 
         # Build title dict for PDF with all three keys.
         title_dict = self.build_title_dict(
@@ -820,6 +772,8 @@ class Producer:
                 "content": file_content,
             }
         )
+        if file_publication_date is not None:
+            metadata_dict["publication_date"] = file_publication_date
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Return a Metadata object for in-memory use.
@@ -831,6 +785,7 @@ class Producer:
             filepath=filepath,
             filetype="pdf",
             date=file_date,
+            publication_date=file_publication_date,
             size=file_size,
             content=file_content,
             extract=StepMap(**extract_step),
@@ -855,9 +810,10 @@ class Producer:
         size. The title is built using the filename-derived title and
         extracted title (from the HTML ``<title>`` tag) as context for
         LLM title generation. The ``title.generated`` field holds the
-        LLM-generated title (with module prefix applied). The
-        ``title.extracted`` field stores the title from the HTML
-        ``<title>`` tag but is NOT used as the final title.
+        LLM-generated title (module prefix is applied in
+        ``Metadata.final_title``). The ``title.extracted`` field stores
+        the title from the HTML ``<title>`` tag but is NOT used as the
+        final title.
 
         Args:
             filepath: Relative path from the data directory root.
@@ -919,6 +875,7 @@ class Producer:
         extracted_title = extracted.get("extracted_title")
         description = extracted.get("description") or ""
         file_date = extracted.get("date", 0)
+        file_publication_date = extracted.get("publication_date")
         file_size = extracted.get("size", 0)
         file_content = extracted.get("content")
 
@@ -943,8 +900,8 @@ class Producer:
             # No content available; fall back to filename-derived title.
             generated_title = filename_title
 
-        # Apply module name prefix to the generated title.
-        generated_title = _apply_module_prefix(generated_title, filepath, filename)
+        # Module prefix is applied in Metadata.final_title after precedence
+        # resolution, so it is not applied here.
 
         # Build title dict for HTML with all three keys.
         title_dict = self.build_title_dict(
@@ -963,6 +920,8 @@ class Producer:
                 "content": file_content,
             }
         )
+        if file_publication_date is not None:
+            metadata_dict["publication_date"] = file_publication_date
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         # Return a Metadata object for in-memory use.
@@ -974,6 +933,7 @@ class Producer:
             filepath=filepath,
             filetype="html",
             date=file_date,
+            publication_date=file_publication_date,
             size=file_size,
             content=file_content,
             extract=StepMap(**extract_step),

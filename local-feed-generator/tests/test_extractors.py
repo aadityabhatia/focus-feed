@@ -288,6 +288,7 @@ class TestExtractorSharedBehavior:
             "extracted_title",
             "description",
             "date",
+            "publication_date",
             "size",
             "filetype",
             "content",
@@ -464,6 +465,42 @@ class TestPDFExtractor:
         # Date should fall back to file mtime (as epoch float)
         assert isinstance(result["date"], float)
         assert result["date"] > 0
+        # publication_date should be None when no document metadata date
+        assert result["publication_date"] is None
+
+    def test_extract_publication_date_from_pdf_metadata(self, tmp_path):
+        """publication_date should be extracted from PDF CreationDate metadata."""
+        pdf_path = tmp_path / "dated.pdf"
+        create_test_pdf(
+            pdf_path,
+            title="Dated PDF",
+            author="Author",
+            creation_date=datetime(2026, 6, 15, 8, 30, 0),
+        )
+
+        extractor = PDFExtractor()
+        result = extractor.extract(pdf_path)
+
+        assert result["publication_date"] is not None
+        assert isinstance(result["publication_date"], float)
+        # Verify the date matches the creation date (2026-06-15 08:30:00 UTC)
+        parsed = datetime.fromtimestamp(result["publication_date"], tz=UTC)
+        assert parsed.year == 2026
+        assert parsed.month == 6
+        assert parsed.day == 15
+
+    def test_extract_publication_date_none_when_no_creation_date(self, tmp_path):
+        """publication_date should be None when PDF has no CreationDate."""
+        pdf_path = tmp_path / "no_date.pdf"
+        create_test_pdf(pdf_path, title="No Date", author=None, creation_date=None)
+
+        extractor = PDFExtractor()
+        result = extractor.extract(pdf_path)
+
+        assert result["publication_date"] is None
+        # date should fall back to file mtime
+        assert result["date"] is not None
+        assert isinstance(result["date"], float)
 
     def test_extract_description_is_none_when_no_author(self, tmp_path):
         """Description should be None when PDF has no author."""
@@ -624,6 +661,78 @@ class TestHTMLExtractor:
         assert result["title"] == "malformed"
         assert result["filetype"] == "html"
         assert result["size"] > 0
+        # publication_date should be None when no date metadata is available
+        assert result["publication_date"] is None
+
+    def test_extract_publication_date_from_meta_date(self, tmp_path):
+        """publication_date should be extracted from <meta name='date'>."""
+        html_path = tmp_path / "pub_date.html"
+        create_test_html(
+            html_path,
+            title="Pub Date Test",
+            date="2026-06-15T08:30:00Z",
+        )
+
+        extractor = HTMLExtractor()
+        result = extractor.extract(html_path)
+
+        assert result["publication_date"] is not None
+        assert isinstance(result["publication_date"], float)
+        parsed = datetime.fromtimestamp(result["publication_date"], tz=UTC)
+        assert parsed.year == 2026
+        assert parsed.month == 6
+        assert parsed.day == 15
+
+    def test_extract_publication_date_from_pubdate_meta(self, tmp_path):
+        """publication_date should be extracted from <meta name='pubdate'>."""
+        html_path = tmp_path / "pubdate.html"
+        create_test_html(
+            html_path,
+            title="Pubdate Test",
+            date=None,
+            pubdate="2026-09-01T10:00:00Z",
+        )
+
+        extractor = HTMLExtractor()
+        result = extractor.extract(html_path)
+
+        assert result["publication_date"] is not None
+        parsed = datetime.fromtimestamp(result["publication_date"], tz=UTC)
+        assert parsed.year == 2026
+        assert parsed.month == 9
+        assert parsed.day == 1
+
+    def test_extract_publication_date_from_time_tag(self, tmp_path):
+        """publication_date should be extracted from <time datetime='...'>."""
+        html_path = tmp_path / "time_date.html"
+        create_test_html(
+            html_path,
+            title="Time Date Test",
+            date=None,
+            time_datetime="2026-08-20T14:30:00Z",
+        )
+
+        extractor = HTMLExtractor()
+        result = extractor.extract(html_path)
+
+        assert result["publication_date"] is not None
+        parsed = datetime.fromtimestamp(result["publication_date"], tz=UTC)
+        assert parsed.year == 2026
+        assert parsed.month == 8
+        assert parsed.day == 20
+
+    def test_extract_publication_date_none_when_no_date_metadata(self, tmp_path):
+        """publication_date should be None when no date metadata is available."""
+        html_path = tmp_path / "no_date.html"
+        create_test_html(html_path, title="No Date", date=None, pubdate=None, time_datetime=None)
+
+        extractor = HTMLExtractor()
+        result = extractor.extract(html_path)
+
+        assert result["publication_date"] is None
+        # date should fall back to file mtime
+        assert result["date"] is not None
+        assert isinstance(result["date"], float)
 
     def test_extract_date_date_only_format(self, tmp_path):
         """Date in YYYY-MM-DD format should be parsed correctly."""

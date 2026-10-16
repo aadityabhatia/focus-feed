@@ -42,6 +42,7 @@ def make_metadata(
     feed_eligible: bool = True,
     error: str | None = None,
     date: int = 1728931200,
+    publication_date: float | None = None,
 ) -> Metadata:
     """Create a Metadata object for testing.
 
@@ -55,8 +56,10 @@ def make_metadata(
         size: File size in bytes.
         feed_eligible: If True, set status to "complete" for all applicable steps.
             If False, leave status as None.
-        error: Error message (if provided, feed_eligible is set to False).
-        date: UNIX epoch date (seconds).
+    error: Error message (if provided, feed_eligible is set to False).
+    date: UNIX epoch date (seconds).
+    publication_date: Publication date from document metadata (seconds).
+        If None, the date field is used for pubDate in articles feed.
 
     Returns:
         A validated Metadata instance.
@@ -91,6 +94,8 @@ def make_metadata(
             )
     else:
         kwargs["description"] = description
+        if summary is not None:
+            kwargs["summary"] = summary
         if feed_eligible and not error:
             kwargs["extract"] = StepMap(
                 status="complete",
@@ -99,6 +104,8 @@ def make_metadata(
             )
     if error:
         kwargs["error"] = error
+    if publication_date is not None:
+        kwargs["publication_date"] = publication_date
     return Metadata(**kwargs)
 
 
@@ -415,14 +422,23 @@ class TestPodcastFeedGeneration:
         ("generate_articles_feed", "articles.xml", "pdf", "documents/doc.pdf", "My Document"),
     ])
     def test_feed_item_has_title(self, tmp_path, method, xml_name, filetype, filepath, title):
-        """Each feed item should have a title."""
+        """Each feed item should have a title (with module prefix applied)."""
         write_metadata_file(tmp_path, filepath, filetype=filetype, title=title)
 
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
         getattr(fg, method)()
 
         content = parse_rss_file(tmp_path / xml_name)
-        assert f"<title>{title}</title>" in content
+        # Module prefix is applied to the final title after precedence resolution.
+        # The parent directory name is prepended if the title doesn't already
+        # start with the folder name (case-insensitive).
+        parent_dir = Path(filepath).parent.name
+        title_normalized = title.replace("_", " ").lower()
+        if title_normalized.startswith(parent_dir.lower()):
+            expected_title = title
+        else:
+            expected_title = f"{parent_dir}: {title}"
+        assert f"<title>{expected_title}</title>" in content
 
     def test_podcast_feed_item_description_from_summary(self, tmp_path):
         """Podcast feed description should come from summary field (FR-014)."""
@@ -616,14 +632,16 @@ class TestArticlesFeedGeneration:
         assert filetypes == {"pdf", "html"}
 
     def test_articles_feed_item_has_title(self, tmp_path):
-        """Each articles item should have a title."""
+        """Each articles item should have a title (with module prefix applied)."""
         write_metadata_file(tmp_path, "documents/doc.pdf", title="My Document")
 
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
         fg.generate_articles_feed()
 
         content = parse_rss_file(tmp_path / "articles.xml")
-        assert "<title>My Document</title>" in content
+        # Module prefix "documents" is applied since title "My Document" doesn't
+        # start with "documents".
+        assert "<title>documents: My Document</title>" in content
 
     def test_articles_feed_description_from_description(self, tmp_path):
         """Description should come from the description field for articles."""
@@ -639,6 +657,41 @@ class TestArticlesFeedGeneration:
 
         content = parse_rss_file(tmp_path / "articles.xml")
         assert "The description field value" in content
+
+    def test_articles_feed_description_from_summary(self, tmp_path):
+        """Article feed description should use summary field, not content (FR-014)."""
+        write_metadata_file(
+            tmp_path,
+            "documents/doc.pdf",
+            filetype="pdf",
+            summary="Key takeaways from the document.",
+            description="Fallback description",
+            transcript="This is the extracted content that should NOT be used.",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_articles_feed()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        # Summary should be used, not content or description
+        assert "Key takeaways from the document." in content
+        assert "This is the extracted content" not in content
+        assert "Fallback description" not in content
+
+    def test_articles_feed_description_fallback_to_description(self, tmp_path):
+        """Article feed description should fall back to description when summary is None."""
+        write_metadata_file(
+            tmp_path,
+            "documents/doc.pdf",
+            filetype="pdf",
+            description="The fallback description",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_articles_feed()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "The fallback description" in content
 
     @pytest.mark.parametrize("field,substring", [
         ("link", "https://example.com/feeds/documents/doc.pdf"),
@@ -672,6 +725,50 @@ class TestArticlesFeedGeneration:
 
         filepaths = [m.filepath for m in items]
         assert filepaths == ["alpha/first.html", "alpha/middle.pdf", "zebra/last.pdf"]
+
+    def test_articles_feed_pubdate_uses_publication_date(self, tmp_path):
+        """Articles feed pubDate should use publication_date when available."""
+        write_metadata_file(
+            tmp_path,
+            "documents/doc.pdf",
+            filetype="pdf",
+            date=1728931200,  # 2024-10-14
+            publication_date=1719200000.0,  # 2024-06-24
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_articles_feed()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        # pubDate should reflect publication_date (June 2024), not date (Oct 2024)
+        from datetime import UTC, datetime
+
+        expected = datetime.fromtimestamp(1719200000.0, tz=UTC).strftime(
+            "%a, %d %b %Y"
+        )
+        assert expected in content
+
+    def test_articles_feed_pubdate_falls_back_to_date(self, tmp_path):
+        """Articles feed pubDate should fall back to date when publication_date is None."""
+        write_metadata_file(
+            tmp_path,
+            "documents/doc.pdf",
+            filetype="pdf",
+            date=1728931200,  # 2024-10-14
+            publication_date=None,
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_articles_feed()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        # pubDate should reflect date (Oct 2024) since publication_date is None
+        from datetime import UTC, datetime
+
+        expected = datetime.fromtimestamp(1728931200, tz=UTC).strftime(
+            "%a, %d %b %Y"
+        )
+        assert expected in content
 
     def test_articles_feed_excludes_error_entries(self, tmp_path):
         """Error entries should not appear in the articles feed."""
@@ -1261,14 +1358,14 @@ class TestMarkdownToHtml:
         ("## Heading 2", "<h2>Heading 2</h2>"),
         ("### Heading 3", "<h3>Heading 3</h3>"),
         ("# Header with **bold**", "<h1>Header with <strong>bold</strong></h1>"),
-        # Bold
-        ("**bold**", "<p><strong>bold</strong></p>"),
-        ("This is **bold** text", "<p>This is <strong>bold</strong> text</p>"),
-        # Italic
-        ("*italic*", "<p><em>italic</em></p>"),
-        ("_italic_", "<p><em>italic</em></p>"),
-        # Paragraphs
-        ("Some text", "<p>Some text</p>"),
+        # Bold — single-paragraph output has outer <p> stripped
+        ("**bold**", "<strong>bold</strong>"),
+        ("This is **bold** text", "This is <strong>bold</strong> text"),
+        # Italic — single-paragraph output has outer <p> stripped
+        ("*italic*", "<em>italic</em>"),
+        ("_italic_", "<em>italic</em>"),
+        # Paragraphs — single-paragraph output has outer <p> stripped
+        ("Some text", "Some text"),
     ])
     def test_markdown_conversion(self, md, expected):
         """Parameterized test for markdown-to-HTML conversion."""
@@ -1327,6 +1424,45 @@ class TestMarkdownToHtml:
         # Verify raw HTML tags are not present (escaped)
         assert "<script>" not in result
         assert "<script" not in result
+
+    @pytest.mark.parametrize("md,expected", [
+        # Single paragraph: outer <p> wrapper should be stripped
+        ("Hello world", "Hello world"),
+        ("Some text", "Some text"),
+        ("**bold** text", "<strong>bold</strong> text"),
+        ("*italic* text", "<em>italic</em> text"),
+        # Headers: no <p> wrapper to strip
+        ("# Heading", "<h1>Heading</h1>"),
+        # Lists: no <p> wrapper to strip
+        ("- item", "<ul>\n<li>item</li>\n</ul>"),
+    ])
+    def test_p_wrapper_stripped_for_single_paragraph(self, md, expected):
+        """Single-paragraph output should not have outer <p> wrapper."""
+        assert _markdown_to_html(md) == expected
+
+    @pytest.mark.parametrize("md,expected_substrings", [
+        # Multiple paragraphs: <p> tags should be preserved
+        ("Para 1\n\nPara 2", ["<p>Para 1</p>", "<p>Para 2</p>"]),
+        ("First paragraph.\n\nSecond paragraph.",
+         ["<p>First paragraph.</p>", "<p>Second paragraph.</p>"]),
+    ])
+    def test_p_tags_preserved_for_multiple_paragraphs(self, md, expected_substrings):
+        """Multiple-paragraph output should preserve <p> tags."""
+        result = _markdown_to_html(md)
+        for substring in expected_substrings:
+            assert substring in result
+
+    def test_p_wrapper_not_stripped_for_mixed_content(self):
+        """Mixed content (header + paragraph) should preserve <p> tags."""
+        result = _markdown_to_html("# Header\n\nParagraph")
+        assert "<h1>Header</h1>" in result
+        assert "<p>Paragraph</p>" in result
+
+    def test_p_wrapper_stripped_for_inline_markdown(self):
+        """Inline markdown in a single paragraph should have outer <p> stripped."""
+        result = _markdown_to_html("**bold** and *italic*")
+        assert result == "<strong>bold</strong> and <em>italic</em>"
+        assert "<p>" not in result
 
     def test_markdown_and_feedgen_escaping(self, tmp_path):
         """HTML output from _markdown_to_html should be valid when embedded in feedgen output."""
