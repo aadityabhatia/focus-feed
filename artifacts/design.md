@@ -6,7 +6,7 @@
 
 ## 1. Overview
 
-The `local-feed-generator` is a standalone application that processes content files (PDF, HTML, MP4) in a `data` directory and generates RSS/Atom feeds for personal consumption through mobile applications. The system supports both local and remote transcription: by default, it uses GPU-accelerated open-weight models (faster-whisper) for audio transcription; when configured with a remote endpoint via `TRANSCRIPTION_ENDPOINT`, it automatically uses an OpenAI-compatible API for transcription. Summarization always uses OpenAI-compatible local LLMs.
+The `local-feed-generator` is a standalone application that processes content files (PDF, HTML, MP4) in a `data` directory and generates RSS/Atom feeds for personal consumption through mobile applications. The system supports both local and remote transcription: by default, it uses GPU-accelerated open-weight models (faster-whisper) for audio transcription; when configured with a remote endpoint via `TRANSCRIPTION_ENDPOINT`, it automatically uses an OpenAI-compatible API for transcription instead. Summarization always uses OpenAI-compatible local LLMs.
 
 ### 1.1 System Goals
 
@@ -15,6 +15,10 @@ The `local-feed-generator` is a standalone application that processes content fi
 - **Idempotent processing:** Skips files with existing metadata; processes only new/changed files
 - **Mobile-ready:** Generates standard-compliant feeds consumable by Antennapod (podcast) and any RSS reader (articles)
 - **Configurable:** System prompts, feed formats, and runtime parameters via environment variables
+- **Flexible organization:** Supports per-folder feed generation with custom titles and descriptions
+- **Conditional feeds:** Feeds are only generated where feed.json exists and applicable files are present
+- **Index pages:** Auto-generates index.html for feed discovery
+- **Enhanced content:** Extracts content from PDF/HTML files, not just metadata
 
 ---
 
@@ -28,60 +32,101 @@ flowchart TB
         direction LR
         scanner["Scanner & Watcher"] -->|files to process| producer["Producer Pipeline"]
         producer -->|metadata| feedgen["Feed Generator\n(Consumer)"]
-
+        producer -->|metadata| indexgen["Index Generator\n(NEW)"]
+        
         subgraph ai["AI Integration Layer"]
             direction LR
             transcribe["Transcription\n(faster-whisper or OpenAI-compatible API)"]
             summarize["Summarization\n(OpenAI-compatible LLM API)"]
         end
-
+        
         producer --> transcribe
         producer --> summarize
+        producer -->|reads| reflection["reflection.md\n(optional)"]
+        feedgen -->|reads| feedconfig["feed.json\n(optional)"]
+        indexgen -->|reads| feedconfig
     end
-
+    
     subgraph data_dir["data/ directory"]
-        folder1["videos/\n- lecture.mp4\n- lecture.mp4.json"]
-        folder2["documents/\n- doc.pdf\n- doc.pdf.json"]
-        podcast["podcast.xml"]
-        articles["articles.xml"]
+        folder1["Course1/\n- lecture.mp4\n- lecture.mp4.json\n- reflection.md"]
+        folder2["Course2/\n- feed.json\n- podcast.xml\n- articles.xml\n- index.html\n- document.html\n- document.html.json"]
+        root_feeds["feed.json (required)\npodcast.xml (if MP4 present)\narticles.xml (if PDF/HTML present)\nindex.html"]
     end
-
+    
     feed_generator -->|writes/reads| data_dir
     data_dir -->|served by| webserver["Existing Web Server"]
 ```
 
+Note: Root-level feeds (podcast.xml, articles.xml, index.html) are ONLY generated if feed.json exists in the root and applicable files are present.
+
 ### 2.2 Major Components
 
-- **Scanner & Watcher** (`watchdog`): Discovers files in `data/`; detects new/changed files; triggers processing
+- **Scanner & Watcher** (`watchdog`): Discovers files in `data/`; detects new/changed files; triggers processing; implements debouncing and periodic rescan
 - **Producer Pipeline** (Python): Orchestrates file processing; manages queue; generates metadata
   - **Transcription Service** (`faster-whisper` + CUDA or OpenAI-compatible API): Converts MP4 audio to markdown text using either local (faster-whisper) or remote (OpenAI-compatible API) mode. The system implements a dual-mode architecture with the `RemoteTranscriber` class for API-based transcription and the local `Transcriber` class for GPU-accelerated transcription.
-- **Summarization Service** (`openai` client → local LLM): Generates key takeaways from transcripts
-- **Feed Generator** (`feedgen`): Aggregates metadata; generates RSS/Atom feeds
-- **Configuration** (`pydantic-settings` + `.env`): Manages runtime settings
-- **CLI** (`click`): Command-line interface
+- **Summarization Service** (`openai` client \=> local LLM): Generates key takeaways from transcripts; supports reflection questions from `reflection.md` files; works with both MP4 transcripts and PDF/HTML extracted content
+- **Extraction Service** (`pypdf`, `beautifulsoup4`, `ffprobe`): Extracts metadata AND content from PDF/HTML files; extracts audio metadata (duration, creation_time) from MP4 files
+- **Feed Generator** (`feedgen`): Aggregates metadata; generates RSS/Atom feeds; supports per-folder feeds via `feed.json`; converts markdown to HTML; only generates feeds where feed.json exists and applicable files are present
+- **Index Generator** (NEW): Generates index.html pages in each folder with feed.json; lists all available feeds with titles and descriptions; provides hierarchical navigation
+- **Configuration** (`pydantic-settings` + `.env`): Manages runtime settings including new prompt variables
+- **CLI** (`click`): Command-line interface with granular subcommands
 
 ### 2.3 Data Flow
 
 ```mermaid
 flowchart TD
     A[Scanner discovers file] --> B{*.json exists?}
-    B -->|Yes| C[Skip - idempotent]
-    B -->|No| D[Determine file type]
-
-    D -->|MP4| E[Transcription Service\n(local or remote)]
-    E --> F[markdown transcript]
-    F --> G[Summarization Service]
-    G --> H[key takeaways]
-
-    D -->|PDF/HTML| I[Extract metadata]
-
-    H --> J[Generate JSON metadata]
+    B -->|Yes| C[Check if complete]
+    C -->|Complete| D[Skip - idempotent]
+    C -->|Incomplete| E[Process file]
+    B -->|No| E
+    
+    E --> F[Determine file type]
+    
+    F -->|MP4| G[Check reflection.md]
+    G -->|Exists| H[Load reflection questions]
+    G -->|No| I[Use standard prompt]
+    H --> J[Transcribe to markdown]
     I --> J
-    J --> K[Write .json adjacent to source]
-
-    K --> L[Feed Generator reads all valid *.json]
-    L --> M[Generate podcast.xml & articles.xml]
-    M --> N[Place feeds in data/ root]
+    J --> K[Store in content field]
+    K --> L[Summarize with reflection]
+    L --> M[Store summary in summary field]
+    M --> N[Extract audio metadata]
+    N --> O[Generate title dict]
+    O --> P[Apply module prefix]
+    
+    F -->|PDF| Q[Extract metadata & content]
+    Q --> R[Store in description & content]
+    R --> S[Check reflection.md]
+    S -->|Exists| T[Optional: summarize content]
+    S -->|No| U[Set summary to null]
+    T --> U
+    Q --> V[Build filename-derived title]
+    V --> W[Build title dict]
+    W --> X[Apply module prefix]
+    
+    F -->|HTML| Y[Extract metadata & content]
+    Y --> R
+    Y --> V
+    
+    P --> Z[Write .json with title dict]
+    X --> Z
+    U --> Z
+    Z --> AA[JSON with step maps]
+    
+    AA --> AB[Feed Generator discovers metadata]
+    AB --> AC[Check for feed.json files]
+    AC -->|Exists| AD[Check for applicable files]
+    AD -->|MP4 present| AE[Generate podcast.xml]
+    AD -->|PDF/HTML present| AF[Generate articles.xml]
+    AD -->|No applicable files| AG[Skip feed generation]
+    AC -->|No feed.json| AH[Skip folder]
+    AE --> AI[Generate index.html]
+    AF --> AI
+    AG --> AI
+    
+    AI --> AJ[Convert markdown to HTML]
+    AJ --> AK[Write feeds and index]
 ```
 
 ---
@@ -106,8 +151,8 @@ uv run local-feed-generator watch --data-dir ./data
 # Generate feeds only (no processing)
 uv run local-feed-generator feeds --data-dir ./data
 
-  # Validate all metadata files and finalize JSON
-  uv run local-feed-generator validate --data-dir ./data
+# Validate all metadata files and finalize JSON
+uv run local-feed-generator validate --data-dir ./data
 
 # Transcribe MP4 files to markdown text
 uv run local-feed-generator transcribe --data-dir ./data
@@ -118,8 +163,14 @@ uv run local-feed-generator transcribe --data-dir ./data --file videos/lecture.m
 # Preview which files would be transcribed (no changes)
 uv run local-feed-generator transcribe --data-dir ./data --dry-run
 
-# Generate summaries from transcripts
+# Generate summaries from transcripts or extracted content
 uv run local-feed-generator summarize --data-dir ./data
+
+# Summarize a specific file (MP4, PDF, or HTML)
+uv run local-feed-generator summarize --file documents/report.pdf
+
+# Summarize a PDF/HTML file with reflection questions
+uv run local-feed-generator summarize --file documents/report.pdf --force
 
 # Extract metadata from PDF/HTML files
 uv run local-feed-generator extract --data-dir ./data
@@ -129,11 +180,11 @@ uv run local-feed-generator extract --data-dir ./data
 
 - **`process`**: Process all files in data directory (batch mode)
 - **`watch`**: Watch for changes and process incrementally
-- **`feeds`**: Generate RSS/Atom feeds from existing JSON metadata; finalizes JSON by computing feed eligibility
+- **`feeds`**: Generate RSS/Atom feeds from existing JSON metadata; supports per-folder feeds via feed.json; generates index.html pages; only generates feeds where feed.json exists and applicable files are present
 - **`validate`**: Validate all metadata files and finalize incomplete ones by setting step completion statuses
 - **`transcribe`**: Transcribe MP4 files using local or remote mode
-- **`summarize`**: Generate summaries from existing transcripts
-- **`extract`**: Extract metadata from PDF/HTML files
+- **`summarize`**: Generate summaries from existing transcripts or extracted content; uses reflection questions if available; works with MP4, PDF, and HTML files
+- **`extract`**: Extract metadata and content from PDF/HTML files
 
 #### Flags
 
@@ -157,6 +208,13 @@ LLM_ENDPOINT=https://llm.example.com/v1
 LLM_API_KEY=your-api-key-here
 LLM_MODEL=mistralai/Mistral-7B-Instruct
 
+# NEW: Required prompt configuration
+SUMMARY_PROMPT="Summarize key takeaways from the given content. Output just the summary concisely."
+TITLE_PROMPT="Generate a concise, descriptive title (5-10 words) for the given content. Do not include any formatting, quotes, or extra text."
+
+# Optional: Reflection prompt
+SUMMARY_REFLECTION_PROMPT="Summarize key takeaways focusing on frameworks or analytical tools to develop critical, creative, and systems thinking."
+
 # Feed Configuration
 FEED_FORMAT=rss                           # rss or atom (default: rss)
 
@@ -169,9 +227,6 @@ TRANSCRIPTION_COMPUTE_TYPE=float16
 TRANSCRIPTION_ENDPOINT=https://api.example.com/v1/audio/transcriptions  # URL for remote transcription API
 TRANSCRIPTION_API_KEY=your-api-key-here                              # API key for remote transcription endpoint
 TRANSCRIPTION_REMOTE_MODEL=whisper-1                                  # Model override for remote endpoint (not passed by default)
-
-# LLM System Prompt Configuration
-LLM_SYSTEM_PROMPT="Summarize key takeaways from this document. Focus on frameworks or analytical tools to develop critical, creative, and systems thinking."
 ```
 
 ### 3.3 JSON Metadata Schema
@@ -180,35 +235,40 @@ Each processed file has a corresponding `.json` file with the same name in the s
 
 ```json
 {
-  "version": "2.0",
-  "title": "My Audio File",
-  "description": "",
-  "summary": "Key takeaways from LLM...",
-  "content": "Full transcript...",
+  "title": {
+    "filename": "lecture",      // filename-derived (underscores\=>spaces)
+    "extracted": "Lecture 1",   // from source metadata (PDF metadata, HTML <title>)
+    "generated": "LLM Title",   // LLM-generated for MP4 (or for title generation when needed)
+    "final": "Course1: lecture" // the final title to use (with module prefix)
+  },
+  "extracted_title": "Lecture 1",  // extracted title stored separately (optional)
+  "description": "Extracted metadata description",  // For MP4: blank; For PDF/HTML: extracted metadata
+  "summary": "LLM-generated key takeaways",         // For MP4 only (unless PDF/HTML explicitly summarized); For PDF/HTML: null by default
+  "content": "Full transcript or extracted text",   // For MP4: full transcript; For PDF/HTML: extracted plaintext
   "filename": "lecture.mp4",
-  "filepath": "videos/lecture.mp4",
+  "filepath": "Course1/lecture.mp4",
   "filetype": "mp4|pdf|html",
-  "date": 1710000000,
-  "duration": 45.5,
-  "creation_time": "2024-01-01T00:00:00Z",
+  "date": 1728931200.123,          // UNIX epoch (float, millisecond precision)
+  "duration": 3600.5,             // For MP4: duration in seconds (float, optional)
+  "creation_time": "2024-01-15T10:30:00.000000Z",  // ISO-8601 (MP4 only, from audio metadata)
   "size": 12345678,
   
   "transcribe": {
     "status": null | "in_progress" | "complete",
-    "start_time": 1710000000,
-    "end_time": 1710000005,
+    "start_time": 1792096505.123,   // UNIX epoch (millisecond precision)
+    "end_time": 1792096515.456,     // UNIX epoch (millisecond precision)
     "input_size": 12345678,
     "output_size": 456789,
     "words": 452,
     "model": "large-v3-turbo",
-    "input_tokens": null,
-    "output_tokens": null
+    "input_tokens": null,           // optional, for API-based transcription
+    "output_tokens": null           // optional, for API-based transcription
   },
   
   "summarize": {
     "status": null | "in_progress" | "complete",
-    "start_time": 1710000005,
-    "end_time": 1710000010,
+    "start_time": 1792096515.123,
+    "end_time": 1792096520.456,
     "input_size": 456789,
     "output_size": 1997,
     "words": 345,
@@ -219,31 +279,30 @@ Each processed file has a corresponding `.json` file with the same name in the s
   
   "extract": null | {
     "status": null | "in_progress" | "complete",
-    "start_time": 1710000000,
-    "end_time": 1710000005,
-    "input_size": 12345678,
-    "output_size": 456789,
-    "model": "pypdf"
+    "start_time": 1792096500.123,
+    "end_time": 1792096505.456,
+    "input_size": 1790891,
+    "output_size": 12345,
+    "words": 543
   },
   
-  "feed_eligible": true | false,
-  "error": "string (optional)"
+  "error": "string (optional, only when processing failed)"
 }
 ```
 
 **Field Descriptions:**
-- `transcribe`, `summarize`, `extract`: Step maps tracking processing steps. Each contains a `status` field (null, "in_progress", "complete") and detailed timing/metrics. For MP4 files, `transcribe` and `summarize` are populated; for PDF/HTML files, `extract` is populated.
-- `title`: Human-readable title (LLM-generated if not in source metadata). Underscores are automatically replaced with spaces.
+- `title`: **NEW - Now a dict** with keys: `filename` (from filename, underscores\=>spaces), `extracted` (from source metadata), `generated` (LLM-generated for MP4 or when title generation is requested), `final` (the actual title to use, with module prefix)
+- `extracted_title`: **NEW** - Title extracted from source metadata (PDF metadata title, HTML `<title>` tag). Stored separately and NOT used as the actual title.
 - `description`: For MP4 files, this is blank. For PDF/HTML files, this contains extracted metadata.
-- `summary`: For MP4 files, this contains LLM-generated key takeaways. For PDF/HTML files, this is null.
-- `content`: For MP4 files, this contains the full transcript. For PDF/HTML files, this is null.
+- `summary`: For MP4 files, this contains LLM-generated key takeaways. For PDF/HTML files, this is null by default (can be populated by running the `summarize` command on the file).
+- `content`: For MP4 files, this contains the full transcript. **NEW: For PDF/HTML files, this contains extracted plaintext content.**
 - `filepath`: Relative path from `data/` directory root
-- `date`: Publication/creation date stored as UNIX epoch timestamp (integer seconds since 1970-01-01T00:00:00Z)
-- `creation_time`: ISO8601 formatted creation timestamp
-- `duration`: For MP4 files, duration in seconds (float). Not applicable for PDF/HTML files.
+- `date`: Publication/creation date stored as UNIX epoch **float with millisecond precision** (e.g., 1728931200.123)
+- `creation_time`: ISO-8601 formatted creation timestamp (from audio metadata via ffprobe)
+- `duration`: For MP4 files, duration in seconds (float). Extracted via ffprobe when available.
 - `size`: File size in bytes (for podcast enclosure `length`)
 - `error`: Optional; contains error message if any step failed
-- `version`: Schema version identifier (currently "2.0")
+- `transcribe`, `summarize`, `extract`: Step maps tracking processing steps. Each contains a `status` field (null, "in_progress", "complete") and detailed timing/metrics with **millisecond precision**
 
 **Note:** The absolute URL for feed enclosures is computed when generating feeds by combining `BASE_URL` + `filepath`.
 
@@ -254,22 +313,103 @@ Each processed file has a corresponding `.json` file with the same name in the s
 
 **Backwards Compatibility:** When loading JSON files with deprecated fields (`transcribe_status`, `summarize_status`, `extract_status`, `stage`, string `status`, `transcript`, `processing_date`, `completed_at`, `started_at`), a warning is printed to stderr. Deprecated fields are ignored (not migrated).
 
+**NEW Features in Schema:**
+- Title as dict with source tracking
+- extracted_title field for source metadata
+- content field now used for extracted text from PDF/HTML
+- Millisecond precision timestamps
+- duration field for MP4 files
+- creation_time field for MP4 files
+- summarize command can process PDF/HTML files to populate summary field
+
 ### 3.4 Feed Output
 
-Two feed files are generated in the `data/` directory root:
-- `podcast.xml` (or `podcast.atom`) - Contains all MP4 files with enclosures
-- `articles.xml` (or `articles.atom`) - Contains all PDF/HTML files
+Two or more feed files are generated based on feed.json configuration:
+- `podcast.xml` (or `podcast.atom`) - Contains all MP4 files with enclosures (only generated if feed.json exists AND MP4 files present)
+- `articles.xml` (or `articles.atom`) - Contains all PDF/HTML files (only generated if feed.json exists AND PDF/HTML files present)
+- `index.html` - Lists all available feeds in the folder (generated if feed.json exists)
 
 For podcast feed items:
-- Title from metadata
+- Title from metadata title dict's "final" key
 - Description from `summary` field (LLM-generated key takeaways)
 - Enclosure: URL, type="audio/mp4", length (file size from `size` field)
+- Publication date from metadata `date` field
 
 For articles feed items:
-- Title from metadata
-- Description from `description` field (extracted metadata)
+- Title from metadata title dict's "final" key
+- Description from `content` field (if available) or `description` field
+- Link to the source file
+- Publication date from metadata `date` field
+
+**NEW Features:**
+- **Markdown to HTML conversion**: Descriptions are converted from markdown to HTML with XSS protection
+- **Per-folder feeds**: When a folder contains `feed.json`, feeds are generated in that folder with custom titles/descriptions
+- **Conditional feed generation**: Feeds only generated if both feed.json exists AND applicable file types are present
+- **Index pages**: index.html generated in each folder with feed.json, listing available feeds
+- **Safe links**: Only allows safe URL schemes (http, https, mailto, relative paths, fragments)
 
 **Feed Item Sorting:** Folder name (ascending), then filename (ascending)
+
+### 3.5 Per-Folder Feed Configuration (feed.json)
+
+**IMPORTANT:** Feeds are ONLY generated in folders that contain a `feed.json` file. Root-level feeds require a feed.json in the data directory root.
+
+When a `feed.json` file exists in a subfolder of `data/`, the system generates feeds in that folder:
+
+```json
+{
+  "title": "Course 1: Introduction to AI",
+  "description": "All materials for Course 1 covering AI fundamentals"
+}
+```
+
+The `feed.json` file can contain:
+- `title`: Custom title for the feeds generated in this folder
+- `description`: Custom description for the feeds generated in this folder
+
+When `feed.json` exists:
+- `podcast.xml` is generated in that folder **only if MP4 files with feed_eligible=true exist in the subtree**
+- `articles.xml` is generated in that folder **only if PDF/HTML files with feed_eligible=true exist in the subtree**
+- `index.html` is generated in that folder listing all available feeds
+- Only items within that folder's subtree are included in the feeds
+- Custom title and description from `feed.json` are used
+- Root-level feeds require their own feed.json (not generated by default)
+
+### 3.6 Reflection Questions (reflection.md)
+
+When a `reflection.md` file exists in a folder containing MP4, PDF, or HTML files, the system uses its content as reflection questions for summarization:
+
+```markdown
+# Reflection Questions
+
+1. What are the key frameworks or mental models presented?
+2. What analytical tools can help develop critical thinking?
+3. How does this content relate to systems thinking?
+```
+
+When processing files in that folder:
+- Reflection questions are read from `reflection.md`
+- Questions are prepended to the transcript or extracted content
+- System uses `SUMMARY_REFLECTION_PROMPT` (or falls back to `SUMMARY_PROMPT`)
+- LLM focuses summary on answering the reflection questions
+- Works with both MP4 files (transcripts) and PDF/HTML files (extracted content) via the `summarize` command
+
+### 3.7 Index.html Generation (NEW)
+
+The system automatically generates `index.html` files to provide a discovery mechanism for feeds.
+
+**Generation Rules:**
+- `index.html` is generated in every folder that contains a `feed.json` file
+- Contains links only to feeds that actually exist (podcast.xml if MP4 files present, articles.xml if PDF/HTML files present)
+- Includes feed titles and descriptions from `feed.json`
+- Provides hierarchical navigation to subfolder index pages
+- Uses simple, clean HTML that works with any browser
+
+**Purpose:**
+- Easy discovery of all available feeds
+- Human-readable directory structure
+- Self-documenting feed organization
+- Central access point for all content
 
 ---
 
@@ -277,15 +417,22 @@ For articles feed items:
 
 ### 4.1 Dependencies
 
+**Required dependencies:**
 - **`feedgen`**: RSS/Atom feed generation with podcast extension
 - **`watchdog`**: File system monitoring for incremental mode
-- **`faster-whisper`**: GPU-accelerated audio transcription
 - **`openai`**: Client for OpenAI-compatible LLM API and remote transcription API
 - **`pydantic-settings`**: Configuration management with environment variables
 - **`pydantic`**: Data validation for metadata
 - **`click`**: CLI interface
-- **`pypdf`**: PDF metadata extraction (title, author)
-- **`beautifulsoup4`**: HTML metadata extraction (title from `<title>` tag)
+- **`pypdf`**: PDF metadata and content extraction
+- **`beautifulsoup4`**: HTML metadata and content extraction
+- **`python-dotenv`**: For loading .env files
+
+**Optional dependencies:**
+- **`faster-whisper`**: GPU-accelerated audio transcription (local mode)
+- **`av`**: Audio/video library for media decoding (required by faster-whisper, pinned to compatible version)
+- **`markdown`**: Enhanced markdown to HTML conversion (fallback to built-in converter if not installed)
+- **`ffprobe`**: Command-line tool for audio metadata extraction (duration, creation_time, bit_rate)
 
 #### 4.1.1 AV Library Compatibility Issue
 
@@ -297,7 +444,7 @@ For articles feed items:
 
 **Context:** `faster-whisper` uses CTranslate2 which handles audio decoding through the `av` library. The parameter `metadata_errors` was valid in an earlier release but was removed in a later release.
 
-**Fix Applied:** Pinned `av` in `pyproject.toml` dependencies to prevent installation of incompatible releases.
+**Fix Applied:** Pinned `av` in `pyproject.toml` dependencies to `av>=11.0,<19.0` to prevent installation of incompatible releases.
 
 **Recommendation:** Pin `av` in production deployments. Users should be aware of this dependency conflict when managing their environments.
 
@@ -332,7 +479,7 @@ When using remote transcription mode, the following server-side configuration mu
 
 #### RemoteTranscriber Class Implementation Details
 
-The `RemoteTranscriber` class is implemented in `src/local_feed_generator/services/transcriber.py` and provides:
+The `RemoteTranscriber` class is implemented in `src/local_feed_generator/services/remote_transcriber.py` and provides:
 
 - **API Client**: Uses the OpenAI Python SDK client configured with the remote endpoint URL and API key
 - **Audio Upload**: Sends `multipart/form-data` requests with the audio file and optional model parameter
@@ -372,7 +519,27 @@ Given that **GPU support is critical** and **RAM is not a limitation**, with **b
 
 **Recommendation:** Any OpenAI-compatible model with 128K+ context window
 - **API:** OpenAI-compatible endpoint (as specified in `LLM_ENDPOINT`)
-- **System Prompt:** Configurable via `LLM_SYSTEM_PROMPT` environment variable
+- **System Prompts:** Configurable via `SUMMARY_PROMPT`, `SUMMARY_REFLECTION_PROMPT`, and `TITLE_PROMPT` environment variables
+- **Content Sources:** Works with MP4 transcripts, PDF extracted content, and HTML extracted content
+
+### 4.4 Content Extraction
+
+**PDF Extraction:** Uses `pypdf` library to extract:
+- Metadata: title, author, creation date
+- Content: Plaintext from all pages
+- **NEW:** Removes control characters that are invalid in XML
+
+**HTML Extraction:** Uses `BeautifulSoup` to extract:
+- Metadata: `<title>` tag, `<meta name="description">`, date from various sources
+- Content: Plaintext from document body (tags removed)
+- **NEW:** Removes control characters that are invalid in XML
+
+**Audio Metadata Extraction:** Uses `ffprobe` command-line tool to extract:
+- Duration in seconds
+- Creation time (ISO-8601 string)
+- Bit rate
+- Format information
+- Falls back to file modification time if ffprobe is not installed
 
 ---
 
@@ -381,15 +548,15 @@ Given that **GPU support is critical** and **RAM is not a limitation**, with **b
 ```mermaid
 classDiagram
     direction TB
-
+    
     class local_feed_generator {
         +pyproject.toml
     }
-
+    
     class src {
         +local_feed_generator/
     }
-
+    
     class local_feed_generator_dir {
         +__init__.py
         +cli.py
@@ -398,119 +565,179 @@ classDiagram
         +producer.py
         +metadata.py
         +feeds.py
+        +index.py (NEW)
     }
-
+    
     class services {
         +__init__.py
         +transcriber.py
+        +remote_transcriber.py
         +summarizer.py
         +extractors.py
     }
-
+    
     local_feed_generator_dir --> services
     local_feed_generator --> src
-
+    
     class root_files {
         +.env
         +README.md
     }
-
+    
     local_feed_generator --> root_files
-
+    
     class data {
-        +podcast.xml
-        +articles.xml
+        +feed.json (REQUIRED for feeds)
+        +podcast.xml (if MP4 present)
+        +articles.xml (if PDF/HTML present)
+        +index.html
     }
-
-    class videos {
+    
+    class course1 {
+        +feed.json
+        +podcast.xml (if MP4 present)
+        +articles.xml (if PDF/HTML present)
+        +index.html
+    }
+    
+    class course1_files {
         +lecture.mp4
         +lecture.mp4.json
+        +reflection.md
+        +notes.pdf
+        +notes.pdf.json
     }
-
-    class documents {
-        +document.html
-        +document.html.json
-    }
-
-    data --> videos
-    data --> documents
+    
+    data --> course1
+    course1 --> course1_files
 ```
 
 **Project Layout:**
 ```
 local-feed-generator/
-├── pyproject.toml
-├── src/local_feed_generator/
-│   ├── __init__.py
-│   ├── cli.py
-│   ├── config.py
-│   ├── scanner.py
-│   ├── producer.py
-│   ├── services/
-│   │   ├── __init__.py
-│   │   ├── transcriber.py
-│   │   ├── summarizer.py
-│   │   └── extractors.py
-│   ├── metadata.py
-│   └── feeds.py
-├── .env
-└── README.md
+\u251c\u2500\u2500 pyproject.toml
+\u251c\u2500\u2500 src/local_feed_generator/
+\u2502   \u251c\u2500\u2500 __init__.py
+\u2502   \u251c\u2500\u2500 cli.py
+\u2502   \u251c\u2500\u2500 config.py
+\u2502   \u251c\u2500\u2500 scanner.py
+\u2502   \u251c\u2500\u2500 producer.py
+\u2502   \u251c\u2500\u2500 services/
+\u2502   \u2502\u2500 \u251c\u2500\u2500 __init__.py
+\u2502   \u2502\u2500 \u251c\u2500\u2500 transcriber.py
+\u2502   \u2502\u2500 \u251c\u2500\u2500 remote_transcriber.py
+\u2502   \u2502\u2500 \u251c\u2500\u2500 summarizer.py
+\u2502   \u2502\u2500 \u251c\u2500\u2500 extractors.py
+\u2502   \u251c\u2500\u2500 metadata.py
+\u2502   \u251c\u2500\u2500 feeds.py
+\u2502   \u251c\u2500\u2500 index.py (NEW - for index.html generation)
+\u251c\u2500\u2500 .env
+\u2514\u2500\u2500 README.md
 
 data/
-├── podcast.xml
-├── articles.xml
-├── videos/
-│   ├── lecture.mp4
-│   ├── lecture.mp4.json
-│   └── notes.pdf
-└── documents/
-    ├── document.html
-    └── document.html.json
+\u251c\u2500\u2500 feed.json                    # REQUIRED: Root-level feed config
+\u251c\u2500\u2500 podcast.xml                  # Generated only if MP4 files present
+\u251c\u2500\u2500 articles.xml                 # Generated only if PDF/HTML files present
+\u251c\u2500\u2500 index.html                   # NEW: Root-level index page
+\u251c\u2500\u2500 Course1/
+\u2502   \u251c\u2500\u2500 feed.json               # REQUIRED: Per-folder feed config
+\u2502   \u251c\u2500\u2500 podcast.xml             # Generated only if MP4 files present
+\u2502   \u251c\u2500\u2500 articles.xml            # Generated only if PDF/HTML files present
+\u2502   \u251c\u2500\u2500 index.html              # NEW: Per-folder index page
+\u2502   \u251c\u2500\u2500 lecture.mp4
+\u2502   \u251c\u2500\u2500 lecture.mp4.json        # Metadata with title dict, step maps, ms precision
+\u2502   \u251c\u2500\u2500 reflection.md           # Optional: reflection questions
+\u2502   \u2514\u2500\u2500 notes.pdf
+\u2502       \u2514\u2500\u2500 notes.pdf.json
+\u2514\u2500 Course2/
+    \u251c\u2500\u2500 feed.json
+    \u251c\u2500\u2500 podcast.xml (only if MP4 present)
+    \u251c\u2500\u2500 articles.xml (only if PDF/HTML present)
+    \u251c\u2500\u2500 index.html
+    \u251c\u2500\u2500 document.html
+    \u2514\u2500\u2500 document.html.json
 ```
 
 ### 5.2 Module Responsibilities
 
 #### Scanner
 - Discovers all MP4, PDF, HTML files in the data directory
-- Batch mode: Returns list of files without corresponding JSON metadata
+- Batch mode: Returns list of files without corresponding JSON metadata or with incomplete step maps
 - Incremental mode: Watches for file system changes and triggers processing
 - Validates filenames for special characters (warnings only)
 - Detects orphaned JSON files (JSON without source file)
+- **NEW:** Implements debouncing to prevent rapid successive events
+- **NEW:** Implements periodic rescan as fallback for unreliable file systems
 
 #### Producer
 - Orchestrates file processing based on file type
-- For MP4 files: Requests transcription, then summarization
-- For PDF/HTML files: Extracts metadata, uses LLM for title if needed
-- Generates JSON metadata file adjacent to source file
-- Handles errors gracefully, writing error state to JSON
+- For MP4 files: Requests transcription, then summarization (with optional reflection questions), extracts audio metadata, generates title dict, applies module prefix
+- For PDF/HTML files: Extracts metadata AND content, generates title dict, set summary to null (unless explicitly summarized), applies module prefix
+- **NEW:** Can generate summaries for PDF/HTML files when explicitly requested via summarize command
+- Generates JSON metadata file adjacent to source file with step maps, millisecond precision timestamps, title dict
+- Handles errors gracefully, writing error metadata
+- **NEW:** Checks for `reflection.md` files and passes questions to summarizer
+- **NEW:** Extracts audio metadata (duration, creation_time) using ffprobe
+- **NEW:** Builds title as dict with sources
+- **NEW:** Applies module name prefix to titles when appropriate
 
 #### Transcription Service
 - Converts MP4 audio to markdown text
 - Uses faster-whisper with CUDA GPU acceleration for highest quality
 - No timestamps in output (clean transcript only)
-- Tracks processing in the `transcribe` step map
+- Tracks processing in the `transcribe` step map with millisecond precision timing
+- Handles errors and propagates them with context
+
+#### Remote Transcription Service
+- **NEW:** Provides remote transcription via OpenAI-compatible API
+- Uses `RemoteTranscriber` class in `services/remote_transcriber.py`
+- Supports retry logic with exponential backoff and jitter
+- Handles various API errors (connection, authentication, rate limiting, etc.)
+- Falls back to using `TRANSCRIPTION_REMOTE_MODEL` or `TRANSCRIPTION_MODEL`
+- Parses both text and JSON responses (vLLM returns JSON even with response_format="text")
 
 #### Summarization Service
-- Generates key takeaways from audio transcripts
+- Generates key takeaways from audio transcripts and extracted content
 - Uses configured OpenAI-compatible LLM endpoint
-- Can generate titles when source metadata is unavailable
-- Tracks processing in the `summarize` step map
+- Can generate titles from content when source metadata is unavailable
+- Tracks processing in the `summarize` step map with millisecond precision timing
+- **NEW:** Accepts optional reflection questions parameter
+- **NEW:** Uses `SUMMARY_PROMPT` or `SUMMARY_REFLECTION_PROMPT` based on context
+- **NEW:** Works with both MP4 transcripts and PDF/HTML extracted content
+- Handles API errors with retry logic
 
 #### Extractors Service
 - Extracts metadata from PDF files using PyPDF
 - Extracts metadata from HTML files using BeautifulSoup
-- Generates titles from content using LLM if metadata unavailable
-- Tracks processing in the `extract` step map
+- **NEW:** Extracts plaintext content from PDF (all pages) and HTML (body text)
+- **NEW:** Removes control characters that are invalid in XML from extracted content
+- **NEW:** Extracts audio metadata using ffprobe (duration, creation_time, bit_rate)
+- Tracks processing in the `extract` step map with millisecond precision timing
+- Return structured data compatible with Metadata model
 
 #### Feed Generator
 - Reads all JSON metadata files from data directory
 - Filters entries by feed_eligible computed property (which checks the step map status values)
 - For MP4: Uses `summary` field for feed item descriptions
-- For PDF/HTML: Uses `description` field for feed item descriptions
+- For PDF/HTML: Uses `content` field (if available) or `description` field for feed item descriptions
 - Generates podcast feed for MP4 files with enclosures
 - Generates articles feed for PDF/HTML files
 - Sorts items by folder name, then filename
-- Writes feeds to data directory root
+- Writes feeds to data directory root and optionally to subfolders with feed.json
+- **NEW:** Only generates feeds where feed.json exists AND applicable files are present
+- **NEW:** Converts markdown in descriptions to HTML with XSS protection
+- **NEW:** Supports per-folder feed generation via feed.json files
+- **NEW:** Validates feeds for XML well-formedness and RSS compliance
+
+#### Index Generator (NEW)
+- Scans for feed.json files in the data directory
+- For each folder with feed.json:
+  - Checks which feeds exist (podcast.xml, articles.xml) based on file types present
+  - Generates index.html with links to available feeds
+  - Includes feed titles and descriptions from feed.json
+  - Provides hierarchical navigation to subfolder index pages
+- Uses simple HTML generation (no external templates)
+- Regenerates automatically when feeds are regenerated
 
 ---
 
@@ -524,41 +751,71 @@ Audio files (MP4) are transcribed using either local (faster-whisper) or remote 
 flowchart TD
     A[CLI: process command] --> B[Scanner.scan_directory]
     B -->|Recursively walks DATA_DIR| C[Finds .mp4, .pdf, .html]
-    C --> D[Filters out files with .json]
+    C --> D[Filters out files with complete JSON]
     D --> E[Returns list of files]
-
+    
     E --> F[For each file: Producer.process_file]
     F --> G{File Type?}
-
-     G -->|MP4| H1[Transcribe to markdown\n(local or remote)]
-     H1 --> I1[Store transcript in content field]
-     I1 --> J1[Summarize transcript]
-     J1 --> K1[Store summary in summary field]
-     K1 --> L1[Set description to blank]
-     L1 --> M1[Extract/Generate title]
-
-    G -->|PDF| H2[Extract title from metadata]
-    H2 -->|No title| J2[Generate title via LLM]
-    H2 --> K2[Store metadata in description field]
-    K2 --> L2[Set summary and content to null]
-
-    G -->|HTML| H3[Extract title from HTML]
-    H3 -->|No title| J3[Generate title via LLM]
-    H3 --> K3[Store metadata in description field]
-    K3 --> L3[Set summary and content to null]
-
-    M1 --> N[Generate JSON metadata with step maps]
-    L2 --> N
-    L3 --> N
-
-    N --> O[Write .json file]
-
-    F -->|Error| P[Write error state to .json]
-
-    O --> Q[Feed Generator rebuilds feeds]
-    P --> Q
-    Q --> R[podcast.xml & articles.xml updated]
+    
+    G -->|MP4| H1[Check for reflection.md]
+    H1 -->|Exists| H2[Load reflection questions]
+    H1 -->|No| H3[Use standard prompt]
+    H2 --> I1[Transcribe via local or remote]
+    H3 --> I1
+    I1 --> J1[Store transcript in content field]
+    J1 --> K1[Summarize with reflection if available]
+    K1 --> L1[Store summary in summary field]
+    L1 --> M1[Extract audio metadata via ffprobe]
+    M1 --> N1[Build title dict with sources]
+    N1 --> O1[Apply module prefix]
+    O1 --> P1[Set description to blank]
+    P1 --> Q1[Write .json with step maps]
+    
+    G -->|PDF| H4[Extract metadata & content]
+    H4 --> K2[Store metadata in description]
+    K2 --> L2[Store content in content field]
+    H4 --> M2[Build filename-derived title]
+    M2 --> N2[Build title dict]
+    N2 --> O2[Apply module prefix]
+    O2 --> Q2[Set summary to null]
+    Q2 --> Q1
+    
+    G -->|HTML| H5[Extract metadata & content]
+    H5 --> K3[Store metadata in description]
+    K3 --> L3[Store content in content field]
+    H5 --> M3[Build filename-derived title]
+    M3 --> N3[Build title dict]
+    N3 --> O3[Apply module prefix]
+    O3 --> Q3[Set summary to null]
+    Q3 --> Q1
+    
+    Q1 --> R[All files processed]
+    R --> S[Feed Generator discovers metadata]
+    S --> T[Index Generator discovers feed.json files]
+    T --> U[For each feed.json folder]
+    U --> V{MP4 files present?}
+    V -->|Yes| W[Generate podcast.xml]
+    V -->|No| X[Skip podcast.xml]
+    U --> Y{PDF/HTML files present?}
+    Y -->|Yes| Z[Generate articles.xml]
+    Y -->|No| AA[Skip articles.xml]
+    W --> AB[Mark podcast as available]
+    Z --> AB
+    X --> AB
+    AA --> AB
+    AB --> AC[Generate index.html with available feeds]
+    AC --> AD[Write all files]
 ```
+
+**Key Processing Steps:**
+1. Scanner discovers files needing processing (no JSON, incomplete JSON, or source newer than JSON)
+2. Producer processes each file based on type
+3. For MP4: Transcribe \=> Summarize (with optional reflection) \=> Extract audio metadata \=> Generate title \=> Build metadata
+4. For PDF/HTML: Extract metadata & content \=> Generate title \=> Build metadata
+5. All steps populate step maps with millisecond precision timestamps
+6. Feed generator creates feeds from all valid metadata, with markdown to HTML conversion
+7. Index generator creates index.html pages for each folder with feed.json
+8. Per-folder feeds generated when feed.json exists AND applicable files are present
 
 ### 6.2 Incremental Processing Flow
 
@@ -569,21 +826,35 @@ flowchart TD
     A[CLI: watch command] --> B[Scanner.watch_directory with handler]
     B --> C[Start watchdog Observer]
     C --> D[Monitor DATA_DIR recursively]
-
+    
     D --> E[File created/modified]
     E --> F{File Type?}
-
+    
     F -->|.json| G[Check if source file exists]
     G -->|No| H[Warn: orphaned JSON]
     G -->|Yes| I[Continue monitoring]
-
-    F -->|.mp4, .pdf, .html| J[Check if .json exists]
-    J -->|No| K[Process file same as batch]
-    K --> L[Rebuild feeds]
-    J -->|Yes| I
-
-    F -->|Other| M[Ignore]
+    
+    F -->|.mp4, .pdf, .html| J[Check debounce timer]
+    J -->|Within interval| K[Extend debounce, skip]
+    J -->|Expired| L[Check if already complete]
+    L -->|Complete| I
+    L -->|Incomplete| M[Process file same as batch]
+    M --> N[Regenerate feeds]
+    N --> O[Regenerate index.html]
+    
+    F -->|Other| P[Ignore]
+    
+    D -->|Periodic rescan| Q[Scanner.scan_directory]
+    Q --> R[Process discovered files]
+    R --> N
 ```
+
+**Incremental Features:**
+- Debouncing: Rapid successive events for the same file are collapsed
+- Periodic rescan: Fallback for file systems that don't reliably trigger events
+- Event-driven: New and modified files trigger immediate processing
+- Error resilience: Single file processing errors don't stop the watcher
+- Feed regeneration: Feeds and index.html are regenerated after each file processing
 
 ---
 
@@ -593,10 +864,11 @@ flowchart TD
 
 When an error occurs during processing:
 1. Catch the exception
-2. Create metadata with appropriate error message
+2. Create metadata with appropriate error state (step maps set to null, error field populated)
 3. Write `.json` file to disk
 4. **Exclude from feeds** (filter by feed_eligible computed property)
 5. Log error to stderr
+6. In watch mode: Continue monitoring (don't crash the watcher)
 
 ### 7.2 Special Characters in Filenames
 
@@ -617,17 +889,33 @@ When an error occurs during processing:
 **Transcription Failures (Local Mode):**
 - Corrupted audio file: Mark as error, continue with other files
 - GPU errors: Verify CUDA setup and retry
+- Model loading errors: Check faster-whisper installation
 
 **Transcription Failures (Remote Mode):**
 - Connection errors: Mark as error, log details, continue with other files
 - Authentication errors: Verify `TRANSCRIPTION_API_KEY`, mark as error
 - Rate limiting: Respect retry-after header if provided, otherwise mark as error
 - API errors: Capture error message from response, mark as error
+- Audio duration limits: Ensure vLLM server has `VLLM_MAX_AUDIO_DECODE_DURATION_S` configured
 
 **LLM Failures:**
 - API connection error: Retry with exponential backoff
 - Rate limiting: Respect retry-after header
 - Context overflow: Should not occur (128k context model used)
+- Empty response: Mark as error with descriptive message
+
+### 7.5 Content Validation
+
+**Control Character Removal:**
+- PDF and HTML extraction can produce text with control characters (0x00-0x1f except tab/newline/CR, and 0x7f)
+- These characters are invalid in XML and cause feed generation to fail
+- The system automatically removes these characters during extraction
+- Original source files are not modified
+
+**XML Escaping:**
+- All content in feeds is properly XML-escaped
+- Markdown to HTML conversion handles XSS protection
+- Only safe URL schemes are allowed in links (http, https, mailto, relative, fragments)
 
 ---
 
@@ -646,11 +934,14 @@ When an error occurs during processing:
 - File paths are validated before processing
 - Only `.mp4`, `.pdf`, `.html` extensions are processed
 - Filenames with special characters generate warnings but are processed
+- Control characters are removed from extracted content
 
 ### 8.3 XML Injection
 
 - `feedgen` library properly escapes all XML content
 - No manual string concatenation for XML generation
+- Markdown to HTML conversion includes XSS protection
+- Safe URL scheme validation for links
 
 ---
 
@@ -659,7 +950,7 @@ When an error occurs during processing:
 ### 9.1 GPU Utilization
 
 - `faster-whisper` with CUDA provides optimal transcription performance
-- Model loaded once and reused for all files
+- Model loaded once and reused for all files (singleton pattern)
 - Batch processing sequential to ensure stable GPU utilization
 
 ### 9.2 Processing Characteristics
@@ -668,6 +959,8 @@ When an error occurs during processing:
 - MP4 transcription is GPU-accelerated
 - LLM summarization happens on separate infrastructure (via API)
 - Feed generation is fast (reading JSON and writing XML)
+- Index generation is fast (reading feed.json and generating simple HTML)
+- Debouncing prevents duplicate processing of rapidly-changing files
 
 ---
 
@@ -713,11 +1006,17 @@ TRANSCRIPTION_COMPUTE_TYPE=float16
 - **Disadvantages:** Audio files are uploaded to remote endpoint, network dependency, potential costs
 - **Optional Model Override:** Use `TRANSCRIPTION_REMOTE_MODEL` only if the remote endpoint requires a specific model parameter
 
-### 10.3 LLM System Prompt
+### 10.3 LLM System Prompts
 
-**Recommendation:**
+**Required Prompts:**
 ```
-LLM_SYSTEM_PROMPT="Summarize key takeaways from this document. Focus on frameworks or analytical tools to develop critical, creative, and systems thinking."
+SUMMARY_PROMPT="Summarize key takeaways from the given content. Output just the summary concisely."
+TITLE_PROMPT="Generate a concise, descriptive title (5-10 words) for the given content. Do not include any formatting, quotes, or extra text."
+```
+
+**Optional Reflection Prompt:**
+```
+SUMMARY_REFLECTION_PROMPT="Summarize key takeaways focusing on: frameworks, analytical tools, critical thinking, creative thinking, systems thinking. Output just the summary concisely."
 ```
 
 ---
@@ -725,48 +1024,76 @@ LLM_SYSTEM_PROMPT="Summarize key takeaways from this document. Focus on framewor
 ## 11. Implementation Milestones
 
 ### Milestone 1: Foundation
-- [ ] Set up project with dependency management
-- [ ] Implement configuration system
-- [ ] Implement JSON metadata schema and validation
-- [ ] Set up CLI framework
-- [ ] Create basic directory structure
+- [x] Set up project with dependency management
+- [x] Implement configuration system with new prompt variables
+- [x] Implement JSON metadata schema and validation (with title dict, ms precision)
+- [x] Set up CLI framework
+- [x] Create basic directory structure
 
 ### Milestone 2: Scanner & File Processing
-- [ ] Implement scanner with batch processing
-- [ ] Implement producer with file type dispatch
-- [ ] Add PDF metadata extraction
-- [ ] Add HTML metadata extraction
-- [ ] Add title generation fallback (LLM-based)
-- [ ] Test with sample PDF/HTML files
+- [x] Implement scanner with batch processing
+- [x] Implement producer with file type dispatch
+- [x] Add PDF metadata and content extraction
+- [x] Add HTML metadata and content extraction
+- [x] Add title generation fallback (LLM-based)
+- [x] Add title dict building with sources
+- [x] Add module name prefixing for titles
+- [x] Test with sample PDF/HTML files
 
 ### Milestone 3: Audio Processing
-- [ ] Implement transcription service
-- [ ] Implement summarization service
-- [ ] Integrate transcription into producer
-- [ ] Integrate summarization into producer
-- [ ] Test with sample MP4 files
+- [x] Implement transcription service (local and remote)
+- [x] Implement summarization service with reflection support
+- [x] Integrate transcription into producer
+- [x] Integrate summarization into producer
+- [x] Add audio metadata extraction (ffprobe)
+- [x] Test with sample MP4 files
 
 ### Milestone 4: Feed Generation
-- [ ] Implement feed generator
-- [ ] Generate podcast feed with enclosures
-- [ ] Generate articles feed
-- [ ] Implement proper XML escaping
-- [ ] Implement sorting by filepath
+- [x] Implement feed generator with per-folder support
+- [x] Generate podcast feed with enclosures
+- [x] Generate articles feed
+- [x] Implement markdown to HTML conversion
+- [x] Implement proper XML escaping
+- [x] Implement sorting by filepath
+- [x] Add feed.json support for per-folder feeds
+- [x] **NEW:** Implement conditional feed generation (only if feed.json exists and files present)
+- [x] **NEW:** Implement index.html generation
 
 ### Milestone 5: Incremental Mode & Polish
-- [ ] Implement watch mode with file system monitoring
-- [ ] Add error handling and status tracking
-- [ ] Add filename validation warnings
-- [ ] Add orphaned JSON detection
-- [ ] Add validation command
-- [ ] Final integration testing
+- [x] Implement watch mode with file system monitoring
+- [x] Add debouncing for rapid events
+- [x] Add periodic rescan fallback
+- [x] Add error handling and status tracking
+- [x] Add filename validation warnings
+- [x] Add orphaned JSON detection
+- [x] Add validation command
+- [x] Final integration testing
 
-### Milestone 6: Documentation & Deployment
-- [ ] Write user documentation
-- [ ] Document environment setup
-- [ ] Document model installation requirements
-- [ ] Final end-to-end testing
-- [ ] Create example `data/` directory with sample files
+### Milestone 6: Enhanced Features
+- [x] Add reflection.md support for reflection questions
+- [x] Add per-folder feed generation with feed.json
+- [x] Add markdown to HTML conversion
+- [x] Add millisecond precision timestamps
+- [x] Add module name prefixing for titles
+- [x] Add whitespace/control character normalization
+- [x] Add content extraction for PDF/HTML files
+- [x] Add ffprobe integration for audio metadata
+
+### Milestone 7: Conditional Feed Generation & Index Pages
+- [x] **NEW:** Implement conditional feed generation rules
+- [x] **NEW:** NO root feeds without feed.json
+- [x] **NEW:** podcast.xml only if MP4 files present
+- [x] **NEW:** articles.xml only if PDF/HTML files present
+- [x] **NEW:** Implement index.html generation
+- [x] **NEW:** Add hierarchical navigation in index pages
+- [x] Final end-to-end testing
+
+### Milestone 8: Documentation & Deployment
+- [x] Update README with new features
+- [x] Update specs with new requirements
+- [x] Update design document with new architecture
+- [x] Update tasks with completion status
+- [x] Final end-to-end testing
 
 ---
 
@@ -774,11 +1101,13 @@ LLM_SYSTEM_PROMPT="Summarize key takeaways from this document. Focus on framewor
 
 ### 12.1 External Dependencies
 
-1. **Nvidia GPU with CUDA:** Required for efficient transcription
+1. **Nvidia GPU with CUDA:** Required for efficient transcription (local mode)
 2. **CUDA Toolkit:** Must be installed and configured
 3. **Local LLM Endpoint:** Must be running and accessible (as per `.env`)
-4. **Python:** For modern language features
+4. **Python:** 3.14 or later
 5. **uv:** For dependency management
+6. **Optional: ffprobe:** For audio metadata extraction (falls back to file metadata if not installed)
+7. **Optional: markdown library:** For enhanced markdown to HTML conversion (falls back to built-in converter)
 
 ### 12.2 Model Requirements
 
@@ -790,25 +1119,48 @@ LLM_SYSTEM_PROMPT="Summarize key takeaways from this document. Focus on framewor
 
 ## 13. Decisions
 
-### 13.1 Title Generation
+### 13.1 Title as Dict
 
-**Decision:** Use LLM to generate titles for all files unless source provides one.
-
-**Rationale:**
-- PDF/HTML may have metadata titles
-- If not available, LLM can generate better titles than filenames
-- Consistent user experience across all file types
-
-### 13.2 Feed Regeneration
-
-**Decision:** Regenerate feeds after every file processing (both batch and incremental).
+**Decision:** Represent title as a dict with source tracking instead of a plain string.
 
 **Rationale:**
-- Ensures feeds are always up-to-date
+- Need to track where each title comes from (filename, extracted from metadata, generated by LLM)
+- Enables proper fallback logic (filename \=> extracted \=> generated)
+- Allows displaying the original extracted title separately if needed
+- Provides better visibility into title generation process
+- Permits different title formats for different use cases
+
+### 13.2 Title Generation
+
+**Decision:** Use LLM to generate titles for MP4 files. For PDF/HTML, use filename-derived titles.
+
+**Rationale:**
+- MP4 files rarely have embedded metadata with useful titles
+- PDF/HTML files often have metadata or `<title>` tags, but filename is more reliable for organization
+- Consistent user experience: filename-derived titles organize by filename structure
+- Module prefixing provides additional context
+
+### 13.3 Module Name Prefixing
+
+**Decision:** Automatically prepend parent folder name to titles when the filename doesn't already start with it.
+
+**Rationale:**
+- Better organization in feed readers
+- Clearer context for each item
+- Automatic categorization without manual effort
+- Handles common naming patterns (Course1/lecture.mp4 vs Course1/Course1_lecture.mp4)
+
+### 13.4 Feed Regeneration
+
+**Decision:** Regenerate feeds and index.html after every file processing (both batch and incremental).
+
+**Rationale:**
+- Ensures feeds and index are always up-to-date
 - Simple to implement
 - Performance impact is minimal
+- Per-folder feeds require regeneration anyway
 
-### 13.3 Error Recovery
+### 13.5 Error Recovery
 
 **Decision:** Error state is persistent in JSON; user must fix source file and delete JSON to retry.
 
@@ -816,6 +1168,100 @@ LLM_SYSTEM_PROMPT="Summarize key takeaways from this document. Focus on framewor
 - Prevents infinite retry loops
 - Clear error state visible to user
 - Manual intervention ensures user awareness
+- Can use `--force` flag to retry without deleting JSON
+
+### 13.6 Content Extraction for PDF/HTML
+
+**Decision:** Extract full plaintext content from PDF and HTML files, not just metadata.
+
+**Rationale:**
+- Enables richer feed descriptions (using content instead of just metadata)
+- Allows for future features like search, indexing, etc.
+- Minimal performance overhead
+- Control characters are automatically removed for XML safety
+
+### 13.7 Markdown to HTML Conversion
+
+**Decision:** Convert markdown in feed descriptions to HTML with built-in fallback.
+
+**Rationale:**
+- Better rendering in feed readers
+- Maintains compatibility even without markdown library
+- Includes XSS protection
+- Safe URL scheme validation
+
+### 13.8 Per-Folder Feeds
+
+**Decision:** Support per-folder feed generation via feed.json files.
+
+**Rationale:**
+- Better organization for multiple courses/modules
+- Custom branding per folder
+- Backward compatible with root-level feeds (when feed.json exists)
+- Optional feature (no breaking changes)
+
+### 13.9 Reflection Questions
+
+**Decision:** Support reflection.md files for focused summarization.
+
+**Rationale:**
+- Educational use case: focus on specific learning objectives
+- Customizable per course/module
+- Optional feature (no impact when not used)
+- Uses separate system prompt for better results
+- Works with MP4, PDF, and HTML files
+
+### 13.10 Millisecond Precision Timestamps
+
+**Decision:** Store timestamps as UNIX epoch floats with millisecond precision.
+
+**Rationale:**
+- Better precision for tracking processing times
+- Minimal storage overhead
+- Backward compatible (integers still work)
+- Step maps benefit from precise timing
+
+### 13.11 Conditional Feed Generation
+
+**Decision:** Only generate feeds where feed.json exists AND applicable file types are present.
+
+**Rationale:**
+- Explicit configuration (no accidental feeds)
+- Resource efficiency (no empty feeds)
+- Clear intent (feeds only where explicitly requested)
+- Predictable behavior
+- Better user control
+
+### 13.12 No Root Feeds Without feed.json
+
+**Decision:** Root-level feeds require explicit feed.json configuration.
+
+**Rationale:**
+- Prevents accidental generation of root feeds with all content
+- Encourages deliberate organization
+- Consistent with per-folder feed behavior
+- User must explicitly opt-in to root feeds
+
+### 13.13 Index.html Generation
+
+**Decision:** Auto-generate index.html pages in folders with feed.json.
+
+**Rationale:**
+- Easy discovery of all feeds
+- Human-readable directory structure
+- Self-documenting feed organization
+- Works with any web browser
+- Hierarchical navigation
+
+### 13.14 Summarize Command for PDF/HTML
+
+**Decision:** Allow the summarize command to process PDF/HTML files with extracted content.
+
+**Rationale:**
+- Enables optional summarization for documents
+- Uses the same LLM infrastructure as audio summarization
+- Maintains consistency in command interface
+- Optional feature (doesn't affect feed eligibility for PDF/HTML)
 
 ---
 
@@ -830,6 +1276,9 @@ LLM_SYSTEM_PROMPT="Summarize key takeaways from this document. Focus on framewor
 | R-005: Large audio files slow | Low | Low | Acceptable for personal use; no time constraints |
 | R-006: GPU memory exhaustion | Low | High | Use float16 or int8; fallback to smaller models |
 | R-007: LLM API unavailable | Low | Medium | Clear error messages; retry logic |
+| R-008: Control characters in PDF/HTML | Medium | Medium | Automatically remove control characters during extraction |
+| R-009: XML generation failures | Low | Medium | Validate all content; proper escaping; control character removal |
+| R-010: Missing feeds due to no feed.json | Medium | Medium | Document requirement clearly; generate warnings if files exist but no feed.json |
 
 ---
 
@@ -844,6 +1293,11 @@ LLM_SYSTEM_PROMPT="Summarize key takeaways from this document. Focus on framewor
 - **HTML:** HyperText Markup Language
 - **CUDA:** Nvidia's parallel computing platform
 - **LLM:** Large Language Model
+- **JSON:** JavaScript Object Notation - lightweight data interchange format
+- **XML:** Extensible Markup Language - markup language for documents
+- **UNIX epoch:** Number of seconds (or milliseconds) since January 1, 1970
+- **ISO-8601:** International standard for date and time representation
+- **ffprobe:** Command-line tool for extracting metadata from multimedia files
 
 ### 15.2 References
 
@@ -854,3 +1308,4 @@ LLM_SYSTEM_PROMPT="Summarize key takeaways from this document. Focus on framewor
 - [pydantic](https://pydantic.dev/)
 - [PyPDF2](https://pypdf.readthedocs.io/)
 - [BeautifulSoup](https://www.crummy.com/software/BeautifulSoup/)
+- [CTranslate2](https://github.com/OpenNMT/CTranslate2/)

@@ -6,7 +6,7 @@ Education content exists as disconnected files (PDF, HTML, MP4) in a `data` dire
 
 ## Scope
 
-This system processes education content files in the `data` directory and generates RSS/Atom feeds placed alongside them for personal consumption via mobile apps on an existing internal web server.
+This system processes education content files in the `data` directory and generates RSS/Atom feeds placed alongside them for personal consumption via mobile apps on an existing internal web server. The system now supports per-folder feed generation, enhanced metadata extraction, conditional feed generation, and auto-generated index pages.
 
 ---
 
@@ -35,66 +35,73 @@ This system processes education content files in the `data` directory and genera
 
 ### JSON Metadata
 
-**FR-007**: For each input file, the system SHALL generate a JSON metadata file with the same name and `.json` extension appended (e.g., `document.pdf` → `document.pdf.json`)
+**FR-007**: For each input file, the system SHALL generate a JSON metadata file with the same name and `.json` extension appended (e.g., `document.pdf` \=> `document.pdf.json`)
 
 **FR-008**: JSON metadata files SHALL be placed in the same directory as their source files
 
-**FR-009**: JSON metadata SHALL include fields required to generate RSS/Atom feed items. All date fields (date, creation_time) SHALL be stored as UNIX epoch timestamps (integer seconds since 1970-01-01T00:00:00Z). The `duration` field SHALL be stored as a float or integer representing seconds.
+**FR-009**: JSON metadata SHALL include fields required to generate RSS/Atom feed items. All date fields (date) SHALL be stored as UNIX epoch floats (or integers) with **millisecond precision** (float with 3 decimal places). The `duration` field SHALL be stored as a float or integer representing seconds.
 
 **FR-010**: JSON metadata SHALL contain at minimum:
 ```json
 {
   "version": "2.0",
-  "title": "string",           // Human-readable title (derived or from file)
-  "description": "string",    // For MP4: blank; For PDF/HTML: extracted metadata
-  "summary": "string",        // For MP4: Key takeaways (populated by LLM); For PDF/HTML: null
-  "content": "string",        // For MP4: Full transcript; For PDF/HTML: null
-  "filename": "string",       // Original filename with extension
-  "filepath": "string",       // Relative path from data directory root
-  "filetype": "pdf|html|mp4", // Source file type
-  "date": 1710000000,          // Publication/creation date (UNIX epoch seconds)
-  "duration": 45.5,          // For MP4: duration in seconds (float)
-  "creation_time": "2024-01-01T00:00:00Z", // ISO8601 creation timestamp
-  "size": 12345678,          // File size in bytes (for podcast enclosure length)
+  "title": {
+    "filename": "lecture",      // filename-derived (underscores\=>spaces)
+    "extracted": "Lecture 1",   // from source metadata (PDF/HTML only)
+    "generated": "LLM Title",   // LLM-generated (MP4 only, or for title generation)
+    "final": "lecture"          // the final title to use
+  },
+  "extracted_title": "Lecture 1",  // extracted title stored separately (optional)
+  "description": "string",     // For MP4: blank; For PDF/HTML: extracted metadata
+  "summary": "string",         // For MP4: Key takeaways (populated by LLM); For PDF/HTML: null or LLM-generated
+  "content": "string",         // For MP4: Full transcript; For PDF/HTML: extracted plaintext
+  "filename": "lecture.mp4",
+  "filepath": "videos/lecture.mp4",
+  "filetype": "pdf|html|mp4",
+  "date": 1728931200.123,       // UNIX epoch (float or int, millisecond precision)
+  "duration": 3600.5,          // For MP4: duration in seconds (float, optional)
+  "creation_time": "2024-01-15T10:30:00.000000Z", // ISO-8601 (MP4 only, optional)
+  "size": 12345678,
   
   // Step maps tracking processing steps
   "transcribe": {
     "status": null | "in_progress" | "complete",
-    "start_time": 1710000000,    // UNIX epoch seconds
-    "end_time": 1710000005,      // UNIX epoch seconds
-    "input_size": 12345678,     // Input file size in bytes
-    "output_size": 456789,       // Output transcript size in bytes
-    "words": 452,                // Number of words in transcript
-    "model": "large-v3-turbo",  // Model used for transcription
-    "input_tokens": null,        // Input tokens (optional, for API-based transcription)
-    "output_tokens": null        // Output tokens (optional, for API-based transcription)
+    "start_time": 1792096505.123,  // UNIX epoch (millisecond precision)
+    "end_time": 1792096515.456,    // UNIX epoch (millisecond precision)
+    "input_size": 12345678,
+    "output_size": 456789,
+    "words": 452,
+    "model": "large-v3-turbo",
+    "input_tokens": null,        // optional, for API-based transcription
+    "output_tokens": null        // optional, for API-based transcription
   },
   
   "summarize": {
     "status": null | "in_progress" | "complete",
-    "start_time": 1710000005,    // UNIX epoch seconds
-    "end_time": 1710000010,      // UNIX epoch seconds
-    "input_size": 456789,        // Input transcript size in bytes
-    "output_size": 1997,         // Output summary size in bytes
-    "words": 345,                // Number of words in summary
-    "model": "mistralai/Mistral-7B-Instruct", // Model used for summarization
-    "input_tokens": 890,         // Input tokens
-    "output_tokens": 123         // Output tokens
+    "start_time": 1792096515.123,
+    "end_time": 1792096520.456,
+    "input_size": 456789,
+    "output_size": 1997,
+    "words": 345,
+    "model": "mistralai/Mistral-7B-Instruct",
+    "input_tokens": 890,
+    "output_tokens": 123
   },
   
   "extract": null | {
     "status": null | "in_progress" | "complete",
-    "start_time": 1710000000,    // UNIX epoch seconds
-    "end_time": 1710000005,      // UNIX epoch seconds
-    "input_size": 12345678,     // Input file size in bytes
-    "output_size": 456789,       // Output metadata size in bytes
-    "model": "pypdf"            // Extraction method used
+    "start_time": 1792096500.123,
+    "end_time": 1792096505.456,
+    "input_size": 1790891,
+    "output_size": 12345,
+    "words": 543
   },
   
-  // Computed field for feed inclusion
-  "feed_eligible": bool,      // Determines if item appears in feeds
+  // Computed field for feed inclusion (not stored in JSON)
+  // "feed_eligible": bool,
   
-  "error": "string"           // OPTIONAL: Error message if any step failed
+  // NEW: Error field is optional (only present when processing failed)
+  "error": "string"  // OPTIONAL: Error message if any step failed
 }
 ```
 
@@ -108,9 +115,19 @@ This system processes education content files in the `data` directory and genera
 
 **FR-010b**: When loading JSON metadata containing deprecated fields (`transcribe_status`, `summarize_status`, `extract_status`, `stage`, `status` dict, `transcript`, `processing_date`, `completed_at`, `started_at`), the system SHALL print a warning to stderr. Deprecated fields SHALL be ignored (not migrated).
 
-**FR-010c**: The system SHALL replace underscores in extracted titles with spaces (e.g., "my_document" → "my document") during metadata finalization.
+**FR-010c**: The system SHALL replace underscores in extracted titles with spaces (e.g., "my_document" \=> "my document") during metadata finalization.
 
-**FR-010d**: The system SHALL ensure MP4 files have blank `description` field and PDF/HTML files have extracted metadata in `description` field. The `summary` field SHALL contain key takeaways for MP4 files and be null for PDF/HTML files.
+**FR-010d**: The system SHALL ensure MP4 files have blank `description` field and PDF/HTML files have extracted metadata in `description` field. The `summary` field SHALL contain key takeaways for MP4 files and be null for PDF/HTML files (unless explicitly summarized).
+
+**FR-010e**: The system SHALL extract plaintext content from PDF and HTML files and store it in the `content` field (in addition to metadata in `description`).
+
+**FR-010f**: The system SHALL automatically prepend the parent folder name (module name) to titles when the filename doesn't already start with it (after normalization).
+
+**FR-010g**: The system SHALL check for `reflection.md` files in the source file's directory and use their content as reflection questions for summarization when available.
+
+**FR-010h**: The system SHALL remove control characters (0x00-0x1f except tab/newline/CR, and 0x7f) from extracted PDF/HTML content to prevent XML validation errors.
+
+**FR-010i**: The system SHALL generate summaries for PDF/HTML files when the `summarize` command is explicitly invoked on those files.
 
 ### Audio Processing
 
@@ -124,7 +141,14 @@ This system processes education content files in the `data` directory and genera
 
 **FR-015**: Audio transcripts SHALL NOT include timestamps
 
-**FR-016**: The system SHALL use a configurable system prompt for LLM summarization, stored in environment variables
+**FR-016**: The system SHALL use configurable system prompts for LLM summarization and title generation, stored in environment variables
+
+**FR-016a**: The system SHALL support separate prompts for:
+- `SUMMARY_PROMPT`: Regular summarization
+- `SUMMARY_REFLECTION_PROMPT`: Summarization with reflection questions (optional, falls back to SUMMARY_PROMPT)
+- `TITLE_PROMPT`: Title generation from content
+
+**FR-017**: When reflection questions are available (via `reflection.md`), the system SHALL use `SUMMARY_REFLECTION_PROMPT` for summarization and prepend the reflection questions to the transcript.
 
 **FR-028**: When `TRANSCRIPTION_ENDPOINT` is configured, the system SHALL use the remote OpenAI-compatible API for transcription
 
@@ -136,9 +160,11 @@ This system processes education content files in the `data` directory and genera
 
 **FR-032**: The system SHALL handle remote API errors appropriately and record them in the JSON metadata error field. This includes errors such as "Audio exceeds maximum allowed duration" which may occur if the remote vLLM server does not have `VLLM_MAX_AUDIO_DECODE_DURATION_S` configured.
 
+**FR-033**: The system SHALL extract audio metadata (duration, creation_time) using ffprobe when available, falling back to file metadata when ffprobe is not installed.
+
 ### Feed Generation
 
-**FR-017**: The system SHALL generate two distinct RSS/Atom feeds placed in the `data` directory root:
+**FR-017**: The system SHALL generate two distinct RSS/Atom feeds based on feed.json configuration:
 1. `podcast.xml` (or `podcast.atom`) - Contains MP4 audio files
 2. `articles.xml` (or `articles.atom`) - Contains PDF/HTML files
 
@@ -147,15 +173,29 @@ This system processes education content files in the `data` directory and genera
 **FR-019**: Articles feed SHALL follow standard RSS or Atom specifications
 
 **FR-020**: Each feed item SHALL include:
-- Title (from JSON metadata)
-- Description (from JSON metadata: blank for MP4, extracted metadata for PDF/HTML)
+- Title (from JSON metadata title dict's "final" key)
+- Description (from JSON metadata: for MP4 use summary field, for PDF/HTML use content field or description)
 - Link to the source file (computed as BASE_URL + filepath)
-- Publication date (from JSON metadata)
+- Publication date (from JSON metadata date field)
 - Unique identifier (file path)
 
 **FR-021**: Feed items SHALL be sorted by folder name, then filename (alphabetical)
 
 **FR-022**: Feed items SHALL only include entries where `feed_eligible = true`
+
+**FR-023**: The system SHALL convert markdown in descriptions to HTML for feed output, with proper XSS protection (safe URL schemes only).
+
+**FR-024**: Per-folder feed generation: When a folder contains a `feed.json` file, the system SHALL generate `podcast.xml` and `articles.xml` in that folder containing only items from that folder's subtree, using the title and description from `feed.json`.
+
+**FR-025**: Root-level feeds SHALL **NOT** be generated unless a `feed.json` file exists in the root of the `data/` directory. Feeds require explicit configuration via feed.json.
+
+**FR-025a**: **Conditional feed generation**: The system SHALL only generate `podcast.xml` if both: (1) a `feed.json` file exists in that folder, AND (2) at least one MP4 file with `feed_eligible=true` exists in that folder's subtree.
+
+**FR-025b**: **Conditional feed generation**: The system SHALL only generate `articles.xml` if both: (1) a `feed.json` file exists in that folder, AND (2) at least one PDF/HTML file with `feed_eligible=true` exists in that folder's subtree.
+
+**FR-025c**: The system SHALL generate `index.html` in each folder that contains a `feed.json` file, listing all feeds available in that folder with their titles, descriptions, and URLs.
+
+**FR-025d**: The system SHALL include links in `index.html` only to feeds that exist (based on conditional generation rules above).
 
 ### Configuration
 
@@ -172,13 +212,19 @@ This system processes education content files in the `data` directory and genera
 - `LLM_API_KEY`: API key for LLM authentication
 - `BASE_URL`: Root URL for feed enclosure links
 - `DATA_DIR`: Path to data directory
+- `SUMMARY_PROMPT`: System prompt for regular summarization (REQUIRED - no default)
+- `TITLE_PROMPT`: System prompt for title generation (REQUIRED - no default)
 
 **FR-033**: The system SHALL support the following optional environment variables for remote transcription:
 - `TRANSCRIPTION_ENDPOINT`: OpenAI-compatible API endpoint for transcription (optional)
 - `TRANSCRIPTION_API_KEY`: API key for transcription endpoint authentication (optional)
 - `TRANSCRIPTION_REMOTE_MODEL`: Model override for remote transcription (optional)
 
-**FR-034**: When using remote transcription with a vLLM server, the remote server SHALL have the `VLLM_MAX_AUDIO_DECODE_DURATION_S` environment variable configured to handle audio files of the expected duration. This is a server-side requirement, not a client-side configuration. Without this configuration, the vLLM server may reject longer audio files with "Audio exceeds maximum allowed duration" errors.
+**FR-034**: The system SHALL support the following optional environment variables for enhanced features:
+- `SUMMARY_REFLECTION_PROMPT`: System prompt for summarization with reflection questions (optional, falls back to SUMMARY_PROMPT)
+- `FEED_FORMAT`: Feed output format: `rss` or `atom` (default: `rss`)
+
+**FR-035**: When using remote transcription with a vLLM server, the remote server SHALL have the `VLLM_MAX_AUDIO_DECODE_DURATION_S` environment variable configured to handle audio files of the expected duration. This is a server-side requirement, not a client-side configuration. Without this configuration, the vLLM server may reject longer audio files with "Audio exceeds maximum allowed duration" errors.
 
 ### CLI Interface
 
@@ -186,9 +232,9 @@ This system processes education content files in the `data` directory and genera
 - `process`: Process all files in data directory
 - `watch`: Watch data directory for changes
 - `transcribe`: Transcribe audio files
-- `summarize`: Generate summaries
+- `summarize`: Generate summaries from transcripts or extracted content
 - `extract`: Extract metadata from PDF/HTML files
-- `feeds`: Generate RSS/Atom feeds and finalize JSON metadata by computing feed eligibility
+- `feeds`: Generate RSS/Atom feeds and finalize JSON metadata by computing feed eligibility, and generate index.html pages
 - `validate`: Validate all metadata files and finalize JSON by setting step completion statuses
 
 **FR-026**: All CLI subcommands SHALL accept the following flags:
@@ -204,8 +250,10 @@ This system processes education content files in the `data` directory and genera
 - For `summarize`: Re-summarize even if `summarize.status == "complete"`
 - For `extract`: Re-extract even if `extract.status == "complete"`
 - For `process`: Re-process all steps even if `feed_eligible == true`
-- For `feeds`: Always regenerate feeds regardless of state
+- For `feeds`: Always regenerate feeds and index.html regardless of state
 - For `validate`: Perform validation regardless of previous validation state
+
+**FR-027a**: The `summarize` command SHALL process both MP4 files (with transcripts) and PDF/HTML files (with extracted content).
 
 ---
 
@@ -213,9 +261,9 @@ This system processes education content files in the `data` directory and genera
 
 ### Local Processing
 
-**NFR-001**: All transcription and summarization SHALL be performed locally
+**NFR-001**: All transcription and summarization SHALL be performed locally by default
 
-**NFR-002**: The system SHALL NOT use any cloud-based services
+**NFR-002**: The system SHALL NOT use any cloud-based services by default
 
 **NFR-003**: The system SHALL leverage Nvidia GPUs for efficient model inference when available
 
@@ -229,15 +277,23 @@ This system processes education content files in the `data` directory and genera
 
 **NFR-007**: Transcripts SHALL be in human-readable markdown format
 
+**NFR-008**: Extracted content from PDF/HTML SHALL have control characters removed to prevent XML validation errors
+
+**NFR-009**: Feed descriptions SHALL be converted from markdown to HTML for proper rendering in feed readers
+
 ### Processing Behavior
 
-**NFR-008**: In incremental mode, the system SHALL detect and process new files within a reasonable timeframe
+**NFR-010**: In incremental mode, the system SHALL detect and process new files within a reasonable timeframe
 
-**NFR-009**: The system SHALL handle file system events gracefully (new, modified, deleted files)
+**NFR-011**: The system SHALL handle file system events gracefully (new, modified, deleted files)
 
-**NFR-010**: The system SHALL support targeted reprocessing of individual files via the `--file` flag
+**NFR-012**: The system SHALL support targeted reprocessing of individual files via the `--file` flag
 
-**NFR-011**: The system SHALL respect the `--force` flag to bypass completion checks when debugging or testing different parameters
+**NFR-013**: The system SHALL respect the `--force` flag to bypass completion checks when debugging or testing different parameters
+
+**NFR-014**: The system SHALL implement debouncing in watch mode to prevent rapid successive events from triggering multiple processes for the same file
+
+**NFR-015**: The system SHALL implement periodic rescan as a fallback for file systems that may not reliably trigger watchdog events
 
 ---
 
@@ -247,7 +303,7 @@ This system processes education content files in the `data` directory and genera
 
 **C-002**: By default, open-weight models must be used for all AI processing. When using remote transcription via `TRANSCRIPTION_ENDPOINT`, the remote endpoint may use any model, but local processing still requires open-weight models.
 
-**C-003**: Output feeds must be placed in `data` directory root
+**C-003**: Output feeds must be placed in `data` directory root (and optionally in subfolders with feed.json). **Feeds are only generated where feed.json exists and applicable files are present.**
 
 **C-004**: Input files and their JSON metadata must maintain existing directory structure
 
@@ -256,6 +312,18 @@ This system processes education content files in the `data` directory and genera
 **C-006**: Special characters in filenames must be preserved (warnings only, no modifications)
 
 **C-007**: All endpoint examples and placeholders MUST use the `example.com` domain as per RFC 2606
+
+**C-008**: The title field in JSON metadata SHALL be a dict with keys: filename, extracted, generated, final
+
+**C-009**: Dates SHALL be stored as UNIX epoch floats with millisecond precision
+
+**C-010**: Control characters that are invalid in XML SHALL be removed from extracted content
+
+**C-011**: Per-folder feeds require a feed.json file in the folder
+
+**C-012**: **Root feeds require a feed.json file in the root data directory**
+
+**C-013**: **Feeds are only generated if applicable files exist**: podcast.xml only if MP4 files present, articles.xml only if PDF/HTML files present
 
 ---
 
@@ -274,7 +342,7 @@ This system processes education content files in the `data` directory and genera
 **A-006**: The architect will select:
 - Specific open-weight transcription model
 - Specific OpenAI-compatible LLM for summarization
-  - Feed format (RSS, Atom, or both)
+- Feed format (RSS, Atom, or both)
 
 ---
 
@@ -301,6 +369,9 @@ This system processes education content files in the `data` directory and genera
 **R-005**: Large audio files may take significant time to transcribe
 - **Mitigation**: No time constraints; acceptable for personal use
 
+**R-006**: Control characters in PDF/HTML content may cause XML generation to fail
+- **Mitigation**: Automatically remove control characters during extraction
+
 ---
 
 ## Configuration
@@ -313,18 +384,20 @@ The system uses the following environment variables for configuration:
 
 These variables **MUST** be provided via `.env` file or environment variables. The system will fail to start if they are missing.
 
-- **`LLM_SYSTEM_PROMPT`**: System prompt for LLM summarization. Users need explicit control as no sensible universal default exists. (Example: `"Summarize key takeaways from this document..."`)
-- **`LLM_MODEL`**: Model identifier for LLM summarization. Required because summarization requires a specific model; cannot default to None. (Example: `mistralai/Mistral-7B-Instruct`)
-- **`LLM_ENDPOINT`**: Base URL for the OpenAI-compatible LLM API. Uses RFC 2606 compliant example domain. (Example: `https://llm.example.com/v1`)
-- **`LLM_API_KEY`**: API key for authenticating with the LLM endpoint. (Example: `your-api-key-here`)
 - **`BASE_URL`**: Root URL for feed enclosure links. Uses RFC 2606 compliant example domain. (Example: `https://example.com/feeds`)
 - **`DATA_DIR`**: Path to the data directory containing source files. (Example: `./data`)
+- **`LLM_ENDPOINT`**: Base URL for the OpenAI-compatible LLM API. Uses RFC 2606 compliant example domain. (Example: `https://llm.example.com/v1`)
+- **`LLM_API_KEY`**: API key for authenticating with the LLM endpoint. (Example: `your-api-key-here`)
+- **`LLM_MODEL`**: Model identifier for LLM summarization. Required because summarization requires a specific model; cannot default to None. (Example: `mistralai/Mistral-7B-Instruct`)
+- **`SUMMARY_PROMPT`**: System prompt for regular LLM summarization. Users need explicit control as no sensible universal default exists. (Example: `"Summarize key takeaways from the given content. Output just the summary concisely."`)
+- **`TITLE_PROMPT`**: System prompt for LLM title generation. Required for generating titles from content. (Example: `"Generate a concise, descriptive title (5-10 words) for the given content. Do not include any formatting, quotes, or extra text."`)
 
 #### Optional Variables
 
 These variables have sensible defaults and may be omitted.
 
 - **`FEED_FORMAT`**: Feed output format: `rss` or `atom` (Default: `rss`)
+- **`SUMMARY_REFLECTION_PROMPT`**: System prompt for summarization with reflection questions. Optional; if not provided, falls back to SUMMARY_PROMPT. (Example: `"Summarize key takeaways focusing on: frameworks, analytical tools, critical thinking. Output just the summary concisely."`)
 - **`TRANSCRIPTION_MODEL`**: Transcription model to use (Default: `large-v3-turbo`)
 - **`TRANSCRIPTION_DEVICE`**: Device for transcription (`cpu` or `cuda`) (Default: `cuda`)
 - **`TRANSCRIPTION_COMPUTE_TYPE`**: Compute type for transcription (Default: `float16`)
@@ -347,7 +420,13 @@ DATA_DIR=./data
 LLM_ENDPOINT=https://llm.example.com/v1
 LLM_API_KEY=your-llm-api-key-here
 LLM_MODEL=mistralai/Mistral-7B-Instruct
-LLM_SYSTEM_PROMPT="Summarize key takeaways from this document. Focus on frameworks or analytical tools to develop critical, creative, and systems thinking."
+
+# NEW: Required prompt configuration
+SUMMARY_PROMPT="Summarize key takeaways from the given content. Output just the summary concisely."
+TITLE_PROMPT="Generate a concise, descriptive title (5-10 words) for the given content. Do not include any formatting, quotes, or extra text."
+
+# Optional: Reflection prompt for summarization with reflection questions
+SUMMARY_REFLECTION_PROMPT="Summarize key takeaways focusing on: frameworks, analytical tools, critical thinking, creative thinking, systems thinking. Output just the summary concisely."
 
 # =============================================================================
 # OPTIONAL VARIABLES - Defaults shown
@@ -362,6 +441,7 @@ TRANSCRIPTION_DEVICE=cuda
 TRANSCRIPTION_COMPUTE_TYPE=float16
 
 # Remote Transcription Configuration (Optional - enables remote API mode when configured)
+# When TRANSCRIPTION_ENDPOINT is set, remote mode is used instead of local faster-whisper
 # TRANSCRIPTION_ENDPOINT=https://transcription.example.com/v1
 # TRANSCRIPTION_API_KEY=your-transcription-api-key-here
 # TRANSCRIPTION_REMOTE_MODEL=whisper-1
@@ -400,19 +480,22 @@ local-feed-generator transcribe --file ./data/videos/lecture.mp4
 # Force re-transcription
 local-feed-generator transcribe --file ./data/videos/lecture.mp4 --force
 
-# Summarize all transcripts
+# Summarize all transcripts and extracted content
 local-feed-generator summarize --data-dir ./data
 
-# Summarize a specific file
+# Summarize a specific file (MP4, PDF, or HTML)
 local-feed-generator summarize --file ./data/videos/lecture.mp4 --force
 
-# Extract metadata from PDF/HTML files
+# Summarize a PDF/HTML file
+local-feed-generator summarize --file ./data/documents/report.pdf
+
+# Extract metadata and content from PDF/HTML files
 local-feed-generator extract --data-dir ./data
 
 # Extract metadata from a specific file
 local-feed-generator extract --file ./data/documents/report.pdf --force
 
-# Generate feeds only (no processing); finalizes JSON metadata
+# Generate feeds only (no processing); finalizes JSON metadata; generates index.html
 local-feed-generator feeds --data-dir ./data
 
 # Validate all metadata files and finalize JSON
@@ -524,22 +607,28 @@ This section documents the evolution of the JSON metadata schema through multipl
 
 ```json
 {
-  "version": "2.0",
-  "title": "My Audio File",
+  "title": {
+    "filename": "lecture",
+    "extracted": "Lecture 1",
+    "generated": "LLM Title",
+    "final": "lecture"
+  },
+  "extracted_title": "Lecture 1",
   "description": "",
   "summary": "Key takeaways from LLM...", 
-  "content": "Full transcript...",
+  "content": "Full transcript or extracted text...",
   "filename": "lecture.mp4",
   "filepath": "c100/lecture.mp4",
   "filetype": "mp4",
-  "date": 1710000000,
+  "date": 1710000000.123,
   "duration": 45.5,
-  "creation_time": "2024-01-01T00:00:00Z",
+  "creation_time": "2024-01-01T00:00:00.000000Z",
   "size": 12345678,
+  
   "transcribe": {
     "status": "complete",
-    "start_time": 1710000000,
-    "end_time": 1710000005,
+    "start_time": 1792096505.123,
+    "end_time": 1792096515.456,
     "input_size": 12345678,
     "output_size": 456789,
     "words": 452,
@@ -547,10 +636,11 @@ This section documents the evolution of the JSON metadata schema through multipl
     "input_tokens": null,
     "output_tokens": null
   },
+  
   "summarize": {
     "status": "complete",
-    "start_time": 1710000005,
-    "end_time": 1710000010,
+    "start_time": 1792096515.123,
+    "end_time": 1792096520.456,
     "input_size": 456789,
     "output_size": 1997,
     "words": 345,
@@ -558,6 +648,7 @@ This section documents the evolution of the JSON metadata schema through multipl
     "input_tokens": 890,
     "output_tokens": 123
   },
+  
   "extract": null
 }
 ```
@@ -568,16 +659,24 @@ This section documents the evolution of the JSON metadata schema through multipl
 
 **Field Usage by Filetype:**
 - **MP4**: `description = ""`, `summary` = LLM-generated key takeaways, `content` = full transcript
-- **PDF/HTML**: `description` = extracted metadata, `summary` = null, `content` = null
+- **PDF/HTML**: `title` = dict with filename-derived title, `extracted_title` = source metadata title, `description` = extracted metadata, `content` = extracted plaintext, `summary` = null (unless summarized)
+
+**Key Changes in Current Schema:**
+- `title` is now a dict with sources: filename, extracted, generated, final
+- `extracted_title` field added for storing source metadata titles separately
+- `content` field now used for both MP4 (transcript) and PDF/HTML (extracted text)
+- Timestamps now have millisecond precision (float with 3 decimal places)
+- `duration` and `creation_time` fields added for MP4 files
+- Step maps include `start_time` and `end_time` with millisecond precision
 
 #### Schema Changes Summary
 
-| Version | Status Fields | Date Format | Fields | Title Cleanup |
-|---------|---------------|-------------|--------|---------------|
-| Legacy | Single `status` string | ISO8601 strings | Basic | No |
-| Intermediate | Individual fields (`transcribe_status`, etc.) | ISO8601 strings | Basic | No |
-| Previous | Unified `status` map | UNIX epoch integers | Basic + timestamps | Yes |
-| **Current** | **Step maps (transcribe, summarize, extract objects)** | **UNIX epoch + ISO8601 creation_time** | **version, duration, creation_time, content** | **Yes** |
+| Version | Status Fields | Date Format | Title Format | Content Field | Timestamps |
+|---------|---------------|-------------|--------------|---------------|------------|
+| Legacy | Single `status` string | ISO8601 strings | String | `transcript` | Basic |
+| Intermediate | Individual fields (`transcribe_status`, etc.) | ISO8601 strings | String | `transcript` | Basic |
+| Previous | Unified `status` map | UNIX epoch integers | String | `transcript` | Second precision |
+| **Current** | **Step maps** | **UNIX epoch floats (ms)** | **Dict with sources** | **`content` (all types)** | **Millisecond precision** |
 
 #### Migration and Compatibility
 
@@ -585,6 +684,7 @@ This section documents the evolution of the JSON metadata schema through multipl
 - **Warning system**: Loading deprecated fields triggers stderr warnings
 - **Title cleanup**: Underscores in titles automatically replaced with spaces
 - **Field mapping**: `transcript` field maps to `content` field for backwards compatibility (with warning)
+- **summarize for PDF/HTML**: Optional; summary field remains null unless explicitly requested
 
 ### Appendix B: Environment Variable Standardization
 
@@ -592,8 +692,8 @@ All endpoint examples and placeholders now use the `example.com` domain as per R
 
 | Variable | Old Placeholder | New Placeholder | RFC 2606 Compliance |
 |----------|-----------------|-----------------|---------------------|
-| `LLM_ENDPOINT` | `https://your-llm-endpoint.com/v1` | `https://llm.example.com/v1` | ✓ Compliant |
-| `BASE_URL` | `https://your-domain.com/feeds` | `https://example.com/feeds` | ✓ Compliant |
+| `LLM_ENDPOINT` | `https://your-llm-endpoint.com/v1` | `https://llm.example.com/v1` | \u2713 Compliant |
+| `BASE_URL` | `https://your-domain.com/feeds` | `https://example.com/feeds` | \u2713 Compliant |
 
 This standardization:
 - Follows internet standards for documentation
@@ -636,18 +736,25 @@ local-feed-generator summarize --file ./data/videos/test.mp4
 ```
 Benefit: Granular control over each processing step
 
+#### Use Case 5: PDF/HTML Summarization
+```bash
+# User wants to generate summaries for PDF/HTML files
+local-feed-generator summarize --file ./data/documents/report.pdf
+```
+Benefit: Generate summaries for document content, not just audio
+
 #### Flag Interaction Matrix
 
 | Command | `--file` | `--force` | Behavior |
 |---------|----------|-----------|----------|
-| process | ✓ | ✓ | Process single file, bypassing all completion checks |
-| process | ✓ | ✗ | Process single file, respecting step completion |
-| process | ✗ | ✓ | Process all files, bypassing all completion checks |
-| process | ✗ | ✗ | Process all incomplete files |
-| transcribe | ✓ | ✓ | Re-transcribe single file |
-| transcribe | ✓ | ✗ | Transcribe single file if not already complete |
-| watch | ✓ | ✓ | Watch single file, bypassing completion checks |
-| watch | ✓ | ✗ | Watch single file, respecting completion |
+| process | \u2713 | \u2713 | Process single file, bypassing all completion checks |
+| process | \u2713 | \u2717 | Process single file, respecting step completion |
+| process | \u2717 | \u2713 | Process all files, bypassing all completion checks |
+| process | \u2717 | \u2717 | Process all incomplete files |
+| transcribe | \u2713 | \u2713 | Re-transcribe single file |
+| transcribe | \u2713 | \u2717 | Transcribe single file if not already complete |
+| watch | \u2713 | \u2713 | Watch single file, bypassing completion checks |
+| watch | \u2713 | \u2717 | Watch single file, respecting completion |
 
 ### Appendix D: Feed Eligibility Logic
 
@@ -656,11 +763,14 @@ The `feed_eligible` field is a computed boolean that determines whether an item 
 **Computation Algorithm:**
 
 ```
-def compute_feed_eligible(filetype, transcribe, summarize, extract):
+def compute_feed_eligible(filetype, transcribe, summarize, extract, error):
+    if error is not None:
+        return False
     if filetype == "mp4":
-        return (transcribe.status == "complete" and summarize.status == "complete")
+        return (transcribe is not None and transcribe.status == "complete" and
+                summarize is not None and summarize.status == "complete")
     elif filetype in ["pdf", "html"]:
-        return (extract.status == "complete")
+        return (extract is not None and extract.status == "complete")
     return False
 ```
 
@@ -668,22 +778,193 @@ def compute_feed_eligible(filetype, transcribe, summarize, extract):
 
 | transcribe.status | summarize.status | feed_eligible | Feed Inclusion |
 |-------------------|------------------|---------------|----------------|
-| null | null | false | ❌ Excluded |
-| in_progress | null | false | ❌ Excluded |
-| complete | null | false | ❌ Excluded |
-| complete | in_progress | false | ❌ Excluded |
-| complete | complete | true | ✅ Included |
-| complete | complete | true | ✅ Included |
+| null | null | false | \u274c Excluded |
+| in_progress | null | false | \u274c Excluded |
+| complete | null | false | \u274c Excluded |
+| complete | in_progress | false | \u274c Excluded |
+| complete | complete | true | \u2705 Included |
 
 **State Matrix for PDF/HTML Files:**
 
 | extract.status | feed_eligible | Feed Inclusion |
 |----------------|---------------|----------------|
-| null | false | ❌ Excluded |
-| in_progress | false | ❌ Excluded |
-| complete | true | ✅ Included |
+| null | false | \u274c Excluded |
+| in_progress | false | \u274c Excluded |
+| complete | true | \u2705 Included |
 
-  **Error Handling:**
+**Error Handling:**
 - If any step fails (status remains `null` or error is set), `feed_eligible` will be `false`
 - Items with errors are **excluded** from feeds to prevent partial content from appearing
 - Users must fix the error and reprocess (using `--force` if needed) to make the item eligible
+
+### Appendix E: Per-Folder Feed Generation
+
+Per-folder feed generation allows users to organize content into separate feeds for different courses, modules, or topics.
+
+**Mechanism:**
+1. Create a `feed.json` file in any subfolder of `data/`
+2. The `feed.json` should contain at least `title` and optionally `description`
+3. When feeds are generated, the system will:
+   - Generate `podcast.xml` in that folder **only if MP4 files are present**
+   - Generate `articles.xml` in that folder **only if PDF/HTML files are present**
+   - Generate `index.html` in that folder with links to available feeds
+   - Include only items from that folder's subtree
+   - Use the custom title and description from `feed.json`
+
+**Example:**
+```
+data/
+\u251c\u2500\u2500 feed.json                    # Root-level feed config (REQUIRED for root feeds)
+\u251c\u2500\u2500 podcast.xml                  # Root-level podcast feed (only if MP4 files present)
+\u251c\u2500\u2500 articles.xml                 # Root-level articles feed (only if PDF/HTML files present)
+\u251c\u2500\u2500 index.html                    # Root-level index page
+\u251c\u2500\u2500 Course1/
+\u2502   \u251c\u2500\u2500 feed.json               # Per-folder feed config
+\u2502   \u251c\u2500\u2500 podcast.xml             # Course1 podcast feed (only if MP4 files present)
+\u2502   \u251c\u2500\u2500 articles.xml            # Course1 articles feed (only if PDF/HTML files present)
+\u2502   \u251c\u2500\u2500 index.html              # Course1 index page
+\u2502   \u251c\u2500\u2500 lecture1.mp4
+\u2502   \u2502\u2500 lecture1.mp4.json
+\u2514\u2500 Course2/
+    \u251c\u2500\u2500 feed.json
+    \u251c\u2500\u2500 podcast.xml              # NOT generated if no MP4 files
+    \u251c\u2500\u2500 articles.xml             # Generated if PDF/HTML files present
+    \u251c\u2500\u2500 index.html
+    \u251c\u2500\u2500 lecture1.mp4
+    \u2502\u2500 lecture1.mp4.json
+```
+
+**feed.json format:**
+```json
+{
+  "title": "Course 1: Introduction to AI",
+  "description": "All materials for Course 1 covering AI fundamentals"
+}
+```
+
+**Benefits:**
+- Better organization in feed readers
+- Custom branding per course/module
+- Conditional feed generation based on file types
+- Explicit configuration required (no accidental feeds)
+- Maintains predictability (feeds only where configured)
+
+### Appendix F: Reflection Questions Support
+
+Reflection questions allow users to focus summarization on specific aspects of the content.
+
+**Mechanism:**
+1. Create a `reflection.md` file in any folder containing MP4 or PDF/HTML files
+2. The content of `reflection.md` should be reflection questions
+3. When processing files in that folder:
+   - The reflection questions are read from `reflection.md`
+   - They are prepended to the transcript or extracted content
+   - The system uses `SUMMARY_REFLECTION_PROMPT` (or falls back to `SUMMARY_PROMPT`)
+   - The LLM focuses its summary on answering the reflection questions
+
+**Example reflection.md:**
+```markdown
+# Reflection Questions
+
+1. What are the key frameworks or mental models presented?
+2. What analytical tools can help develop critical thinking?
+3. How does this content relate to systems thinking?
+4. What are the practical applications of these concepts?
+```
+
+**Benefits:**
+- More focused summaries
+- Customizable per course/module
+- Encourages deeper engagement with content
+- Can be used for educational purposes
+- Works with both MP4 and PDF/HTML files via the summarize command
+
+### Appendix G: Module Name Prefixing
+
+The system automatically prepends the parent folder name (module name) to titles when appropriate.
+
+**Logic:**
+1. Extract the parent folder name from the filepath
+2. Normalize both the folder name and filename (replace underscores with spaces, lowercase)
+3. Check if the filename (without extension) starts with the normalized folder name
+4. If not, prepend the normalized folder name with ": " prefix
+
+**Examples:**
+- Folder: `Course1/`, File: `lecture.mp4` \=> Title: `Course1: lecture`
+- Folder: `Course1/`, File: `Course1_lecture.mp4` \=> Title: `Course1 lecture` (no prefix, already contains)
+- Folder: `AI_Fundamentals/`, File: `intro.mp4` \=> Title: `AI Fundamentals: intro`
+- Folder: `math/`, File: `math101.mp4` \=> Title: `math101` (no prefix, starts with "math")
+
+**Benefits:**
+- Better organization in feed readers
+- Clearer context for each item
+- Automatic categorization
+
+### Appendix H: Conditional Feed Generation
+
+Feeds are only generated based on explicit configuration and file availability.
+
+**Requirements:**
+1. `feed.json` must exist in the folder
+2. At least one file of the appropriate type must exist with `feed_eligible=true`
+
+**Rules:**
+- `podcast.xml` is generated ONLY IF: (feed.json exists) AND (at least one MP4 file with `feed_eligible=true` exists in the folder subtree)
+- `articles.xml` is generated ONLY IF: (feed.json exists) AND (at least one PDF/HTML file with `feed_eligible=true` exists in the folder subtree)
+- `index.html` is generated ONLY IF: feed.json exists (regardless of file types)
+
+**Example Scenarios:**
+
+| feed.json | MP4 files | PDF/HTML files | podcast.xml | articles.xml | index.html |
+|-----------|------------|----------------|-------------|--------------|------------|
+| Yes | Yes | Yes | Yes | Yes | Yes |
+| Yes | Yes | No | Yes | No | Yes |
+| Yes | No | Yes | No | Yes | Yes |
+| Yes | No | No | No | No | Yes |
+| No | Yes | Yes | No | No | No |
+| No | Yes | No | No | No | No |
+| No | No | Yes | No | No | No |
+
+**Benefits:**
+- Explicit configuration (no accidental feeds)
+- Resource efficiency (no empty feeds)
+- Clear intent (feeds only where explicitly requested)
+- Predictable behavior
+
+### Appendix I: Index.html Generation
+
+The system automatically generates `index.html` files to provide a discovery mechanism for all available feeds.
+
+**Generation Rules:**
+- `index.html` is generated in every folder that contains a `feed.json` file
+- Contains links only to feeds that exist (based on conditional generation rules)
+- Includes feed titles and descriptions from `feed.json`
+- Provides hierarchical navigation
+
+**Content:**
+```html
+<!DOCTYPE html>
+<html>
+<head><title>Course 1 - Feeds</title></head>
+<body>
+  <h1>Course 1</h1>
+  <p>All materials for Course 1 covering AI fundamentals</p>
+  <h2>Available Feeds</h2>
+  <ul>
+    <li><a href="podcast.xml">Podcast Feed (MP4 Audio)</a></li>
+    <li><a href="articles.xml">Articles Feed (PDF/HTML)</a></li>
+  </ul>
+  <h2>Subfolders</h2>
+  <ul>
+    <li><a href="Module1/index.html">Module 1</a></li>
+    <li><a href="Module2/index.html">Module 2</a></li>
+  </ul>
+</body>
+</html>
+```
+
+**Benefits:**
+- Easy discovery of all feeds
+- Human-readable directory structure
+- Self-documenting feed organization
+- Works with any web browser
