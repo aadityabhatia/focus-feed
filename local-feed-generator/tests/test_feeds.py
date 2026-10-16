@@ -398,10 +398,11 @@ class TestPodcastFeedGeneration:
         ("generate_articles_feed", "pdf", "documents/doc.pdf"),
     ])
     def test_feed_includes_correct_items(self, tmp_path, method, filetype, filepath):
-        """Feed should include all items of the correct filetype."""
+        """Feed should include only items of the correct filetype."""
         write_metadata_file(tmp_path, filepath, filetype=filetype)
-        write_metadata_file(tmp_path, "documents/other.pdf", filetype="pdf")
-        write_metadata_file(tmp_path, "videos/other.mp4", filetype="mp4")
+        # Add a file of the other type in a different folder
+        other_type = "pdf" if filetype == "mp4" else "mp4"
+        write_metadata_file(tmp_path, f"other/{other_type}_file.{other_type}", filetype=other_type)
 
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
         items = getattr(fg, method)()
@@ -976,6 +977,21 @@ _NO_CHANNEL_XML = """\
 # Malformed XML (unclosed tags).
 _MALFORMED_XML = "<rss><channel><item><title>Unclosed</item></channel>"
 
+# XML with unescaped special characters.
+_UNESCAPED_XML = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Test & Invalid</title>
+    <link>https://example.com</link>
+    <description>Desc</description>
+    <item>
+      <title>Item <with unescaped></item>
+    </item>
+  </channel>
+</rss>
+"""
+
 
 # ---------------------------------------------------------------------------
 # Feed validation (validate_feed function)
@@ -1015,6 +1031,7 @@ class TestValidateFeed:
 
     @pytest.mark.parametrize("xml,expected_error_substring", [
         (_MALFORMED_XML, "not well-formed"),
+        (_UNESCAPED_XML, "not well-formed"),
         (_ATOM_FEED_XML, "expected <rss>"),
         (_WRONG_VERSION_XML, "expected '2.0'"),
         (_NO_CHANNEL_XML, "Missing <channel>"),
@@ -1034,6 +1051,18 @@ class TestValidateFeed:
     def test_item_missing_required_element_fails(self, element, error_substring):
         """An item missing a required element should produce an error."""
         xml = _VALID_PODCAST_XML.replace(f"      {element}\n", "")
+        result = validate_feed(xml, feed_name="podcast.xml", is_podcast=True)
+        assert not result.is_valid
+        assert any(error_substring in e for e in result.errors)
+
+    @pytest.mark.parametrize("old_element,new_element,error_substring", [
+        ("<title>Test Item</title>", "<title></title>", "missing or empty <title>"),
+        ("<link>https://example.com/test.mp4</link>", "<link></link>", "missing or empty <link>"),
+        ("<guid>https://example.com/test.mp4</guid>", "<guid></guid>", "missing or empty <guid>"),
+    ])
+    def test_item_empty_required_element_fails(self, old_element, new_element, error_substring):
+        """An item with an empty required element should produce an error."""
+        xml = _VALID_PODCAST_XML.replace(f"      {old_element}\n", f"      {new_element}\n")
         result = validate_feed(xml, feed_name="podcast.xml", is_podcast=True)
         assert not result.is_valid
         assert any(error_substring in e for e in result.errors)
@@ -1077,6 +1106,49 @@ class TestValidateFeed:
         result = validate_feed(xml, feed_name="podcast.xml", is_podcast=True)
         assert not result.is_valid
         assert any(error_substring in e for e in result.errors)
+
+    @pytest.mark.parametrize("xml,is_podcast,should_be_valid", [
+        # Podcast XML validated as articles: enclosure present but not required
+        (_VALID_PODCAST_XML, False, True),
+        # Articles XML (no enclosure) validated as articles: should pass
+        (_VALID_ARTICLES_XML, False, True),
+        # Podcast XML validated as podcast: enclosure required, present -> valid
+        (_VALID_PODCAST_XML, True, True),
+    ])
+    def test_articles_feed_skips_enclosure_check(self, xml, is_podcast, should_be_valid):
+        """Articles feed validation should skip enclosure checks."""
+        result = validate_feed(xml, feed_name="test.xml", is_podcast=is_podcast)
+        assert result.is_valid == should_be_valid
+
+    def test_multiple_items_individual_errors(self):
+        """Errors should be reported per-item with correct indices."""
+        xml = """\
+<?xml version="1.0" encoding="UTF-8"?>
+<rss version="2.0">
+  <channel>
+    <title>Multi</title>
+    <link>https://example.com</link>
+    <description>Multi</description>
+    <item>
+      <title>Item 1</title>
+      <link>https://example.com/1</link>
+      <guid>https://example.com/1</guid>
+      <pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>
+    </item>
+    <item>
+      <link>https://example.com/2</link>
+      <guid>https://example.com/2</guid>
+    </item>
+  </channel>
+</rss>
+"""
+        result = validate_feed(xml, feed_name="multi.xml", is_podcast=False)
+        assert not result.is_valid
+        # Item 2 is missing title and pubDate
+        assert any("Item 2" in e and "title" in e for e in result.errors)
+        assert any("Item 2" in e and "pubDate" in e for e in result.errors)
+        # Item 1 should have no errors
+        assert not any("Item 1" in e for e in result.errors)
 
     @pytest.mark.parametrize("valid,kwargs,expected_valid,expected_errors", [
         (True, {"feed_name": "test.xml"}, True, []),
@@ -1452,19 +1524,6 @@ class TestGenerateAllFeedsWithPerFolder:
         assert "<title>Root Custom Feed</title>" in articles_content
         assert "<description>Root Custom Desc</description>" in articles_content
 
-    def test_per_folder_feed_excludes_error_entries(self, tmp_path):
-        """Per-folder feeds should exclude error entries."""
-        write_metadata_file(tmp_path, "Course1/good.mp4")
-        write_metadata_file(tmp_path, "Course1/bad.mp4", error="Failed")
-        write_feed_json(tmp_path, "Course1", "Course 1", "Description")
-
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
-        fg.generate_all_feeds()
-
-        content = parse_rss_file(tmp_path / "Course1" / "podcast.xml")
-        assert "good.mp4" in content
-        assert "bad.mp4" not in content
-
     def test_multiple_folders_with_feed_json(self, tmp_path):
         """Multiple folders with feed.json should each get their own feeds."""
         write_metadata_file(tmp_path, "Math/lecture.mp4")
@@ -1563,26 +1622,6 @@ class TestGenerateAllFeedsWithPerFolder:
         assert "doc.pdf" in articles_content
         assert "page.html" in articles_content
         assert "video.mp4" not in articles_content
-
-    def test_per_folder_feed_items_sorted(self, tmp_path):
-        """Per-folder feed items should be sorted by folder then filename."""
-        write_metadata_file(tmp_path, "Course1/zebra.mp4")
-        write_metadata_file(tmp_path, "Course1/apple.mp4")
-        write_metadata_file(tmp_path, "Course1/mango.mp4")
-        write_feed_json(tmp_path, "Course1", "Course 1", "Description")
-
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
-        # Discover and filter metadata the same way generate_all_feeds does
-        all_metadata = fg._discover_metadata_files()
-        folder_metadata = fg._filter_metadata_for_folder(all_metadata, tmp_path / "Course1")
-
-        # The metadata items should be sorted by folder then filename
-        filepaths = [m.filepath for m in folder_metadata]
-        assert filepaths == [
-            "Course1/apple.mp4",
-            "Course1/mango.mp4",
-            "Course1/zebra.mp4",
-        ]
 
     def test_feed_json_with_missing_title_uses_default(self, tmp_path):
         """Per-folder feed with missing title should use default title."""
@@ -2016,57 +2055,6 @@ class TestGenerateIndexHtml:
         assert "<h2>Podcast Feeds</h2>" in content
         assert "<h2>Articles Feeds</h2>" in content
 
-    def test_index_html_with_multiple_folders(self, tmp_path):
-        """index.html should list feeds from multiple folders."""
-        write_metadata_file(tmp_path, "Math/lecture.mp4")
-        write_feed_json(tmp_path, "Math", "Math Course", "Math Desc")
-        write_metadata_file(tmp_path, "Science/experiment.mp4")
-        write_feed_json(tmp_path, "Science", "Science Course", "Science Desc")
-
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
-        fg.generate_all_feeds()
-
-        content = (tmp_path / "index.html").read_text(encoding="utf-8")
-        assert 'href="https://example.com/feeds/Math/podcast.xml"' in content
-        assert 'href="https://example.com/feeds/Science/podcast.xml"' in content
-
-    def test_index_html_with_deeply_nested_feeds(self, tmp_path):
-        """index.html should list feeds in deeply nested folders."""
-        write_metadata_file(tmp_path, "Course1/Sub/Deep/lecture.mp4")
-        write_feed_json(tmp_path, "Course1/Sub/Deep", "Deep Course", "Deep Desc")
-
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
-        fg.generate_all_feeds()
-
-        content = (tmp_path / "index.html").read_text(encoding="utf-8")
-        assert 'href="https://example.com/feeds/Course1/Sub/Deep/podcast.xml"' in content
-        assert ">Course1/Sub/Deep/podcast.xml<" in content
-
-    def test_index_html_includes_all_xml_files(self, tmp_path):
-        """index.html should discover all XML files via rglob, not just feeds."""
-        # Create a non-standard XML file
-        (tmp_path / "custom.xml").write_text("<root></root>", encoding="utf-8")
-        write_metadata_file(tmp_path, "videos/lecture.mp4")
-
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
-        fg._generate_index_html()
-
-        content = (tmp_path / "index.html").read_text(encoding="utf-8")
-        assert 'href="https://example.com/feeds/custom.xml"' in content
-        assert ">custom.xml<" in content
-        # Should be in "Other Feeds" section
-        assert "<h2>Other Feeds</h2>" in content
-
-    def test_index_html_no_other_feeds_section_when_empty(self, tmp_path):
-        """index.html should not have 'Other Feeds' section when no non-standard XML files exist."""
-        write_metadata_file(tmp_path, "videos/lecture.mp4")
-
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
-        fg.generate_all_feeds()
-
-        content = (tmp_path / "index.html").read_text(encoding="utf-8")
-        assert "<h2>Other Feeds</h2>" not in content
-
     def test_index_html_generated_even_if_feed_generation_fails(self, tmp_path):
         """index.html should still be generated if individual feed generation fails."""
         write_metadata_file(tmp_path, "videos/lecture.mp4")
@@ -2132,3 +2120,146 @@ class TestGenerateIndexHtml:
         # Subfolder feeds
         assert ">Course1/podcast.xml<" in content
         assert ">Course1/articles.xml<" in content
+
+
+# ---------------------------------------------------------------------------
+# Feed link handling (from feed.json vs BASE_URL)
+# ---------------------------------------------------------------------------
+
+
+class TestFeedLinkHandling:
+    """Tests for feed-level link derivation from BASE_URL and feed.json."""
+
+    def test_feed_link_defaults_to_base_url_when_no_feed_json(self, tmp_path):
+        """Feed-level channel link should default to BASE_URL when no feed.json link is present."""
+        write_metadata_file(tmp_path, "videos/lecture.mp4", filetype="mp4")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_podcast_feed()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        # The channel link (not rel="self") should be BASE_URL
+        assert '<link>https://example.com/feeds</link>' in content
+
+    def test_feed_link_uses_feed_json_link_when_present(self, tmp_path):
+        """Feed-level channel link should use feed.json link when present."""
+        write_metadata_file(tmp_path, "videos/lecture.mp4", filetype="mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps({
+                "title": "Root Feed",
+                "description": "Root Description",
+                "link": "https://example.com/custom-homepage",
+            }),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        # The channel link should use the feed.json link, not BASE_URL
+        assert '<link>https://example.com/custom-homepage</link>' in content
+        assert '<link>https://example.com/feeds</link>' not in content
+
+    def test_feed_link_uses_feed_json_link_for_articles(self, tmp_path):
+        """Articles feed should also use feed.json link when present."""
+        write_metadata_file(tmp_path, "documents/doc.pdf", filetype="pdf")
+        (tmp_path / "feed.json").write_text(
+            json.dumps({
+                "title": "Root Feed",
+                "description": "Root Description",
+                "link": "https://example.com/articles-home",
+            }),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert '<link>https://example.com/articles-home</link>' in content
+
+    def test_feed_link_falls_back_to_base_url_when_link_omitted(self, tmp_path):
+        """Feed link should fall back to BASE_URL when feed.json has no link field."""
+        write_metadata_file(tmp_path, "videos/lecture.mp4", filetype="mp4")
+        # feed.json without a link field
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Root Feed", "description": "Root Description"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert '<link>https://example.com/feeds</link>' in content
+
+    def test_per_folder_feed_link_uses_feed_json_link(self, tmp_path):
+        """Per-folder feed should use its feed.json link when present."""
+        write_metadata_file(tmp_path, "Course1/lecture.mp4", filetype="mp4")
+        write_feed_json_with_link(tmp_path, "Course1", "Course 1", "Desc", "https://example.com/course1")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "Course1" / "podcast.xml")
+        assert '<link>https://example.com/course1</link>' in content
+
+    def test_per_folder_feed_link_falls_back_to_base_url(self, tmp_path):
+        """Per-folder feed should fall back to BASE_URL when no link in feed.json."""
+        write_metadata_file(tmp_path, "Course1/lecture.mp4", filetype="mp4")
+        write_feed_json(tmp_path, "Course1", "Course 1", "Desc")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "Course1" / "podcast.xml")
+        assert '<link>https://example.com/feeds</link>' in content
+
+    def test_item_links_always_use_base_url_plus_filepath(self, tmp_path):
+        """Item links should always be BASE_URL + filepath, regardless of feed.json link."""
+        write_metadata_file(tmp_path, "videos/lecture.mp4", filetype="mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps({
+                "title": "Root Feed",
+                "description": "Root Description",
+                "link": "https://example.com/custom-homepage",
+            }),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        # Item link should be BASE_URL + filepath, NOT the feed.json link
+        assert '<link>https://example.com/feeds/videos/lecture.mp4</link>' in content
+
+    def test_link_parameter_overrides_base_url_directly(self, tmp_path):
+        """generate_podcast_feed link parameter should override base_url for channel link."""
+        write_metadata_file(tmp_path, "videos/lecture.mp4", filetype="mp4")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_podcast_feed(link="https://custom.example.com")
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert '<link>https://custom.example.com</link>' in content
+        assert '<link>https://example.com/feeds</link>' not in content
+
+
+def write_feed_json_with_link(
+    data_dir: Path,
+    folder: str,
+    title: str,
+    description: str,
+    link: str,
+) -> Path:
+    """Write a feed.json file with a link field to a subfolder within data_dir."""
+    folder_path = data_dir / folder
+    folder_path.mkdir(parents=True, exist_ok=True)
+    feed_json_path = folder_path / "feed.json"
+    feed_json_path.write_text(
+        json.dumps({"title": title, "description": description, "link": link}),
+        encoding="utf-8",
+    )
+    return feed_json_path

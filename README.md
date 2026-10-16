@@ -460,6 +460,25 @@ uv run local-feed-generator extract --file documents/report.pdf --force
 uv run local-feed-generator extract --dry-run
 ```
 
+### `create-feed`
+
+Create a template `feed.json` file in a specified directory. This is a convenience command for setting up per-folder or root-level feed configuration without manually creating the file.
+
+**Flags:**
+- `--dir <path>` — Target directory where `feed.json` will be created (required)
+- `--directory <path>` — Alias for `--dir`
+
+**Examples:**
+```bash
+# Create a feed.json in the root data directory
+uv run local-feed-generator create-feed --dir ./data
+
+# Create a feed.json in a subfolder for per-folder feeds
+uv run local-feed-generator create-feed --dir ./data/Course1
+```
+
+The generated `feed.json` template contains placeholder `title` and `description` values. The `link` field is intentionally omitted — feed links are derived from `BASE_URL` + relative path at generation time. You can manually add a `link` field to `feed.json` if you want to override the default channel link.
+
 ### Shared Flags
 
 - **`--data-dir <path>`**: All commands. Optional path to the data directory. Overrides `DATA_DIR` from configuration if set.

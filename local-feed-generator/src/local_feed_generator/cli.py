@@ -11,6 +11,7 @@ each step of the processing pipeline:
 - ``summarize``        — Generate summaries from existing transcripts.
 - ``extract``          — Extract metadata from PDF/HTML files.
 - ``title``            — Generate titles for files that lack proper titles.
+- ``create-feed``      — Create a template ``feed.json`` file in a target directory.
 
 Shared options (``--data-dir``, ``--config-file``, ``--file``, ``--force``,
 and ``--dry-run``) are available on every subcommand via decorators so that
@@ -1013,7 +1014,7 @@ def watch(
 
     if files:
         click.echo(f"Initial scan: found {len(files)} file(s) to process.")
-        producer = Producer(data_dir=str(data_dir_path))
+        producer = Producer(data_dir=str(data_dir_path), force=force)
 
         for file in files:
             click.echo(f"Processing {file.filepath}...")
@@ -1941,6 +1942,48 @@ def _finalize_incomplete_json(
             log_error(exc, filepath=str(source_file), stage="json_finalization")
 
     return success_count, error_count
+
+
+# ---------------------------------------------------------------------------
+# Create-feed command
+# ---------------------------------------------------------------------------
+
+
+# Template for the feed.json file created by the ``create-feed`` subcommand.
+# The ``link`` field is intentionally omitted: feed links are derived from
+# ``BASE_URL`` + relative path at generation time (see feeds.py).
+_FEED_JSON_TEMPLATE: dict[str, str] = {
+    "title": "Feed Title",
+    "description": "Feed description",
+}
+
+
+@app.command("create-feed")
+@click.option(
+    "--dir",
+    "--directory",
+    "directory",
+    required=True,
+    type=click.Path(file_okay=False, dir_okay=True),
+    help="Target directory where feed.json will be created.",
+)
+def create_feed(directory: str) -> None:
+    """Create a template ``feed.json`` file in the specified directory.
+
+    Generates a ``feed.json`` with placeholder ``title`` and ``description``
+    values that you can edit.  The ``link`` field is intentionally omitted;
+    feed links are derived from ``BASE_URL`` + relative path at generation
+    time, so no hardcoded URLs are needed in the template.
+
+    After creating the template, you can edit it and then run the ``feeds``
+    command to generate ``podcast.xml`` and ``articles.xml`` in that folder.
+    """
+    target_dir = Path(directory)
+    target_dir.mkdir(parents=True, exist_ok=True)
+    feed_json_path = target_dir / "feed.json"
+
+    feed_json_path.write_text(json.dumps(_FEED_JSON_TEMPLATE, indent=2), encoding="utf-8")
+    click.echo(f"Created feed.json at {feed_json_path}")
 
 
 # ---------------------------------------------------------------------------

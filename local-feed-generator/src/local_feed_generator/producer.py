@@ -186,6 +186,7 @@ class Producer:
         summarizer: Summarizer | None = None,
         pdf_extractor: PDFExtractor | None = None,
         html_extractor: HTMLExtractor | None = None,
+        force: bool = False,
     ) -> None:
         """Initialize the Producer with dependencies.
 
@@ -204,18 +205,23 @@ class Producer:
                 ``None``, a new instance is created.
             html_extractor: Optional :class:`HTMLExtractor` instance. When
                 ``None``, a new instance is created.
+            force: When ``True``, all processing steps are re-run even if
+                existing step maps show ``"complete"`` status. This is used
+                by the ``process --force`` CLI command to force full
+                re-processing of files.
         """
         self.scanner: Scanner = scanner or Scanner(data_dir=data_dir)
         self.transcriber: Transcriber = transcriber or Transcriber()
         self.summarizer: Summarizer = summarizer or Summarizer()
         self.pdf_extractor: PDFExtractor = pdf_extractor or PDFExtractor()
         self.html_extractor: HTMLExtractor = html_extractor or HTMLExtractor()
+        self.force: bool = force
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def process_file(self, scanned_file: ScannedFile) -> Metadata | None:
+    def process_file(self, scanned_file: ScannedFile, force: bool | None = None) -> Metadata | None:
         """Process a single file and write its JSON metadata.
 
         Determines the file type from the extension and dispatches to the
@@ -237,11 +243,17 @@ class Producer:
         Args:
             scanned_file: A :class:`~local_feed_generator.scanner.ScannedFile`
                 instance describing the file to process.
+            force: When ``True``, all processing steps are re-run even if
+                existing step maps show ``"complete"`` status. When ``None``
+                (default), uses the producer's ``self.force`` value.
 
         Returns:
             The :class:`Metadata` instance that was written, or ``None``
             if the file type is not supported.
         """
+        if force is None:
+            force = self.force
+
         filetype: str = scanned_file.filetype
         filepath: str = scanned_file.filepath
         filename: str = scanned_file.filename
@@ -264,11 +276,12 @@ class Producer:
 
         # If JSON metadata already exists, preserve existing step maps so that
         # already-complete steps are not overwritten with "in_progress".
+        # When force=True, skip preservation to re-run all steps.
         existing_transcribe: dict[str, Any] | None = None
         existing_summarize: dict[str, Any] | None = None
         existing_extract: dict[str, Any] | None = None
         existing_content: str | None = None
-        if json_path.exists():
+        if json_path.exists() and not force:
             try:
                 existing_data = json.loads(json_path.read_text(encoding="utf-8"))
                 if isinstance(existing_data, dict):
@@ -317,18 +330,19 @@ class Producer:
                 "words": 0,
             }
 
-        # Preserve existing step maps that are complete.
-        if filetype == "mp4":
-            if existing_transcribe and existing_transcribe.get("status") == "complete":
-                partial_metadata["transcribe"] = existing_transcribe
-            if existing_summarize and existing_summarize.get("status") == "complete":
-                partial_metadata["summarize"] = existing_summarize
-        elif filetype in ("pdf", "html"):
-            if existing_extract and existing_extract.get("status") == "complete":
-                partial_metadata["extract"] = existing_extract
+        # Preserve existing step maps that are complete (only when not forcing).
+        if not force:
+            if filetype == "mp4":
+                if existing_transcribe and existing_transcribe.get("status") == "complete":
+                    partial_metadata["transcribe"] = existing_transcribe
+                if existing_summarize and existing_summarize.get("status") == "complete":
+                    partial_metadata["summarize"] = existing_summarize
+            elif filetype in ("pdf", "html"):
+                if existing_extract and existing_extract.get("status") == "complete":
+                    partial_metadata["extract"] = existing_extract
 
-        # Preserve existing content (transcript for MP4).
-        if existing_content:
+        # Preserve existing content (transcript for MP4, only when not forcing).
+        if existing_content and not force:
             partial_metadata["content"] = existing_content
 
         self._write_metadata_partial(partial_metadata, absolute_path)
@@ -340,6 +354,7 @@ class Producer:
                     filename=filename,
                     absolute_path=absolute_path,
                     json_path=str(json_path),
+                    force=force,
                 )
             elif filetype == "pdf":
                 metadata = self._process_pdf(
@@ -347,6 +362,7 @@ class Producer:
                     filename=filename,
                     absolute_path=absolute_path,
                     json_path=str(json_path),
+                    force=force,
                 )
             elif filetype == "html":
                 metadata = self._process_html(
@@ -354,6 +370,7 @@ class Producer:
                     filename=filename,
                     absolute_path=absolute_path,
                     json_path=str(json_path),
+                    force=force,
                 )
             else:
                 # Should not reach here due to the check above, but kept
@@ -434,6 +451,7 @@ class Producer:
         filename: str,
         absolute_path: str,
         json_path: str,
+        force: bool = False,
     ) -> Metadata:
         """Process an MP4 file: transcribe -> summarize -> generate title -> build metadata.
 
@@ -453,6 +471,8 @@ class Producer:
             absolute_path: Absolute path to the source file.
             json_path: Absolute path to the JSON metadata file (written
                 by :meth:`process_file` as the initial in-progress state).
+            force: When ``True``, re-run transcription and summarization
+                even if existing step maps show ``"complete"`` status.
 
         Returns:
             A :class:`Metadata` instance with content (transcript) and
@@ -525,7 +545,8 @@ class Producer:
         # level; the CLI transcribe command also filters via
         # _find_files_needing_transcription, and the transcriber itself checks
         # the adjacent JSON as a last-resort guard).
-        if transcribe_step.get("status") == "complete":
+        # When force=True, always re-transcribe to ensure fresh content.
+        if transcribe_step.get("status") == "complete" and not force:
             transcript = metadata_dict.get("content", "")
         else:
             transcribe_step["status"] = "in_progress"
@@ -680,6 +701,7 @@ class Producer:
         filename: str,
         absolute_path: str,
         json_path: str,
+        force: bool = False,
     ) -> Metadata:
         """Process a PDF file: extract metadata -> generate title -> build metadata.
 
@@ -700,6 +722,8 @@ class Producer:
             absolute_path: Absolute path to the source file.
             json_path: Absolute path to the JSON metadata file (written
                 by :meth:`process_file` as the initial in-progress state).
+            force: When ``True``, re-run extraction even if existing step
+                maps show ``"complete"`` status.
 
         Returns:
             A :class:`Metadata` instance without transcript/summary.
@@ -819,6 +843,7 @@ class Producer:
         filename: str,
         absolute_path: str,
         json_path: str,
+        force: bool = False,
     ) -> Metadata:
         """Process an HTML file: extract metadata -> generate title -> build metadata.
 
@@ -840,6 +865,8 @@ class Producer:
             absolute_path: Absolute path to the source file.
             json_path: Absolute path to the JSON metadata file (written
                 by :meth:`process_file` as the initial in-progress state).
+            force: When ``True``, re-run extraction even if existing step
+                maps show ``"complete"`` status.
 
         Returns:
             A :class:`Metadata` instance without transcript/summary.

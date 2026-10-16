@@ -1621,6 +1621,7 @@ class TestEntryPoint:
             "summarize",
             "extract",
             "title",
+            "create-feed",
         }
         assert expected.issubset(result_commands)
 
@@ -3941,3 +3942,100 @@ class TestIsDictFeedEligible:
             "size": 1024,
         }
         assert _is_dict_feed_eligible(metadata, "pdf") is False
+
+
+# ---------------------------------------------------------------------------
+# Create-feed command tests
+# ---------------------------------------------------------------------------
+
+
+class TestCreateFeedCommand:
+    """Tests for the create-feed command."""
+
+    def test_create_feed_help(self, runner):
+        """The create-feed command should have help text."""
+        result = runner.invoke(app, ["create-feed", "--help"])
+        assert result.exit_code == 0
+        assert "--dir" in result.output
+        assert "--directory" in result.output
+
+    def test_create_feed_creates_feed_json(self, runner, tmp_path):
+        """create-feed should create a feed.json file with template content."""
+        target_dir = tmp_path / "my-course"
+        result = runner.invoke(
+            app,
+            ["create-feed", "--dir", str(target_dir)],
+        )
+
+        assert result.exit_code == 0
+        feed_json_path = target_dir / "feed.json"
+        assert feed_json_path.exists()
+
+        data = json.loads(feed_json_path.read_text(encoding="utf-8"))
+        assert data["title"] == "Feed Title"
+        assert data["description"] == "Feed description"
+
+    def test_create_feed_directory_option_alias(self, runner, tmp_path):
+        """--directory should work as an alias for --dir."""
+        target_dir = tmp_path / "my-course"
+        result = runner.invoke(
+            app,
+            ["create-feed", "--directory", str(target_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert (target_dir / "feed.json").exists()
+
+    def test_create_feed_no_link_field(self, runner, tmp_path):
+        """The generated feed.json should NOT contain a link field."""
+        target_dir = tmp_path / "my-course"
+        result = runner.invoke(
+            app,
+            ["create-feed", "--dir", str(target_dir)],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads((target_dir / "feed.json").read_text(encoding="utf-8"))
+        assert "link" not in data
+
+    def test_create_feed_creates_directory_if_missing(self, runner, tmp_path):
+        """create-feed should create the target directory if it doesn't exist."""
+        target_dir = tmp_path / "nested" / "deep" / "course"
+        result = runner.invoke(
+            app,
+            ["create-feed", "--dir", str(target_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert (target_dir / "feed.json").exists()
+
+    def test_create_feed_overwrites_existing(self, runner, tmp_path):
+        """create-feed should overwrite an existing feed.json."""
+        target_dir = tmp_path / "course"
+        target_dir.mkdir()
+        (target_dir / "feed.json").write_text(
+            json.dumps({"title": "Old Title", "description": "Old Desc"}),
+            encoding="utf-8",
+        )
+
+        result = runner.invoke(
+            app,
+            ["create-feed", "--dir", str(target_dir)],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads((target_dir / "feed.json").read_text(encoding="utf-8"))
+        assert data["title"] == "Feed Title"
+        assert data["description"] == "Feed description"
+
+    def test_create_feed_output_message(self, runner, tmp_path):
+        """create-feed should print a confirmation message with the path."""
+        target_dir = tmp_path / "course"
+        result = runner.invoke(
+            app,
+            ["create-feed", "--dir", str(target_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "Created feed.json" in result.output
+        assert str(target_dir / "feed.json") in result.output

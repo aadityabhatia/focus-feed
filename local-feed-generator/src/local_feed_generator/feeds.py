@@ -668,6 +668,7 @@ class FeedGenerator:
         output_dir: Path | None = None,
         title: str | None = None,
         description: str | None = None,
+        link: str | None = None,
         metadata_items: list[Metadata] | None = None,
     ) -> list[Metadata]:
         """Generate the podcast RSS feed (``podcast.xml``).
@@ -694,6 +695,9 @@ class FeedGenerator:
                 ``self.data_dir``.
             title: Feed title.  Defaults to ``_PODCAST_FEED_TITLE``.
             description: Feed description.  Defaults to ``_PODCAST_FEED_TITLE``.
+            link: Feed-level channel link URL.  When ``None`` (default),
+                ``self.base_url`` is used.  If provided (e.g. from
+                ``feed.json``), it overrides the default.
             metadata_items: Pre-discovered metadata items to use instead of
                 discovering them.  When ``None`` (default), metadata is
                 discovered via :meth:`_discover_metadata_files`.
@@ -710,6 +714,8 @@ class FeedGenerator:
             title = _PODCAST_FEED_TITLE
         if description is None:
             description = _PODCAST_FEED_TITLE
+        if link is None:
+            link = self.base_url
 
         if metadata_items is None:
             all_metadata = self._discover_metadata_files()
@@ -730,7 +736,7 @@ class FeedGenerator:
         # Feed-level metadata
         fg.title(title)
         fg.link(href=self._absolute_url(feed_rel_path), rel="self")
-        fg.link(href=self.base_url)
+        fg.link(href=link)
         fg.description(description)
         fg.language("en")
 
@@ -780,6 +786,7 @@ class FeedGenerator:
         output_dir: Path | None = None,
         title: str | None = None,
         description: str | None = None,
+        link: str | None = None,
         metadata_items: list[Metadata] | None = None,
     ) -> list[Metadata]:
         """Generate the articles RSS feed (``articles.xml``).
@@ -805,6 +812,9 @@ class FeedGenerator:
             title: Feed title.  Defaults to ``_ARTICLES_FEED_TITLE``.
             description: Feed description.  Defaults to
                 ``_ARTICLES_FEED_TITLE``.
+            link: Feed-level channel link URL.  When ``None`` (default),
+                ``self.base_url`` is used.  If provided (e.g. from
+                ``feed.json``), it overrides the default.
             metadata_items: Pre-discovered metadata items to use instead of
                 discovering them.  When ``None`` (default), metadata is
                 discovered via :meth:`_discover_metadata_files`.
@@ -821,6 +831,8 @@ class FeedGenerator:
             title = _ARTICLES_FEED_TITLE
         if description is None:
             description = _ARTICLES_FEED_TITLE
+        if link is None:
+            link = self.base_url
 
         if metadata_items is None:
             all_metadata = self._discover_metadata_files()
@@ -843,7 +855,7 @@ class FeedGenerator:
         # Feed-level metadata
         fg.title(title)
         fg.link(href=self._absolute_url(feed_rel_path), rel="self")
-        fg.link(href=self.base_url)
+        fg.link(href=link)
         fg.description(description)
         fg.language("en")
 
@@ -890,6 +902,7 @@ class FeedGenerator:
         folder: Path,
         title: str | None,
         description: str | None,
+        link: str | None,
         metadata_items: list[Metadata],
     ) -> dict[str, list[Metadata]]:
         """Generate podcast and/or articles feeds for a specific folder.
@@ -911,6 +924,8 @@ class FeedGenerator:
                 default title for the feed type.
             description: Feed description from ``feed.json``, or ``None`` to
                 use the default description for the feed type.
+            link: Feed-level channel link URL from ``feed.json``, or ``None``
+                to use ``self.base_url`` as the default.
             metadata_items: Pre-discovered metadata items to use for this
                 folder.
 
@@ -936,6 +951,7 @@ class FeedGenerator:
                     output_dir=folder,
                     title=title,
                     description=description,
+                    link=link,
                     metadata_items=metadata_items,
                 )
             except Exception as exc:
@@ -952,6 +968,7 @@ class FeedGenerator:
                     output_dir=folder,
                     title=title,
                     description=description,
+                    link=link,
                     metadata_items=metadata_items,
                 )
             except Exception as exc:
@@ -968,19 +985,21 @@ class FeedGenerator:
 
         This method performs two phases of feed generation:
 
-        1. **Root-level feeds**: Generates ``podcast.xml`` and
-           ``articles.xml`` in ``data_dir``.  Root-level feeds are only
-           generated if a ``data_dir/feed.json`` file exists; its
-           ``title`` and ``description`` are used for the root-level feeds.
-           ``podcast.xml`` is only created if MP4 files are present;
-           ``articles.xml`` is only created if PDF/HTML files are present.
+         1. **Root-level feeds**: Generates ``podcast.xml`` and
+            ``articles.xml`` in ``data_dir``.  Root-level feeds are only
+            generated if a ``data_dir/feed.json`` file exists; its
+            ``title``, ``description``, and optional ``link`` are used
+            for the root-level feeds.  When ``link`` is omitted in
+            ``feed.json``, the channel link defaults to ``BASE_URL``.
+            ``podcast.xml`` is only created if MP4 files are present;
+            ``articles.xml`` is only created if PDF/HTML files are present.
 
-        2. **Per-folder feeds**: Walks ``data_dir`` recursively for
-           ``feed.json`` files.  For each folder containing a
-           ``feed.json``, generates ``podcast.xml`` (only if MP4 files
-           are present in that folder tree) and ``articles.xml`` (only
-           if PDF/HTML files are present).  Feeds are written to the
-           folder containing the ``feed.json``.
+         2. **Per-folder feeds**: Walks ``data_dir`` recursively for
+            ``feed.json`` files.  For each folder containing a
+            ``feed.json``, generates ``podcast.xml`` (only if MP4 files
+            are present in that folder tree) and ``articles.xml`` (only
+            if PDF/HTML files are present).  Feeds are written to the
+            folder containing the ``feed.json``.
 
         If any individual feed generation fails, the error is logged and
         other feeds continue to be generated.
@@ -1014,10 +1033,12 @@ class FeedGenerator:
         if root_feed_json.exists():
             root_title: str | None = None
             root_description: str | None = None
+            root_link: str | None = None
             try:
                 root_config = json.loads(root_feed_json.read_text(encoding="utf-8"))
                 root_title = root_config.get("title")
                 root_description = root_config.get("description")
+                root_link = root_config.get("link")
             except (json.JSONDecodeError, OSError) as exc:
                 _logger.warning(
                     "Failed to parse root feed.json at %s: %s",
@@ -1026,6 +1047,7 @@ class FeedGenerator:
                 )
                 root_title = None
                 root_description = None
+                root_link = None
 
             # Generate podcast feed (only if MP4 files exist - handled in generate_podcast_feed)
             try:
@@ -1033,6 +1055,7 @@ class FeedGenerator:
                     output_dir=self.data_dir,
                     title=root_title,
                     description=root_description,
+                    link=root_link,
                 )
             except Exception as exc:
                 _logger.error("Failed to generate podcast feed: %s", exc)
@@ -1043,6 +1066,7 @@ class FeedGenerator:
                     output_dir=self.data_dir,
                     title=root_title,
                     description=root_description,
+                    link=root_link,
                 )
             except Exception as exc:
                 _logger.error("Failed to generate articles feed: %s", exc)
@@ -1063,6 +1087,7 @@ class FeedGenerator:
             # to their own type-specific default titles/descriptions.
             folder_title = config.get("title")
             folder_description = config.get("description")
+            folder_link = config.get("link")
 
             # Filter metadata to only items within this folder tree.
             folder_metadata = self._filter_metadata_for_folder(all_metadata, folder_path)
@@ -1071,6 +1096,7 @@ class FeedGenerator:
                 folder=folder_path,
                 title=folder_title,
                 description=folder_description,
+                link=folder_link,
                 metadata_items=folder_metadata,
             )
 
