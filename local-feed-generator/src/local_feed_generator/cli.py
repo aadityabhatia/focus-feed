@@ -55,7 +55,7 @@ _SPECIAL_CHAR_PATTERN = re.compile(r'[<>&"\'\x00-\x1f]')
 # Filenames that should be ignored during scanning (generated feeds, index pages).
 # Comparison is case-insensitive (see callers that use ``filename.lower()``).
 _IGNORE_FILENAMES = frozenset(
-    {"podcast.xml", "articles.xml", "podcast.atom", "articles.atom", "index.html"}
+    {"podcast.xml", "articles.xml", "podcast.atom", "articles.atom", "index.html", "feed.json"}
 )
 
 
