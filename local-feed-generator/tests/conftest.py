@@ -1,7 +1,9 @@
 """Pytest configuration for local-feed-generator tests."""
 
-import pytest
 from unittest import mock
+
+import pytest
+
 
 @pytest.fixture(autouse=True)
 def disable_env_file_loading(request):
@@ -13,7 +15,9 @@ def disable_env_file_loading(request):
         return
     # Patch Settings model_config to use a non-existent env file
     from local_feed_generator.config import Settings
+
     original_config = Settings.model_config.copy()
     # Use a path that doesn't exist
-    with mock.patch.object(Settings, 'model_config', {**original_config, 'env_file': '/nonexistent/.env'}):
+    patched_config = {**original_config, "env_file": "/nonexistent/.env"}
+    with mock.patch.object(Settings, "model_config", patched_config):
         yield

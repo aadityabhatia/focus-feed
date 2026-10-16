@@ -89,17 +89,23 @@ def create_test_pdf_with_text(
     page[NameObject("/Contents")] = stream
 
     # Add a Helvetica font resource so text is extractable.
-    font_dict = DictionaryObject({
-        NameObject("/Type"): NameObject("/Font"),
-        NameObject("/Subtype"): NameObject("/Type1"),
-        NameObject("/BaseFont"): NameObject("/Helvetica"),
-    })
+    font_dict = DictionaryObject(
+        {
+            NameObject("/Type"): NameObject("/Font"),
+            NameObject("/Subtype"): NameObject("/Type1"),
+            NameObject("/BaseFont"): NameObject("/Helvetica"),
+        }
+    )
     font_indirect = writer._add_object(font_dict)
-    resources = DictionaryObject({
-        NameObject("/Font"): DictionaryObject({
-            NameObject("/F1"): font_indirect,
-        }),
-    })
+    resources = DictionaryObject(
+        {
+            NameObject("/Font"): DictionaryObject(
+                {
+                    NameObject("/F1"): font_indirect,
+                }
+            ),
+        }
+    )
     page[NameObject("/Resources")] = resources
 
     writer.add_page(page)
@@ -267,12 +273,14 @@ class TestPDFExtractor:
         extractor = PDFExtractor()
         result = extractor.extract(pdf_path)
 
-        assert result["title"] == "My PDF Title"
+        # Title is always filename-derived, not from PDF metadata
+        assert result["title"] == "document"
+        assert result["extracted_title"] == "My PDF Title"
         assert result["description"] == "John Doe"
         assert result["filetype"] == "pdf"
         assert result["size"] > 0
-        # Date should be UNIX epoch (int)
-        assert isinstance(result["date"], int)
+        # Date should be UNIX epoch (float with ms precision)
+        assert isinstance(result["date"], float)
         assert result["date"] > 0
 
     def test_extract_fallback_title_to_filename(self, tmp_path):
@@ -289,6 +297,7 @@ class TestPDFExtractor:
         result = extractor.extract(pdf_path)
 
         assert result["title"] == "my document"
+        assert result["extracted_title"] is None
         assert result["description"] is None
         assert result["filetype"] == "pdf"
 
@@ -300,9 +309,9 @@ class TestPDFExtractor:
         extractor = PDFExtractor()
         result = extractor.extract(pdf_path)
 
-        # Date should be close to file modification time (as epoch int)
-        mtime = int(pdf_path.stat().st_mtime)
-        assert isinstance(result["date"], int)
+        # Date should be close to file modification time (as epoch float)
+        mtime = int(pdf_path.stat().st_mtime * 1000) / 1000.0
+        assert isinstance(result["date"], float)
         assert abs(result["date"] - mtime) < 5
 
     def test_extract_file_size_in_bytes(self, tmp_path):
@@ -318,7 +327,7 @@ class TestPDFExtractor:
         assert isinstance(result["size"], int)
 
     def test_extract_date_is_iso8601(self, tmp_path):
-        """Date should be stored as UNIX epoch (int)."""
+        """Date should be stored as UNIX epoch (float with ms precision)."""
         pdf_path = tmp_path / "date_test.pdf"
         create_test_pdf(
             pdf_path,
@@ -330,8 +339,8 @@ class TestPDFExtractor:
         extractor = PDFExtractor()
         result = extractor.extract(pdf_path)
 
-        # Should be an integer (UNIX epoch)
-        assert isinstance(result["date"], int)
+        # Should be a float (UNIX epoch with ms precision)
+        assert isinstance(result["date"], float)
         assert result["date"] > 0
 
     def test_extract_handles_corrupted_pdf(self, tmp_path):
@@ -343,11 +352,12 @@ class TestPDFExtractor:
         result = extractor.extract(pdf_path)
 
         assert result["title"] == "corrupted"
+        assert result["extracted_title"] is None
         assert result["description"] is None
         assert result["filetype"] == "pdf"
         assert result["size"] > 0
-        # Date should fall back to file mtime (as epoch int)
-        assert isinstance(result["date"], int)
+        # Date should fall back to file mtime (as epoch float)
+        assert isinstance(result["date"], float)
         assert result["date"] > 0
 
     def test_extract_empty_title_falls_back_to_filename(self, tmp_path):
@@ -358,7 +368,10 @@ class TestPDFExtractor:
         extractor = PDFExtractor()
         result = extractor.extract(pdf_path)
 
+        # Title is always filename-derived
         assert result["title"] == "empty title"
+        # Empty title string should result in None extracted_title
+        assert result["extracted_title"] is None
         assert result["description"] == "Author"
 
     def test_extract_accepts_string_path(self, tmp_path):
@@ -369,7 +382,9 @@ class TestPDFExtractor:
         extractor = PDFExtractor()
         result = extractor.extract(str(pdf_path))
 
-        assert result["title"] == "String Path Test"
+        # Title is always filename-derived
+        assert result["title"] == "string path"
+        assert result["extracted_title"] == "String Path Test"
         assert result["filetype"] == "pdf"
 
     def test_extract_returns_all_required_keys(self, tmp_path):
@@ -380,7 +395,15 @@ class TestPDFExtractor:
         extractor = PDFExtractor()
         result = extractor.extract(pdf_path)
 
-        required_keys = {"title", "description", "date", "size", "filetype", "content"}
+        required_keys = {
+            "title",
+            "extracted_title",
+            "description",
+            "date",
+            "size",
+            "filetype",
+            "content",
+        }
         assert required_keys.issubset(set(result.keys()))
 
     def test_extract_description_is_none_when_no_author(self, tmp_path):
@@ -394,14 +417,17 @@ class TestPDFExtractor:
         assert result["description"] is None
 
     def test_extract_cleans_underscores_from_pdf_title(self, tmp_path):
-        """Underscores in PDF metadata title should be replaced with spaces."""
+        """Underscores in PDF metadata title should be replaced with spaces in extracted_title."""
         pdf_path = tmp_path / "document.pdf"
         create_test_pdf(pdf_path, title="my_pdf_title", author=None)
 
         extractor = PDFExtractor()
         result = extractor.extract(pdf_path)
 
-        assert result["title"] == "my pdf title"
+        # Title is always filename-derived
+        assert result["title"] == "document"
+        # Extracted title should have underscores cleaned
+        assert result["extracted_title"] == "my pdf title"
 
     def test_extract_cleans_underscores_from_fallback_filename(self, tmp_path):
         """Underscores in fallback filename should be replaced with spaces."""
@@ -466,12 +492,13 @@ class TestHTMLExtractor:
         extractor = HTMLExtractor()
         result = extractor.extract(html_path)
 
-        assert result["title"] == "My Article Title"
+        assert result["title"] == "article"
+        assert result["extracted_title"] == "My Article Title"
         assert result["description"] == "An interesting article about ILE"
         assert result["filetype"] == "html"
         assert result["size"] > 0
-        # Date should be UNIX epoch (int)
-        assert isinstance(result["date"], int)
+        # Date should be UNIX epoch (float, ms precision)
+        assert isinstance(result["date"], float)
         assert result["date"] > 0
 
     def test_extract_fallback_title_to_filename(self, tmp_path):
@@ -498,7 +525,7 @@ class TestHTMLExtractor:
         result = extractor.extract(html_path)
 
         mtime = int(html_path.stat().st_mtime)
-        assert isinstance(result["date"], int)
+        assert isinstance(result["date"], float)
         assert abs(result["date"] - mtime) < 5
 
     def test_extract_file_size_in_bytes(self, tmp_path):
@@ -525,8 +552,8 @@ class TestHTMLExtractor:
         extractor = HTMLExtractor()
         result = extractor.extract(html_path)
 
-        # Should be an integer (UNIX epoch)
-        assert isinstance(result["date"], int)
+        # Should be a float (UNIX epoch, ms precision)
+        assert isinstance(result["date"], float)
         assert result["date"] > 0
 
     def test_extract_description_from_meta(self, tmp_path):
@@ -561,7 +588,15 @@ class TestHTMLExtractor:
         extractor = HTMLExtractor()
         result = extractor.extract(html_path)
 
-        required_keys = {"title", "description", "date", "size", "filetype", "content"}
+        required_keys = {
+            "title",
+            "extracted_title",
+            "description",
+            "date",
+            "size",
+            "filetype",
+            "content",
+        }
         assert required_keys.issubset(set(result.keys()))
 
     def test_extract_minimal_html(self, tmp_path):
@@ -575,7 +610,8 @@ class TestHTMLExtractor:
         extractor = HTMLExtractor()
         result = extractor.extract(html_path)
 
-        assert result["title"] == "Minimal"
+        assert result["title"] == "minimal"
+        assert result["extracted_title"] == "Minimal"
         assert result["description"] is None
         assert result["filetype"] == "html"
         assert result["size"] > 0
@@ -627,7 +663,7 @@ class TestHTMLExtractor:
         extractor = HTMLExtractor()
         result = extractor.extract(html_path)
 
-        assert result["title"] == "Broken"
+        assert result["title"] == "malformed"
         assert result["filetype"] == "html"
         assert result["size"] > 0
 
@@ -652,7 +688,8 @@ class TestHTMLExtractor:
         extractor = HTMLExtractor()
         result = extractor.extract(str(html_path))
 
-        assert result["title"] == "String Path Test"
+        assert result["title"] == "string path"
+        assert result["extracted_title"] == "String Path Test"
         assert result["filetype"] == "html"
 
     def test_extract_date_date_only_format(self, tmp_path):
@@ -701,7 +738,8 @@ class TestHTMLExtractor:
         extractor = HTMLExtractor()
         result = extractor.extract(html_path)
 
-        assert result["title"] == "my article title"
+        assert result["title"] == "article"
+        assert result["extracted_title"] == "my article title"
 
     def test_extract_cleans_underscores_from_fallback_filename(self, tmp_path):
         """Underscores in fallback filename should be replaced with spaces."""
@@ -846,9 +884,7 @@ class TestMetadataCompatibility:
                 status="complete",
                 input_size=extracted["size"],
                 output_size=(
-                    len(extracted["content"].encode("utf-8"))
-                    if extracted["content"]
-                    else 0
+                    len(extracted["content"].encode("utf-8")) if extracted["content"] else 0
                 ),
             ),
             title=extracted["title"],
@@ -861,7 +897,7 @@ class TestMetadataCompatibility:
             content=extracted["content"],
         )
 
-        assert metadata.title == "Test Doc"
+        assert metadata.final_title == "doc"
         assert metadata.filetype == "pdf"
         assert metadata.size == extracted["size"]
         assert metadata.content == extracted["content"]
@@ -886,9 +922,7 @@ class TestMetadataCompatibility:
                 status="complete",
                 input_size=extracted["size"],
                 output_size=(
-                    len(extracted["content"].encode("utf-8"))
-                    if extracted["content"]
-                    else 0
+                    len(extracted["content"].encode("utf-8")) if extracted["content"] else 0
                 ),
             ),
             title=extracted["title"],
@@ -901,7 +935,7 @@ class TestMetadataCompatibility:
             content=extracted["content"],
         )
 
-        assert metadata.title == "Test Page"
+        assert metadata.final_title == "page"
         assert metadata.filetype == "html"
         assert metadata.description == "A test page description"
         assert metadata.content == extracted["content"]
@@ -918,7 +952,8 @@ class TestMetadataCompatibility:
         # Should not raise
         json_str = json.dumps(result)
         restored = json.loads(json_str)
-        assert restored["title"] == "Serialize Test"
+        assert restored["title"] == "serialize"
+        assert restored["extracted_title"] == "Serialize Test"
         assert restored["filetype"] == "pdf"
 
     def test_html_result_serializes_to_json(self, tmp_path):
@@ -932,7 +967,8 @@ class TestMetadataCompatibility:
         # Should not raise
         json_str = json.dumps(result)
         restored = json.loads(json_str)
-        assert restored["title"] == "Serialize Test"
+        assert restored["title"] == "serialize"
+        assert restored["extracted_title"] == "Serialize Test"
         assert restored["filetype"] == "html"
 
 

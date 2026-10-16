@@ -4,8 +4,6 @@ from io import StringIO
 import json
 import logging
 
-import pytest
-
 from local_feed_generator.errors import (
     ProcessingError,
     SummarizationError,
@@ -14,6 +12,7 @@ from local_feed_generator.errors import (
     create_error_metadata,
     log_error,
 )
+import pytest
 
 
 class TestExceptionHierarchy:
@@ -195,6 +194,13 @@ class TestCreateErrorMetadata:
         # Ensure status and processing_date are not present (removed from schema)
         assert "status" not in metadata
         assert "processing_date" not in metadata
+
+    def test_title_is_dict_not_string(self):
+        """Error metadata title should be a dict with 'filename' key."""
+        exc = ProcessingError("failed")
+        metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
+        assert isinstance(metadata["title"], dict)
+        assert metadata["title"]["filename"] == "lecture.mp4"
 
 
 class TestLogError:

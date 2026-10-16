@@ -35,6 +35,8 @@ def _set_valid_env(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "test-model")
     monkeypatch.setenv("LLM_SYSTEM_PROMPT", "Test system prompt")
+    monkeypatch.setenv("SUMMARY_PROMPT", "Summarize key takeaways from this document.")
+    monkeypatch.setenv("TITLE_PROMPT", "Generate a concise, descriptive title.")
     # Clear transcription endpoint to force local mode (not remote).
     # Using setenv with empty string overrides the .env file value (env vars
     # take precedence over .env in pydantic-settings).
@@ -84,7 +86,8 @@ def mock_pdf_extractor():
     """Create a mock PDFExtractor."""
     e = mock.MagicMock()
     e.extract.return_value = {
-        "title": "PDF Title",
+        "title": "document",
+        "extracted_title": "PDF Title",
         "description": "PDF Description",
         "date": 1728931200,
         "size": 1024,
@@ -99,7 +102,8 @@ def mock_html_extractor():
     """Create a mock HTMLExtractor."""
     e = mock.MagicMock()
     e.extract.return_value = {
-        "title": "HTML Title",
+        "title": "article",
+        "extracted_title": "HTML Title",
         "description": "HTML Description",
         "date": 1728931200,
         "size": 512,
@@ -218,7 +222,9 @@ class TestProcessFileMP4:
 
         producer.process_file(scanned)
 
-        mock_summarizer.summarize.assert_called_once_with("This is a test transcript.")
+        mock_summarizer.summarize.assert_called_once_with(
+            "This is a test transcript.", reflection_questions=None
+        )
 
     def test_mp4_generates_title_from_transcript(self, producer, mock_summarizer, tmp_path):
         """process_file should call summarizer.generate_title for MP4 files."""
@@ -230,7 +236,11 @@ class TestProcessFileMP4:
 
         producer.process_file(scanned)
 
-        mock_summarizer.generate_title.assert_called_once_with("This is a test transcript.")
+        mock_summarizer.generate_title.assert_called_once_with(
+            "This is a test transcript.",
+            filename="lecture",
+            extracted_title=None,
+        )
 
     def test_mp4_writes_json_metadata(self, producer, tmp_path):
         """process_file should write a JSON metadata file adjacent to source."""
@@ -260,7 +270,7 @@ class TestProcessFileMP4:
         assert metadata is not None
         assert metadata.transcribe.status == "complete"
         assert metadata.summarize.status == "complete"
-        assert metadata.title == "Generated Title"
+        assert metadata.final_title == "Generated Title"
         assert metadata.description == ""  # MP4: description is blank
         assert metadata.summary == "Key takeaways: test summary."  # summary holds the LLM output
         assert metadata.filename == "lecture.mp4"
@@ -271,7 +281,7 @@ class TestProcessFileMP4:
         assert metadata.feed_eligible is True
 
     def test_mp4_metadata_date_from_file_mtime(self, producer, tmp_path):
-        """MP4 metadata date should match the file modification time (epoch int)."""
+        """MP4 metadata date should match the file modification time (epoch float)."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         scanned = _make_scanned_file(
@@ -281,7 +291,8 @@ class TestProcessFileMP4:
 
         metadata = producer.process_file(scanned)
 
-        expected_mtime = int(source.stat().st_mtime)
+        expected_mtime = int(source.stat().st_mtime * 1000) / 1000.0
+        assert isinstance(metadata.date, float)
         assert metadata.date == expected_mtime
 
     def test_mp4_skips_transcription_when_already_complete(
@@ -316,7 +327,9 @@ class TestProcessFileMP4:
         # Transcriber should NOT have been called
         mock_transcriber.transcribe.assert_not_called()
         # Summarizer SHOULD have been called with the existing transcript
-        mock_summarizer.summarize.assert_called_once_with(existing_transcript)
+        mock_summarizer.summarize.assert_called_once_with(
+            existing_transcript, reflection_questions=None
+        )
         # Metadata should have the existing transcript
         assert metadata is not None
         assert metadata.content == existing_transcript
@@ -358,7 +371,7 @@ class TestProcessFilePDF:
 
         assert metadata is not None
         assert metadata.extract.status == "complete"
-        assert metadata.title == "PDF Title"
+        assert metadata.final_title == "Generated Title"  # LLM-generated title
         assert metadata.description == "PDF Description"
         assert metadata.filename == "document.pdf"
         assert metadata.filepath == "document.pdf"
@@ -368,10 +381,13 @@ class TestProcessFilePDF:
         assert metadata.content == "PDF plaintext content"
         assert metadata.feed_eligible is True
 
-    def test_pdf_uses_extractor_title(self, producer, mock_pdf_extractor, tmp_path):
-        """PDF should use the title from the extractor when available."""
+    def test_pdf_uses_filename_title_not_extractor_title(
+        self, producer, mock_pdf_extractor, tmp_path
+    ):
+        """PDF should use filename-derived title when no content is available for LLM."""
         mock_pdf_extractor.extract.return_value = {
-            "title": "Custom PDF Title",
+            "title": "doc",
+            "extracted_title": "Custom PDF Title",
             "description": "Desc",
             "date": 1728931200,
             "size": 2048,
@@ -386,14 +402,42 @@ class TestProcessFilePDF:
 
         metadata = producer.process_file(scanned)
 
-        assert metadata.title == "Custom PDF Title"
+        assert metadata.extracted_title == "Custom PDF Title"
+        assert metadata.final_title == "doc"
 
-    def test_pdf_falls_back_to_llm_title_when_empty(
+    def test_pdf_calls_llm_for_title_when_content_available(
         self, producer, mock_pdf_extractor, mock_summarizer, tmp_path
     ):
-        """PDF should use LLM to generate title when extractor returns empty."""
+        """PDF should call LLM for title generation when content is available."""
+        mock_pdf_extractor.extract.return_value = {
+            "title": "doc",
+            "extracted_title": "PDF Title",
+            "description": "Desc",
+            "date": 1728931200,
+            "size": 1024,
+            "filetype": "pdf",
+            "content": "PDF plaintext content",
+        }
+        source = tmp_path / "doc.pdf"
+        source.write_bytes(b"pdf data content")
+        scanned = _make_scanned_file(
+            "doc.pdf",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        # LLM should be called for title generation on PDF files with content
+        mock_summarizer.generate_title.assert_called_once()
+        assert metadata.final_title == "Generated Title"
+
+    def test_pdf_does_not_call_llm_for_title_when_no_content(
+        self, producer, mock_pdf_extractor, mock_summarizer, tmp_path
+    ):
+        """PDF should NOT call LLM for title when no content is available."""
         mock_pdf_extractor.extract.return_value = {
             "title": "",
+            "extracted_title": None,
             "description": "Desc",
             "date": 1728931200,
             "size": 1024,
@@ -408,15 +452,17 @@ class TestProcessFilePDF:
 
         metadata = producer.process_file(scanned)
 
-        mock_summarizer.generate_title.assert_called_once()
-        assert metadata.title == "Generated Title"
+        # LLM should not be called when no content is available for title generation
+        mock_summarizer.generate_title.assert_not_called()
+        assert metadata.final_title == "doc"
 
-    def test_pdf_falls_back_to_llm_title_when_none(
+    def test_pdf_does_not_call_llm_for_title_when_content_none(
         self, producer, mock_pdf_extractor, mock_summarizer, tmp_path
     ):
-        """PDF should use LLM to generate title when extractor returns None."""
+        """PDF should NOT call LLM for title when content is None."""
         mock_pdf_extractor.extract.return_value = {
             "title": None,
+            "extracted_title": None,
             "description": "Desc",
             "date": 1728931200,
             "size": 1024,
@@ -431,19 +477,22 @@ class TestProcessFilePDF:
 
         metadata = producer.process_file(scanned)
 
-        mock_summarizer.generate_title.assert_called_once()
-        assert metadata.title == "Generated Title"
+        # LLM should not be called when no content is available for title generation
+        mock_summarizer.generate_title.assert_not_called()
+        assert metadata.final_title == "doc"
 
-    def test_pdf_does_not_use_llm_when_title_present(
+    def test_pdf_always_calls_llm_when_title_present(
         self, producer, mock_pdf_extractor, mock_summarizer, tmp_path
     ):
-        """PDF should not call LLM when extractor provides a title."""
+        """PDF should call LLM for title generation even when extractor provides a title."""
         mock_pdf_extractor.extract.return_value = {
-            "title": "Existing Title",
+            "title": "doc",
+            "extracted_title": "Existing Title",
             "description": "Desc",
             "date": 1728931200,
             "size": 1024,
             "filetype": "pdf",
+            "content": "Some content here",
         }
         source = tmp_path / "doc.pdf"
         source.write_bytes(b"pdf data")
@@ -454,14 +503,15 @@ class TestProcessFilePDF:
 
         producer.process_file(scanned)
 
-        mock_summarizer.generate_title.assert_not_called()
+        mock_summarizer.generate_title.assert_called_once()
 
     def test_pdf_content_none_when_extractor_returns_no_content(
         self, producer, mock_pdf_extractor, tmp_path
     ):
         """PDF should have content=None when extractor doesn't return content."""
         mock_pdf_extractor.extract.return_value = {
-            "title": "PDF Title",
+            "title": "doc",
+            "extracted_title": None,
             "description": "PDF Description",
             "date": 1728931200,
             "size": 1024,
@@ -514,7 +564,7 @@ class TestProcessFileHTML:
 
         assert metadata is not None
         assert metadata.extract.status == "complete"
-        assert metadata.title == "HTML Title"
+        assert metadata.final_title == "Generated Title"  # LLM-generated title
         assert metadata.description == "HTML Description"
         assert metadata.filename == "article.html"
         assert metadata.filepath == "article.html"
@@ -524,12 +574,39 @@ class TestProcessFileHTML:
         assert metadata.content == "HTML plaintext content"
         assert metadata.feed_eligible is True
 
-    def test_html_falls_back_to_llm_title_when_empty(
+    def test_html_calls_llm_for_title_when_content_available(
         self, producer, mock_html_extractor, mock_summarizer, tmp_path
     ):
-        """HTML should use LLM to generate title when extractor returns empty."""
+        """HTML should call LLM for title generation when content is available."""
         mock_html_extractor.extract.return_value = {
             "title": "",
+            "extracted_title": None,
+            "description": "Desc",
+            "date": 1728931200,
+            "size": 512,
+            "filetype": "html",
+            "content": "HTML plaintext content",
+        }
+        source = tmp_path / "page.html"
+        source.write_text("<html>content</html>")
+        scanned = _make_scanned_file(
+            "page.html",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        # LLM should be called for title generation on HTML files with content
+        mock_summarizer.generate_title.assert_called_once()
+        assert metadata.final_title == "Generated Title"
+
+    def test_html_does_not_call_llm_for_title_when_no_content(
+        self, producer, mock_html_extractor, mock_summarizer, tmp_path
+    ):
+        """HTML should NOT call LLM for title when no content is available."""
+        mock_html_extractor.extract.return_value = {
+            "title": "",
+            "extracted_title": None,
             "description": "Desc",
             "date": 1728931200,
             "size": 512,
@@ -544,19 +621,22 @@ class TestProcessFileHTML:
 
         metadata = producer.process_file(scanned)
 
-        mock_summarizer.generate_title.assert_called_once()
-        assert metadata.title == "Generated Title"
+        # LLM should not be called when no content is available for title generation
+        mock_summarizer.generate_title.assert_not_called()
+        assert metadata.final_title == "page"
 
-    def test_html_does_not_use_llm_when_title_present(
+    def test_html_always_calls_llm_when_title_present(
         self, producer, mock_html_extractor, mock_summarizer, tmp_path
     ):
-        """HTML should not call LLM when extractor provides a title."""
+        """HTML should call LLM for title generation even when extractor provides a title."""
         mock_html_extractor.extract.return_value = {
-            "title": "Existing Title",
+            "title": "page",
+            "extracted_title": "Existing Title",
             "description": "Desc",
             "date": 1728931200,
             "size": 512,
             "filetype": "html",
+            "content": "Some content here",
         }
         source = tmp_path / "page.html"
         source.write_text("<html>test</html>")
@@ -567,14 +647,15 @@ class TestProcessFileHTML:
 
         producer.process_file(scanned)
 
-        mock_summarizer.generate_title.assert_not_called()
+        mock_summarizer.generate_title.assert_called_once()
 
     def test_html_content_none_when_extractor_returns_no_content(
         self, producer, mock_html_extractor, tmp_path
     ):
         """HTML should have content=None when extractor doesn't return content."""
         mock_html_extractor.extract.return_value = {
-            "title": "HTML Title",
+            "title": "article",
+            "extracted_title": None,
             "description": "HTML Description",
             "date": 1728931200,
             "size": 512,
@@ -701,7 +782,9 @@ class TestGenerateTitle:
         """generate_title should delegate to summarizer.generate_title."""
         producer.generate_title("Some content here")
 
-        mock_summarizer.generate_title.assert_called_once_with("Some content here")
+        mock_summarizer.generate_title.assert_called_once_with(
+            "Some content here", None, None
+        )
 
     def test_generate_title_returns_title(self, producer, mock_summarizer):
         """generate_title should return the title from the summarizer."""
@@ -717,8 +800,11 @@ class TestGenerateTitle:
         producer.generate_title_from_file(source)
 
         mock_summarizer.generate_title.assert_called_once()
-        call_arg = mock_summarizer.generate_title.call_args[0][0]
-        assert "This is the file content for title generation." in call_arg
+        call_args = mock_summarizer.generate_title.call_args
+        # First positional arg is content
+        assert "This is the file content for title generation." in call_args[0][0]
+        # Filename should be passed (as positional or keyword arg)
+        assert call_args[0][1] == "doc" or call_args.kwargs.get("filename") == "doc"
 
     def test_generate_title_from_file_truncates_long_content(
         self, producer, mock_summarizer, tmp_path
@@ -729,7 +815,8 @@ class TestGenerateTitle:
 
         producer.generate_title_from_file(source)
 
-        call_arg = mock_summarizer.generate_title.call_args[0][0]
+        call_args = mock_summarizer.generate_title.call_args
+        call_arg = call_args[0][0]
         assert len(call_arg) <= 8000
 
 
@@ -765,7 +852,8 @@ class TestProducerWithRealExtractors:
         metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        assert metadata.title == "Real PDF Title"
+        # Blank page has no extractable text, so generated falls back to filename
+        assert metadata.final_title == "real"
         assert metadata.filetype == "pdf"
         assert metadata.extract.status == "complete"
         assert metadata.feed_eligible is True
@@ -793,7 +881,8 @@ class TestProducerWithRealExtractors:
         metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        assert metadata.title == "Real HTML Title"
+        # HTML has content "Content", so LLM is called and returns "Generated Title"
+        assert metadata.final_title == "Generated Title"
         assert metadata.description == "Real description"
         assert metadata.filetype == "html"
         assert metadata.extract.status == "complete"
@@ -823,7 +912,7 @@ class TestProducerWithRealExtractors:
 
         assert metadata is not None
         # PDFExtractor falls back to filename stem "untitled"
-        assert metadata.title == "untitled"
+        assert metadata.final_title == "untitled"
 
 
 # ---------------------------------------------------------------------------
@@ -870,9 +959,14 @@ class TestIntermediateStateSaving:
         """When transcription_endpoint is set and transcription_remote_model is configured,
         transcription_model should be the remote model name."""
         _set_valid_env(monkeypatch)
+        monkeypatch.setattr(
+            "local_feed_generator.services.transcriber.check_cuda_available",
+            lambda: True,
+        )
         monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "https://whisper.example.com/v1")
         monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "whisper-1")
         import local_feed_generator.config as config_module
+
         config_module._config_instance = None
 
         source = tmp_path / "lecture.mp4"
@@ -908,9 +1002,14 @@ class TestIntermediateStateSaving:
         """When transcription_endpoint is set but transcription_remote_model is not configured,
         transcription model should be 'remote'."""
         _set_valid_env(monkeypatch)
+        monkeypatch.setattr(
+            "local_feed_generator.services.transcriber.check_cuda_available",
+            lambda: True,
+        )
         monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "https://whisper.example.com/v1")
         monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "")
         import local_feed_generator.config as config_module
+
         config_module._config_instance = None
 
         source = tmp_path / "lecture.mp4"
@@ -1051,10 +1150,10 @@ class TestIntermediateStateSaving:
         assert data.get("extract", {}).get("status") == "in_progress"
         assert data["error"] is not None
 
-    def test_pdf_intermediate_state_generating_title(
+    def test_pdf_no_llm_title_generation_needed(
         self, producer, mock_pdf_extractor, mock_summarizer, tmp_path
     ):
-        """PDF should write generating_title status before LLM title generation."""
+        """PDF should NOT call LLM for title generation when no content is available."""
         source = tmp_path / "document.pdf"
         source.write_bytes(b"pdf data content")
         scanned = _make_scanned_file(
@@ -1069,13 +1168,17 @@ class TestIntermediateStateSaving:
             "size": 1024,
             "filetype": "pdf",
         }
-        mock_summarizer.generate_title.side_effect = RuntimeError("fail")
+        mock_summarizer.generate_title.side_effect = RuntimeError("title fail")
 
         producer.process_file(scanned)
 
         json_path = tmp_path / "document.pdf.json"
         data = json.loads(json_path.read_text())
-        assert data["error"] is not None
+        # PDF should complete successfully without calling LLM for title
+        assert data["extract"]["status"] == "complete"
+        assert "error" not in data
+        # LLM should NOT have been called for title generation (no content)
+        mock_summarizer.generate_title.assert_not_called()
 
     def test_pdf_no_generating_title_stage_when_title_present(
         self, producer, mock_pdf_extractor, tmp_path
@@ -1341,10 +1444,15 @@ class TestIntermediateStatusWrites:
         assert "in_progress" in written_statuses
         assert "complete" in written_statuses
 
-    def test_pdf_writes_extract_complete_after_llm_title_generation(
+    def test_pdf_writes_extract_complete_without_llm_title_generation(
         self, producer, mock_pdf_extractor, mock_summarizer, tmp_path
     ):
-        """_process_pdf should write 'extract'='complete' after LLM title generation."""
+        """_process_pdf should write 'extract'='complete' without LLM title generation.
+
+        With the new implementation, PDF/HTML titles come from the filename,
+        not from LLM generation. The extract step is completed after extraction
+        without any LLM title generation.
+        """
         source = tmp_path / "document.pdf"
         source.write_bytes(b"pdf data content")
         scanned = _make_scanned_file(
@@ -1353,24 +1461,27 @@ class TestIntermediateStatusWrites:
         )
 
         mock_pdf_extractor.extract.return_value = {
-            "title": "",
+            "title": "doc",
+            "extracted_title": "Custom Title",
             "description": "Desc",
             "date": 1728931200,
             "size": 1024,
             "filetype": "pdf",
         }
 
-        # Make generate_title_from_file raise to capture the intermediate state
+        # Make generate_title raise to verify it's NOT called
         mock_summarizer.generate_title.side_effect = RuntimeError("title fail")
 
         producer.process_file(scanned)
 
         json_path = tmp_path / "document.pdf.json"
         data = json.loads(json_path.read_text())
-        # Extract should still be in_progress because title generation failed
-        # (the intermediate write with "complete" happens after title generation)
-        assert data.get("extract", {}).get("status") == "in_progress"
-        assert data["error"] is not None
+        # Extract should be complete since no LLM title generation is needed
+        assert data.get("extract", {}).get("status") == "complete"
+        # No error should be present since LLM was not called
+        assert "error" not in data
+        # LLM should NOT have been called for title generation
+        mock_summarizer.generate_title.assert_not_called()
 
     def test_html_writes_extract_complete_after_extraction(
         self, producer, mock_html_extractor, tmp_path
@@ -1411,10 +1522,10 @@ class TestIntermediateStatusWrites:
         assert "in_progress" in written_statuses
         assert "complete" in written_statuses
 
-    def test_html_writes_extract_complete_after_llm_title_generation(
+    def test_html_no_llm_title_generation_needed(
         self, producer, mock_html_extractor, mock_summarizer, tmp_path
     ):
-        """_process_html should write 'extract'='complete' after LLM title generation."""
+        """HTML should NOT call LLM for title generation when no content is available."""
         source = tmp_path / "article.html"
         source.write_text("<html>content</html>")
         scanned = _make_scanned_file(
@@ -1430,16 +1541,18 @@ class TestIntermediateStatusWrites:
             "filetype": "html",
         }
 
-        # Make generate_title_from_file raise to capture the intermediate state
+        # Make generate_title raise to verify it's NOT called
         mock_summarizer.generate_title.side_effect = RuntimeError("title fail")
 
         producer.process_file(scanned)
 
         json_path = tmp_path / "article.html.json"
         data = json.loads(json_path.read_text())
-        # Extract should still be in_progress because title generation failed
-        assert data.get("extract", {}).get("status") == "in_progress"
-        assert data["error"] is not None
+        # HTML should complete successfully without calling LLM for title
+        assert data["extract"]["status"] == "complete"
+        assert "error" not in data
+        # LLM should NOT have been called for title generation (no content)
+        mock_summarizer.generate_title.assert_not_called()
 
     def test_pdf_final_state_has_extract_complete_with_title_present(
         self, producer, mock_pdf_extractor, tmp_path
@@ -1465,7 +1578,8 @@ class TestIntermediateStatusWrites:
         json_path = tmp_path / "document.pdf.json"
         data = json.loads(json_path.read_text())
         assert data["extract"]["status"] == "complete"
-        assert data["title"] == "PDF Title"
+        assert data["title"]["filename"] == "PDF Title"
+        assert data["title"]["generated"] == "PDF Title"  # Falls back to filename
         assert "end_time" in data["extract"]
 
     def test_html_final_state_has_extract_complete_with_title_present(
@@ -1492,7 +1606,8 @@ class TestIntermediateStatusWrites:
         json_path = tmp_path / "article.html.json"
         data = json.loads(json_path.read_text())
         assert data["extract"]["status"] == "complete"
-        assert data["title"] == "HTML Title"
+        assert data["title"]["filename"] == "HTML Title"
+        assert data["title"]["generated"] == "HTML Title"  # Falls back to filename
         assert "end_time" in data["extract"]
 
 
@@ -1559,7 +1674,8 @@ class TestMP4AudioMetadata:
             metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        expected_mtime = int(source.stat().st_mtime)
+        expected_mtime = int(source.stat().st_mtime * 1000) / 1000.0
+        assert isinstance(metadata.date, float)
         assert metadata.date == expected_mtime
         assert metadata.creation_time is None
         assert metadata.duration == 120.0
@@ -1582,7 +1698,8 @@ class TestMP4AudioMetadata:
             metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        expected_mtime = int(source.stat().st_mtime)
+        expected_mtime = int(source.stat().st_mtime * 1000) / 1000.0
+        assert isinstance(metadata.date, float)
         assert metadata.date == expected_mtime
         assert metadata.creation_time is None
         assert metadata.duration is None
@@ -1616,10 +1733,10 @@ class TestMP4AudioMetadata:
         assert data["duration"] == 1800.0
         assert data["creation_time"] == "2024-06-01T12:00:00Z"
 
-    def test_mp4_date_from_creation_time_is_epoch_int(
+    def test_mp4_date_from_creation_time_is_epoch_float(
         self, producer, mock_transcriber, mock_summarizer, tmp_path
     ):
-        """Date from creation_time should be stored as an integer (UNIX epoch)."""
+        """Date from creation_time should be stored as a float (UNIX epoch)."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         scanned = _make_scanned_file(
@@ -1641,9 +1758,9 @@ class TestMP4AudioMetadata:
             metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        assert isinstance(metadata.date, int)
+        assert isinstance(metadata.date, float)
         # 2024-06-15T08:30:00Z = 1718440200 epoch
-        assert metadata.date == 1718440200
+        assert metadata.date == 1718440200.0
 
     def test_mp4_invalid_creation_time_falls_back_to_mtime(
         self, producer, mock_transcriber, mock_summarizer, tmp_path
@@ -1670,7 +1787,8 @@ class TestMP4AudioMetadata:
             metadata = producer.process_file(scanned)
 
         assert metadata is not None
-        expected_mtime = int(source.stat().st_mtime)
+        expected_mtime = int(source.stat().st_mtime * 1000) / 1000.0
+        assert isinstance(metadata.date, float)
         assert metadata.date == expected_mtime
         # creation_time should still be stored as the raw string
         assert metadata.creation_time == "not-a-valid-date"

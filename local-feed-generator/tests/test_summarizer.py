@@ -3,6 +3,9 @@
 import os
 from unittest import mock
 
+from local_feed_generator.config import Settings
+from local_feed_generator.errors import SummarizationError
+from local_feed_generator.services.summarizer import Summarizer
 from openai import (
     APIConnectionError,
     APITimeoutError,
@@ -14,10 +17,6 @@ from openai import (
     RateLimitError,
 )
 import pytest
-
-from local_feed_generator.config import Settings
-from local_feed_generator.errors import SummarizationError
-from local_feed_generator.services.summarizer import Summarizer
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -34,6 +33,8 @@ def mock_config():
         llm_api_key="test-key",
         llm_model="test-model",
         llm_system_prompt="Summarize key takeaways from this document.",
+        summary_prompt="Summarize key takeaways from this document.",
+        title_prompt="Generate a title for the given content.",
     )
 
 
@@ -89,6 +90,8 @@ class TestSummarizerInit:
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
             "LLM_SYSTEM_PROMPT": "Test prompt",
+            "SUMMARY_PROMPT": "Test summary prompt",
+            "TITLE_PROMPT": "Test title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             # Reset the singleton
@@ -231,7 +234,60 @@ class TestGenerateTitle:
         messages = call_kwargs.kwargs["messages"]
         user_msg = messages[1]
         assert user_msg["role"] == "user"
-        assert user_msg["content"] == content
+        assert content in user_msg["content"]
+
+    def test_truncates_content_to_4000_chars(self, summarizer, mock_title_response):
+        """generate_title() should truncate content to ~4000 characters."""
+        summarizer._client.chat.completions.create.return_value = mock_title_response
+        long_content = "x" * 10000
+        summarizer.generate_title(long_content)
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs["messages"]
+        user_msg = messages[1]
+        # The content portion should be truncated to 4000 chars
+        assert "x" * 4000 in user_msg["content"]
+        assert "x" * 4001 not in user_msg["content"]
+
+    def test_passes_filename_in_user_content(self, summarizer, mock_title_response):
+        """generate_title() should include filename in user content when provided."""
+        summarizer._client.chat.completions.create.return_value = mock_title_response
+        summarizer.generate_title("Some content", filename="lecture notes")
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs["messages"]
+        user_msg = messages[1]
+        assert "Filename: lecture notes" in user_msg["content"]
+
+    def test_passes_extracted_title_in_user_content(self, summarizer, mock_title_response):
+        """generate_title() should include extracted_title in user content when provided."""
+        summarizer._client.chat.completions.create.return_value = mock_title_response
+        summarizer.generate_title("Some content", filename="lecture", extracted_title="Lecture 1")
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs["messages"]
+        user_msg = messages[1]
+        assert "Extracted title: Lecture 1" in user_msg["content"]
+
+    def test_omits_extracted_title_when_none(self, summarizer, mock_title_response):
+        """generate_title() should not include extracted_title when it is None."""
+        summarizer._client.chat.completions.create.return_value = mock_title_response
+        summarizer.generate_title("Some content", filename="notes", extracted_title=None)
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs["messages"]
+        user_msg = messages[1]
+        assert "Extracted title" not in user_msg["content"]
+
+    def test_omits_extracted_title_when_empty(self, summarizer, mock_title_response):
+        """generate_title() should not include extracted_title when it is empty."""
+        summarizer._client.chat.completions.create.return_value = mock_title_response
+        summarizer.generate_title("Some content", filename="notes", extracted_title="")
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs["messages"]
+        user_msg = messages[1]
+        assert "Extracted title" not in user_msg["content"]
 
     def test_empty_content_raises_error(self, summarizer):
         """generate_title() should raise SummarizationError for empty content."""

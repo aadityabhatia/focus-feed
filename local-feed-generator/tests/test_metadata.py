@@ -1300,14 +1300,14 @@ class TestSchemaCompliance:
         assert "feed_eligible" in data
         assert data["feed_eligible"] is True
 
-    def test_date_field_is_integer(self):
-        """date should be an integer type (UNIX epoch), nullable."""
+    def test_date_field_is_number(self):
+        """date should be a number type (UNIX epoch float), nullable."""
         json_schema = Metadata.model_json_schema()
         date_schema = json_schema["properties"]["date"]
-        # date is int | None, so it uses anyOf with integer and null
+        # date is float | None, so it uses anyOf with number and null
         assert "anyOf" in date_schema
         types = {t.get("type") for t in date_schema["anyOf"]}
-        assert "integer" in types
+        assert "number" in types
         assert "null" in types
 
     def test_size_is_integer(self):

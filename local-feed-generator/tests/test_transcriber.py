@@ -33,6 +33,8 @@ def _set_valid_env(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "test-model")
     monkeypatch.setenv("LLM_SYSTEM_PROMPT", "Test system prompt")
+    monkeypatch.setenv("SUMMARY_PROMPT", "Test summary prompt")
+    monkeypatch.setenv("TITLE_PROMPT", "Test title prompt")
     # Clear transcription endpoint to force local mode (not remote).
     # Using setenv with empty string overrides the .env file value (env vars
     # take precedence over .env in pydantic-settings).
@@ -944,18 +946,22 @@ class TestCheckCudaAvailable:
             raise OSError(f"cannot open shared object file: {name}")
 
         # Mock site to prevent finding real libraries in site-packages
-        with mock.patch("ctypes.CDLL", side_effect=mock_cdll):
-            with mock.patch("site.getsitepackages", return_value=[]):
-                with mock.patch("site.getusersitepackages", return_value=""):
-                    assert check_cuda_available() is True
+        with (
+            mock.patch("ctypes.CDLL", side_effect=mock_cdll),
+            mock.patch("site.getsitepackages", return_value=[]),
+            mock.patch("site.getusersitepackages", return_value=""),
+        ):
+            assert check_cuda_available() is True
 
     def test_returns_false_when_no_library_loadable(self, valid_env):
         """Should return False when ctypes.CDLL cannot load any library."""
         # Mock both CDLL and site.getsitepackages to prevent finding real libraries
-        with mock.patch("ctypes.CDLL", side_effect=OSError("cannot open shared object file")):
-            with mock.patch("site.getsitepackages", return_value=[]):
-                with mock.patch("site.getusersitepackages", return_value=""):
-                    assert check_cuda_available() is False
+        with (
+            mock.patch("ctypes.CDLL", side_effect=OSError("cannot open shared object file")),
+            mock.patch("site.getsitepackages", return_value=[]),
+            mock.patch("site.getusersitepackages", return_value=""),
+        ):
+            assert check_cuda_available() is False
 
     def test_returns_false_when_ctypes_import_fails(self, valid_env):
         """Should return False if ctypes cannot be imported."""
@@ -980,14 +986,16 @@ class TestCheckCudaAvailable:
             raise OSError(f"cannot open shared object file: {name}")
 
         # Mock site to prevent finding real libraries in site-packages
-        with mock.patch("ctypes.CDLL", side_effect=mock_cdll):
-            with mock.patch("site.getsitepackages", return_value=[]):
-                with mock.patch("site.getusersitepackages", return_value=""):
-                    result = check_cuda_available()
-                    assert result is False
-                    # Should have tried all library names in standard paths
-                    assert "libcublas.so.12" in loaded_names
-                    assert "libcublas.so" in loaded_names
+        with (
+            mock.patch("ctypes.CDLL", side_effect=mock_cdll),
+            mock.patch("site.getsitepackages", return_value=[]),
+            mock.patch("site.getusersitepackages", return_value=""),
+        ):
+            result = check_cuda_available()
+            assert result is False
+            # Should have tried all library names in standard paths
+            assert "libcublas.so.12" in loaded_names
+            assert "libcublas.so" in loaded_names
 
     def test_finds_library_in_site_packages(self, valid_env, tmp_path):
         """Should find CUDA libraries bundled in Python site-packages."""
@@ -1003,10 +1011,12 @@ class TestCheckCudaAvailable:
                 return mock.MagicMock()  # Return a mock object for the full path
             raise OSError(f"cannot open shared object file: {name}")
 
-        with mock.patch("ctypes.CDLL", side_effect=mock_cdll):
-            with mock.patch("site.getsitepackages", return_value=[str(tmp_path)]):
-                with mock.patch("site.getusersitepackages", return_value=""):
-                    assert check_cuda_available() is True
+        with (
+            mock.patch("ctypes.CDLL", side_effect=mock_cdll),
+            mock.patch("site.getsitepackages", return_value=[str(tmp_path)]),
+            mock.patch("site.getusersitepackages", return_value=""),
+        ):
+            assert check_cuda_available() is True
 
 
 # ---------------------------------------------------------------------------
@@ -1120,9 +1130,7 @@ class TestCudaCheckInLoadModel:
             ) as mock_whisper_cls,
             pytest.raises(TranscriptionError) as exc_info,
         ):
-            mock_whisper_cls.side_effect = RuntimeError(
-                "CUDA error: cuBLAS initialization failed"
-            )
+            mock_whisper_cls.side_effect = RuntimeError("CUDA error: cuBLAS initialization failed")
             transcriber._load_model()
 
             assert "CUDA libraries not found" in str(exc_info.value)
@@ -1205,4 +1213,3 @@ class TestCudaCheckInLoadModel:
                 assert "Transcription failed" in str(exc_info.value)
                 assert "Some other error" in str(exc_info.value)
                 assert "CUDA libraries" not in str(exc_info.value)
-

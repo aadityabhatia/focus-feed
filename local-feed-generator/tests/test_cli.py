@@ -19,10 +19,9 @@ from unittest import mock
 
 import click
 from click.testing import CliRunner
-import pytest
-
 from local_feed_generator.cli import app, main
 from local_feed_generator.scanner import ScannedFile
+import pytest
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -37,6 +36,8 @@ def _set_valid_env(monkeypatch):
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "test-model")
     monkeypatch.setenv("LLM_SYSTEM_PROMPT", "Test system prompt")
+    monkeypatch.setenv("SUMMARY_PROMPT", "Test summary prompt")
+    monkeypatch.setenv("TITLE_PROMPT", "Test title prompt")
     # Clear transcription endpoint to force local mode (not remote).
     # Using setenv with empty string overrides the .env file value (env vars
     # take precedence over .env in pydantic-settings).
@@ -255,7 +256,15 @@ class TestCliFramework:
     def test_config_error_exits_with_code_1(self, runner, tmp_data_dir, monkeypatch):
         """CLI should exit with code 1 when config is invalid."""
         # Clear all required env vars
-        for key in ["BASE_URL", "DATA_DIR", "LLM_ENDPOINT", "LLM_API_KEY", "LLM_MODEL", "LLM_SYSTEM_PROMPT"]:
+        required_keys = [
+            "BASE_URL",
+            "DATA_DIR",
+            "LLM_ENDPOINT",
+            "LLM_API_KEY",
+            "LLM_MODEL",
+            "LLM_SYSTEM_PROMPT",
+        ]
+        for key in required_keys:
             monkeypatch.delenv(key, raising=False)
         import local_feed_generator.config as config_module
 
@@ -1845,7 +1854,9 @@ class TestTranscribeCommand:
         )
         assert result.exit_code == 0
 
-    def test_transcribe_force_flag_reprocesses_complete_files(self, runner, valid_env, tmp_data_dir):
+    def test_transcribe_force_flag_reprocesses_complete_files(
+        self, runner, valid_env, tmp_data_dir
+    ):
         """Transcribe --force should re-transcribe files with transcribe status='complete'."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
         # Create JSON with transcribe step complete
@@ -1919,7 +1930,7 @@ class TestTranscribeCommand:
     def test_transcribe_sets_in_progress_before_and_complete_after(
         self, runner, valid_env, tmp_data_dir
     ):
-        """Transcribe should set status to 'in_progress' before transcription, then 'complete' after."""
+        """Transcribe should set status to 'in_progress' before transcription, then 'complete'."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
 
         # Track the status values written at each _write_json_metadata call.
@@ -1939,7 +1950,10 @@ class TestTranscribeCommand:
             mock_transcriber.transcribe.return_value = "This is a transcript."
             MockTranscriber.return_value = mock_transcriber
 
-            with mock.patch("local_feed_generator.cli._write_json_metadata", side_effect=track_write):
+            with mock.patch(
+                "local_feed_generator.cli._write_json_metadata",
+                side_effect=track_write,
+            ):
                 result = runner.invoke(
                     app,
                     ["transcribe", "--data-dir", str(tmp_data_dir)],
@@ -1979,7 +1993,7 @@ class TestSummarizeCommand:
             ["summarize", "--data-dir", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
-        assert "No MP4 files need summarization." in result.output
+        assert "No files need summarization." in result.output
 
     def test_summarize_dry_run(self, runner, valid_env, tmp_data_dir):
         """Summarize --dry-run should list files without processing."""
@@ -2046,7 +2060,7 @@ class TestSummarizeCommand:
             )
 
         assert result.exit_code == 0
-        assert "Found 1 MP4 file(s) to summarize." in result.output
+        assert "Found 1 file(s) to summarize." in result.output
         mock_summarizer.summarize.assert_called_once()
 
     def test_summarize_skips_files_without_transcript(self, runner, valid_env, tmp_data_dir):
@@ -2074,7 +2088,7 @@ class TestSummarizeCommand:
             ["summarize", "--data-dir", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
-        assert "No MP4 files need summarization." in result.output
+        assert "No files need summarization." in result.output
 
     def test_summarize_writes_summary_to_json(self, runner, valid_env, tmp_data_dir):
         """Summarize should write the summary to the JSON metadata file."""
@@ -2113,7 +2127,9 @@ class TestSummarizeCommand:
         assert data["description"] == ""  # MP4: description stays blank
         assert data["summarize"]["status"] == "complete"
 
-    def test_summarize_force_flag_resummarizes_complete_files(self, runner, valid_env, tmp_data_dir):
+    def test_summarize_force_flag_resummarizes_complete_files(
+        self, runner, valid_env, tmp_data_dir
+    ):
         """Summarize --force should re-summarize files with status['summarize']='complete'."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
         (tmp_data_dir / "lecture.mp4.json").write_text(
@@ -2145,13 +2161,13 @@ class TestSummarizeCommand:
             )
 
         assert result.exit_code == 0
-        assert "Found 1 MP4 file(s) to summarize." in result.output
+        assert "Found 1 file(s) to summarize." in result.output
         mock_summarizer.summarize.assert_called_once()
 
     def test_summarize_sets_in_progress_before_and_complete_after(
         self, runner, valid_env, tmp_data_dir
     ):
-        """Summarize should set status to 'in_progress' before summarization, then 'complete' after."""
+        """Summarize should set status to 'in_progress' before summarization, then 'complete'."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
         (tmp_data_dir / "lecture.mp4.json").write_text(
             json.dumps(
@@ -2187,7 +2203,10 @@ class TestSummarizeCommand:
             mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
             MockSummarizer.return_value = mock_summarizer
 
-            with mock.patch("local_feed_generator.cli._write_json_metadata", side_effect=track_write):
+            with mock.patch(
+                "local_feed_generator.cli._write_json_metadata",
+                side_effect=track_write,
+            ):
                 result = runner.invoke(
                     app,
                     ["summarize", "--data-dir", str(tmp_data_dir)],
@@ -2281,8 +2300,439 @@ class TestSummarizeCommand:
         assert result.exit_code == 0
         assert "Summarized 5 words." in result.output
 
+    def test_summarize_processes_pdf_with_content(self, runner, valid_env, tmp_data_dir):
+        """Summarize should process PDF files that have content but no summary."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "PDF Description",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Extracted PDF text content.",
+                }
+            )
+        )
 
-class TestExtractCommand:
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["summarize", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 file(s) to summarize." in result.output
+        mock_summarizer.summarize.assert_called_once()
+
+    def test_summarize_pdf_preserves_description(self, runner, valid_env, tmp_data_dir):
+        """Summarize should keep the existing description for PDF files."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "PDF Description",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Extracted PDF text content.",
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["summarize", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        json_path = tmp_data_dir / "doc.pdf.json"
+        data = json.loads(json_path.read_text())
+        assert data["summary"] == "Key takeaways."
+        assert data["description"] == "PDF Description"  # PDF: description preserved
+        assert data["summarize"]["status"] == "complete"
+
+    def test_summarize_processes_html_with_content(self, runner, valid_env, tmp_data_dir):
+        """Summarize should process HTML files that have content but no summary."""
+        (tmp_data_dir / "page.html").write_bytes(b"<html><body>Content</body></html>")
+        (tmp_data_dir / "page.html.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "HTML Description",
+                    "filename": "page.html",
+                    "filepath": "page.html",
+                    "filetype": "html",
+                    "date": 1728931200,
+                    "size": 512,
+                    "content": "Extracted HTML text content.",
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["summarize", "--data-dir", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        assert "Found 1 file(s) to summarize." in result.output
+        mock_summarizer.summarize.assert_called_once()
+
+    def test_summarize_skips_files_without_content(self, runner, valid_env, tmp_data_dir):
+        """Summarize should skip files without content."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "",
+                }
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            ["summarize", "--data-dir", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "No files need summarization." in result.output
+
+    def test_summarize_dry_run_includes_pdf(self, runner, valid_env, tmp_data_dir):
+        """Summarize --dry-run should list PDF files that need summarization."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Extracted text content.",
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["summarize", "--data-dir", str(tmp_data_dir), "--dry-run"],
+            )
+
+        assert result.exit_code == 0
+        assert "[Dry run]" in result.output
+        assert "doc.pdf" in result.output
+        mock_summarizer.summarize.assert_not_called()
+
+    def test_summarize_file_flag_processes_pdf(self, runner, valid_env, tmp_data_dir):
+        """Summarize --file should process a specific PDF file."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Extracted text content.",
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.summarize.return_value = ("Summary.", 100, 50)
+            MockSummarizer.return_value = mock_summarizer
+
+            result = runner.invoke(
+                app,
+                ["summarize", "--data-dir", str(tmp_data_dir), "--file", "doc.pdf"],
+            )
+
+        assert result.exit_code == 0
+        mock_summarizer.summarize.assert_called_once()
+
+
+class TestFindFilesNeedingSummary:
+    """Tests for the _find_files_needing_summary helper function."""
+
+    def test_find_files_needing_summary_finds_mp4(self, valid_env, tmp_data_dir):
+        """Should find MP4 files with content but no summary."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Some transcript",
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_summary
+
+        result = _find_files_needing_summary(tmp_data_dir)
+        assert len(result) == 1
+        assert result[0].name == "lecture.mp4"
+
+    def test_find_files_needing_summary_finds_pdf(self, valid_env, tmp_data_dir):
+        """Should find PDF files with content but no summary."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Extracted PDF text.",
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_summary
+
+        result = _find_files_needing_summary(tmp_data_dir)
+        assert len(result) == 1
+        assert result[0].name == "doc.pdf"
+
+    def test_find_files_needing_summary_finds_html(self, valid_env, tmp_data_dir):
+        """Should find HTML files with content but no summary."""
+        (tmp_data_dir / "page.html").write_bytes(b"html")
+        (tmp_data_dir / "page.html.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "page.html",
+                    "filepath": "page.html",
+                    "filetype": "html",
+                    "date": 1728931200,
+                    "size": 512,
+                    "content": "Extracted HTML text.",
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_summary
+
+        result = _find_files_needing_summary(tmp_data_dir)
+        assert len(result) == 1
+        assert result[0].name == "page.html"
+
+    def test_find_files_needing_summary_skips_no_content(self, valid_env, tmp_data_dir):
+        """Should skip files without content."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "",
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_summary
+
+        result = _find_files_needing_summary(tmp_data_dir)
+        assert len(result) == 0
+
+    def test_find_files_needing_summary_skips_complete_summarize(self, valid_env, tmp_data_dir):
+        """Should skip files where summarize status is already complete."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Extracted text.",
+                    "summary": "Existing summary",
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_summary
+
+        result = _find_files_needing_summary(tmp_data_dir)
+        assert len(result) == 0
+
+    def test_find_files_needing_summary_force_includes_complete(self, valid_env, tmp_data_dir):
+        """Force should include files with summarize status='complete'."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Extracted text.",
+                    "summary": "Existing summary",
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_summary
+
+        result = _find_files_needing_summary(tmp_data_dir, force=True)
+        assert len(result) == 1
+
+    def test_find_files_needing_summary_skips_no_json(self, valid_env, tmp_data_dir):
+        """Should skip files without JSON metadata."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+
+        from local_feed_generator.cli import _find_files_needing_summary
+
+        result = _find_files_needing_summary(tmp_data_dir)
+        assert len(result) == 0
+
+    def test_find_files_needing_summary_mixed_types(self, valid_env, tmp_data_dir):
+        """Should find files of all supported types that need summarization."""
+        # MP4 with content, no summary
+        (tmp_data_dir / "video.mp4").write_bytes(b"video")
+        (tmp_data_dir / "video.mp4.json").write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "video.mp4",
+                    "filepath": "video.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Transcript",
+                }
+            )
+        )
+        # PDF with content, no summary
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "PDF text",
+                }
+            )
+        )
+        # HTML with content and summary complete (should be skipped)
+        (tmp_data_dir / "page.html").write_bytes(b"html")
+        (tmp_data_dir / "page.html.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "page.html",
+                    "filepath": "page.html",
+                    "filetype": "html",
+                    "date": 1728931200,
+                    "size": 512,
+                    "content": "HTML text",
+                    "summary": "Summary",
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_summary
+
+        result = _find_files_needing_summary(tmp_data_dir)
+        assert len(result) == 2
+        names = [f.name for f in result]
+        assert "video.mp4" in names
+        assert "doc.pdf" in names
+        assert "page.html" not in names
     """Tests for the extract command (T5.9)."""
 
     def test_extract_help(self, runner):
@@ -2491,7 +2941,10 @@ class TestExtractCommand:
             }
             MockExtractor.return_value = mock_extractor
 
-            with mock.patch("local_feed_generator.cli._write_json_metadata", side_effect=track_write):
+            with mock.patch(
+                "local_feed_generator.cli._write_json_metadata",
+                side_effect=track_write,
+            ):
                 result = runner.invoke(
                     app,
                     ["extract", "--data-dir", str(tmp_data_dir)],
@@ -2655,7 +3108,7 @@ class TestJsonFinalizationIntegration:
         assert result.exit_code == 0
         json_path = tmp_data_dir / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert data["title"] == "Generated Title"
+        assert data["title"]["generated"] == "Generated Title"
         mock_summarizer.generate_title.assert_called_once()
 
     def test_validate_finalizes_and_reports_no_errors(self, runner, valid_env, tmp_data_dir):
@@ -2704,13 +3157,13 @@ class TestTitleCommand:
         assert "--force" in result.output
 
     def test_title_no_files_needing_titles(self, runner, valid_env, tmp_data_dir):
-        """Title should report no files when all have proper titles."""
+        """Title should report no files when all have generated titles."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "title": "Proper Title",
+                    "title": {"filename": "doc", "generated": "Proper Title"},
                     "description": "Desc",
                     "filename": "doc.pdf",
                     "filepath": "doc.pdf",
@@ -2823,16 +3276,16 @@ class TestTitleCommand:
         assert result.exit_code == 0
         json_path = tmp_data_dir / "doc.pdf.json"
         data = json.loads(json_path.read_text())
-        assert data["title"] == "Generated Title"
+        assert data["title"]["generated"] == "Generated Title"
 
     def test_title_skips_files_with_proper_title(self, runner, valid_env, tmp_data_dir):
-        """Title should skip files that already have a proper title."""
+        """Title should skip files that already have a generated title."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "title": "A Proper Title",
+                    "title": {"filename": "doc", "generated": "A Proper Title"},
                     "description": "",
                     "filename": "doc.pdf",
                     "filepath": "doc.pdf",
@@ -2856,16 +3309,14 @@ class TestTitleCommand:
         assert "No files need title generation." in result.output
         mock_summarizer.generate_title.assert_not_called()
 
-    def test_title_force_regenerates_for_proper_title(
-        self, runner, valid_env, tmp_data_dir
-    ):
-        """Title --force should regenerate titles even for files with proper titles."""
+    def test_title_force_regenerates_for_proper_title(self, runner, valid_env, tmp_data_dir):
+        """Title --force should regenerate titles even for files with generated titles."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data content")
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "title": "Existing Title",
+                    "title": {"filename": "doc", "generated": "Existing Title"},
                     "description": "",
                     "filename": "doc.pdf",
                     "filepath": "doc.pdf",
@@ -3148,13 +3599,13 @@ class TestFindFilesNeedingTitle:
         assert result[0].name == "doc.pdf"
 
     def test_find_files_needing_title_finds_filename_stem_title(self, valid_env, tmp_data_dir):
-        """Should find files where title equals the filename stem (not a proper title)."""
+        """Should find files where title is a string (no generated key)."""
         (tmp_data_dir / "my_doc.pdf").write_bytes(b"pdf data")
         (tmp_data_dir / "my_doc.pdf.json").write_text(
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "title": "my doc",  # filename stem with underscores replaced
+                    "title": "my doc",  # string title, no generated key
                     "description": "",
                     "filename": "my_doc.pdf",
                     "filepath": "my_doc.pdf",
@@ -3171,13 +3622,13 @@ class TestFindFilesNeedingTitle:
         assert len(result) == 1
 
     def test_find_files_needing_title_skips_proper_title(self, valid_env, tmp_data_dir):
-        """Should skip files with proper titles."""
+        """Should skip files with generated titles."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "title": "A Proper Title",
+                    "title": {"filename": "doc", "generated": "A Proper Title"},
                     "description": "",
                     "filename": "doc.pdf",
                     "filepath": "doc.pdf",
@@ -3193,16 +3644,14 @@ class TestFindFilesNeedingTitle:
         result = _find_files_needing_title(tmp_data_dir)
         assert len(result) == 0
 
-    def test_find_files_needing_title_force_includes_proper_title(
-        self, valid_env, tmp_data_dir
-    ):
-        """Force should include files with proper titles."""
+    def test_find_files_needing_title_force_includes_proper_title(self, valid_env, tmp_data_dir):
+        """Force should include files with generated titles."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "title": "A Proper Title",
+                    "title": {"filename": "doc", "generated": "A Proper Title"},
                     "description": "",
                     "filename": "doc.pdf",
                     "filepath": "doc.pdf",
@@ -3338,3 +3787,130 @@ class TestGetContentForTitle:
             assert result == ""
         finally:
             source.chmod(0o644)
+
+
+# ---------------------------------------------------------------------------
+# Tests for _is_dict_feed_eligible with content/summarize
+# ---------------------------------------------------------------------------
+
+
+class TestIsDictFeedEligible:
+    """Tests for the _is_dict_feed_eligible helper function."""
+
+    def test_pdf_eligible_without_content(self, valid_env):
+        """PDF without content should be eligible if extract is complete."""
+        from local_feed_generator.cli import _is_dict_feed_eligible
+
+        metadata = {
+            "extract": {"status": "complete"},
+            "filetype": "pdf",
+            "title": "Test",
+            "filename": "doc.pdf",
+            "filepath": "doc.pdf",
+            "size": 1024,
+        }
+        assert _is_dict_feed_eligible(metadata, "pdf") is True
+
+    def test_pdf_eligible_with_content_and_summarize(self, valid_env):
+        """PDF with content should be eligible only if summarize is also complete."""
+        from local_feed_generator.cli import _is_dict_feed_eligible
+
+        metadata = {
+            "extract": {"status": "complete"},
+            "summarize": {"status": "complete"},
+            "filetype": "pdf",
+            "title": "Test",
+            "filename": "doc.pdf",
+            "filepath": "doc.pdf",
+            "size": 1024,
+            "content": "Extracted text.",
+        }
+        assert _is_dict_feed_eligible(metadata, "pdf") is True
+
+    def test_pdf_not_eligible_with_content_no_summarize(self, valid_env):
+        """PDF with content but no summarize step should not be eligible."""
+        from local_feed_generator.cli import _is_dict_feed_eligible
+
+        metadata = {
+            "extract": {"status": "complete"},
+            "filetype": "pdf",
+            "title": "Test",
+            "filename": "doc.pdf",
+            "filepath": "doc.pdf",
+            "size": 1024,
+            "content": "Extracted text.",
+        }
+        assert _is_dict_feed_eligible(metadata, "pdf") is False
+
+    def test_pdf_not_eligible_with_content_summarize_incomplete(self, valid_env):
+        """PDF with content and incomplete summarize should not be eligible."""
+        from local_feed_generator.cli import _is_dict_feed_eligible
+
+        metadata = {
+            "extract": {"status": "complete"},
+            "summarize": {"status": None},
+            "filetype": "pdf",
+            "title": "Test",
+            "filename": "doc.pdf",
+            "filepath": "doc.pdf",
+            "size": 1024,
+            "content": "Extracted text.",
+        }
+        assert _is_dict_feed_eligible(metadata, "pdf") is False
+
+    def test_html_eligible_without_content(self, valid_env):
+        """HTML without content should be eligible if extract is complete."""
+        from local_feed_generator.cli import _is_dict_feed_eligible
+
+        metadata = {
+            "extract": {"status": "complete"},
+            "filetype": "html",
+            "title": "Test",
+            "filename": "page.html",
+            "filepath": "page.html",
+            "size": 512,
+        }
+        assert _is_dict_feed_eligible(metadata, "html") is True
+
+    def test_html_not_eligible_with_content_no_summarize(self, valid_env):
+        """HTML with content but no summarize step should not be eligible."""
+        from local_feed_generator.cli import _is_dict_feed_eligible
+
+        metadata = {
+            "extract": {"status": "complete"},
+            "filetype": "html",
+            "title": "Test",
+            "filename": "page.html",
+            "filepath": "page.html",
+            "size": 512,
+            "content": "Extracted text.",
+        }
+        assert _is_dict_feed_eligible(metadata, "html") is False
+
+    def test_pdf_not_eligible_with_error(self, valid_env):
+        """PDF with error should not be eligible."""
+        from local_feed_generator.cli import _is_dict_feed_eligible
+
+        metadata = {
+            "extract": {"status": "complete"},
+            "error": "Some error",
+            "filetype": "pdf",
+            "title": "Test",
+            "filename": "doc.pdf",
+            "filepath": "doc.pdf",
+            "size": 1024,
+        }
+        assert _is_dict_feed_eligible(metadata, "pdf") is False
+
+    def test_pdf_not_eligible_without_extract(self, valid_env):
+        """PDF without extract step should not be eligible."""
+        from local_feed_generator.cli import _is_dict_feed_eligible
+
+        metadata = {
+            "filetype": "pdf",
+            "title": "Test",
+            "filename": "doc.pdf",
+            "filepath": "doc.pdf",
+            "size": 1024,
+        }
+        assert _is_dict_feed_eligible(metadata, "pdf") is False

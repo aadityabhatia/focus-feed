@@ -47,6 +47,8 @@ def mock_config():
         llm_api_key="test-key",
         llm_model="test-model",
         llm_system_prompt="Test system prompt",
+        summary_prompt="Summarize key takeaways.",
+        title_prompt="Generate a concise title.",
         transcription_endpoint="https://transcribe.example.com/v1",
         transcription_api_key="transcribe-key",
         transcription_model="whisper-1",

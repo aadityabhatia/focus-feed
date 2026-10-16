@@ -3,10 +3,9 @@
 import os
 from unittest import mock
 
+from local_feed_generator.config import Settings, get_config, reload_config
 from pydantic import ValidationError
 import pytest
-
-from local_feed_generator.config import Settings, get_config, reload_config
 
 
 class TestRequiredFields:

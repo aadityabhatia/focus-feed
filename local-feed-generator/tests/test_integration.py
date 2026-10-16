@@ -53,7 +53,7 @@ class MockSummarizer:
         self.called_with.append(transcript)
         return (self.summary, 100, 50)
 
-    def generate_title(self, content):
+    def generate_title(self, content, filename=None, extracted_title=None):
         self.call_count += 1
         self.called_with.append(content)
         return ("Mock Generated Title", 30, 5)
@@ -89,6 +89,8 @@ class TestConfigMetadataIntegration:
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
             "LLM_SYSTEM_PROMPT": "Test prompt",
+            "SUMMARY_PROMPT": "Test summary prompt",
+            "TITLE_PROMPT": "Test title prompt",
         }
 
     def test_config_loads_and_metadata_created_with_config_values(self):
@@ -421,6 +423,7 @@ class TestProducerComponent:
 
         metadata = Metadata(
             title=extracted["title"],
+            extracted_title=extracted.get("extracted_title"),
             description=extracted["description"] or "",
             filename="page.html",
             filepath="page.html",
@@ -431,7 +434,8 @@ class TestProducerComponent:
         )
 
         assert metadata.filetype == "html"
-        assert metadata.title == "Test Page"
+        assert metadata.final_title == "page"
+        assert metadata.extracted_title == "Test Page"
         assert metadata.description == ""  # No meta description tag in HTML
         assert metadata.content is None
         assert metadata.summary is None
@@ -570,7 +574,7 @@ class TestErrorPathHandling:
             assert field in error_dict
 
         assert error_dict["error"] == "Test error"
-        assert error_dict["title"] == "test.pdf"
+        assert error_dict["title"] == {"filename": "test.pdf"}
         assert error_dict["size"] == 0
 
     def test_producer_handles_error_gracefully(self, tmp_path):
