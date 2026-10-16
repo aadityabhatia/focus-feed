@@ -15,7 +15,7 @@ These feeds will be:
 - Accessible only to the user
 - Placed in the `data` directory at the root level and optionally in subfolders
 - Organized with per-folder feeds with custom titles and descriptions
-- Discovered via auto-generated index.html pages
+- Discovered via auto-generated root-level index.html page
 
 ## Scope
 

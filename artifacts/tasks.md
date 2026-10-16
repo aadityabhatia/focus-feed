@@ -549,26 +549,23 @@ Implement RSS feed generation for podcast and articles feeds with new features.
   - Errors in one feed don't prevent others from being generated
   - Feed generation list available for index.html
 
-- [x] T4.7: Implement Index.html Generation (NEW)
-- **Description:** Create index.html generator for feed discovery
-- **File:** `src/local_feed_generator/index.py` (new)
+- [x] T4.7: Implement Root-Level Index.html Generation (NEW)
+- **Description:** Create root-level index.html generator for feed discovery
+- **File:** `src/local_feed_generator/feeds.py`
 - **Actions:**
-  - Implement `IndexGenerator` class
+  - Implement index.html generation in FeedGenerator
   - Scan for feed.json files recursively
-  - For each folder with feed.json:
-    - Check which feeds exist (podcast.xml, articles.xml) based on conditional generation rules
-    - Generate index.html with feed titles, descriptions, and URLs from feed.json
-    - Include hierarchical navigation to parent/child index pages
-    - Use simple, clean HTML
-  - Implement `generate_all_index_pages()` method
+  - Generate single root-level index.html with all available feeds
+  - List all podcast.xml and articles.xml feeds from all folders
+  - Include feed titles and descriptions from feed.json
+  - Use simple, clean HTML
   - Handle errors gracefully
 - **Dependencies:**
   - T4.6 (Feed generation)
 - **Completion Criteria:**
-  - index.html generated in each folder with feed.json
-  - Only lists feeds that actually exist (based on conditional generation)
+  - Root-level index.html generated when any feeds exist
+  - Lists all available feeds from all folders
   - Includes feed titles and descriptions from feed.json
-  - Provides hierarchical navigation
   - Simple HTML that works with any browser
 
 ---
@@ -601,10 +598,10 @@ Implement command-line interface for all processing modes.
 - **File:** `src/local_feed_generator/cli.py`
 - **Actions:**
   - Implement `process` command with required `--data-dir` option
-  - Orchestrate: Scanner \=> Producer \=> Feed Generator \=> Index Generator
+   - Orchestrate: Scanner \=> Producer \=> Feed Generator
   - Process all files without JSON metadata or with incomplete step maps
   - Generate both feeds (root-level and per-folder) after all files are processed, based on feed.json configuration
-  - Generate index.html pages after feed generation
+  - Generate root-level index.html after feed generation
   - Output progress and summary
   - Exit with appropriate code (0 for success, 1 for errors)
 - **Dependencies:**
@@ -615,7 +612,7 @@ Implement command-line interface for all processing modes.
 - **Completion Criteria:**
   - Command processes all files in batch
   - Both root-level and per-folder feeds generated (where feed.json exists and files present)
-  - Index.html pages generated
+  - Root-level index.html generated
   - Progress is shown during processing
   - Exit code reflects success/failure
 
@@ -637,10 +634,9 @@ Implement command-line interface for all processing modes.
   - **NEW:** Implement error rate limiting in watch mode
   - Include graceful shutdown on SIGINT/SIGTERM
 - **Dependencies:**
-  - T2.3 (Scanner for initial scan)
+  - T2.3 (Scanner)
   - T3.1 (Producer)
   - T4.6 (Feed generation)
-  - T4.7 (Index generation)
 - **Completion Criteria:**
   - Watch mode starts and monitors directory
   - New files are processed automatically
@@ -660,18 +656,17 @@ Implement command-line interface for all processing modes.
   - Skip file processing
   - Read all existing JSON metadata files
   - Generate both root-level and per-folder feeds (only where feed.json exists and applicable files present)
-  - Generate index.html pages
+  - Generate root-level index.html
   - Finalize JSON metadata by computing feed eligibility from step maps
   - Output summary of feeds generated (counts for podcast and articles)
 - **Dependencies:**
   - T2.2 (Metadata model)
   - T4.6 (Feed generation)
-  - T4.7 (Index generation)
 - **Completion Criteria:**
   - Command generates both root-level and per-folder feeds without processing files (where applicable)
   - Existing JSON metadata is used
   - Feed eligibility computed from step map statuses
-  - Index.html pages generated
+  - Root-level index.html generated
   - Summary shows items in each feed
 
 - [x] T5.5: Implement Validate Command
@@ -729,17 +724,16 @@ Enhance and test the incremental processing mode with robust file watching.
   - Process all files without JSON metadata on startup
   - Finalize JSON metadata by computing feed eligibility from step maps
   - Generate both root-level and per-folder feeds after initial scan (where feed.json exists and files present)
-  - Generate index.html pages after initial scan
+  - Generate root-level index.html after initial scan
   - Track processed files to avoid re-processing on first event
 - **Dependencies:**
   - T2.3 (Scanner)
   - T3.1 (Producer)
   - T4.6 (Feed generation)
-  - T4.7 (Index generation)
 - **Completion Criteria:**
   - Initial scan processes all unprocessed files
   - Both root-level and per-folder feeds generated after initial scan (where applicable)
-  - Index.html pages generated
+  - Root-level index.html generated
   - No duplicate processing on startup
   - Feed eligibility computed from step maps
 
@@ -1009,7 +1003,7 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
 ## Phase 9: New Features Implementation
 
 ### Objective
-Implement all new features: title dict, millisecond timestamps, per-folder feeds, reflection support, markdown conversion, module prefixing, content extraction, conditional feed generation, index pages.
+Implement all new features: title dict, millisecond timestamps, per-folder feeds, reflection support, markdown conversion, module prefixing, content extraction, conditional feed generation, root-level index page.
 
 ### Tasks
 
@@ -1173,19 +1167,16 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
   - Root-level feeds require feed.json in root
 
 - [x] T9.12: Implement Index.html Generation (NEW)
-- **Description:** Generate index.html pages in folders with feed.json
-- **Files:** `index.py` (new), `feeds.py`
+- **Description:** Generate root-level index.html page
+- **Files:** `feeds.py`
 - **Actions:**
-  - Create new index.py module
-  - Implement IndexGenerator class
+  - Implement index.html generation in feeds.py (no separate index.py module needed)
   - Scan for feed.json files
-  - Generate index.html with feed links
-  - Include hierarchical navigation
+  - Generate single root-level index.html with all feed links
   - Call from feed generation workflow
 - **Completion Criteria:**
-  - index.html generated in each folder with feed.json
-  - Lists all available feeds in the folder
-  - Includes hierarchical navigation to subfolders
+  - Root-level index.html generated listing all feeds
+  - Lists all available feeds from all folders
   - Simple HTML works with any browser
 
 - [x] T9.13: Update Summarize Command for PDF/HTML (NEW)
@@ -1355,7 +1346,7 @@ The following tasks can be worked on concurrently:
 - [x] All CLI commands work as specified
 - [x] Watch mode processes files incrementally
 - [x] Feeds are regenerated after each file processing
-- [x] Index.html pages are regenerated after each file processing
+- [x] Root-level index.html is regenerated after each file processing
 - [x] Special characters handled correctly (warnings only, no modification)
 - [x] Orphaned JSON files detected and logged
 - [x] All environment variables from design doc are supported
@@ -1396,7 +1387,7 @@ The following tasks can be worked on concurrently:
 10. \u2705 Audio metadata extraction via ffprobe
 11. \u2705 Optional dependencies (faster-whisper, av, markdown)
 12. \u2705 Conditional feed generation (feeds only where feed.json exists AND applicable files present)
-13. \u2705 Index.html generation for feed discovery
+13. \u2705 Root-level index.html generation for feed discovery
 14. \u2705 NO root feeds without feed.json
 15. \u2705 podcast.xml only if MP4 files present
 16. \u2705 articles.xml only if PDF/HTML files present
@@ -1419,6 +1410,6 @@ The following tasks can be worked on concurrently:
 - Module name prefixing is automatic and intelligent (doesn't double-prefix)
 - Audio metadata extraction via ffprobe is optional (graceful fallback if not installed)
 - Conditional feed generation: feeds only generated where feed.json exists AND applicable file types present
-- Index.html auto-generated in each folder with feed.json for easy feed discovery
+- Root-level index.html auto-generated listing all feeds for easy feed discovery
 - Root-level feeds require explicit feed.json configuration
 - summarize command works with both MP4 transcripts and PDF/HTML extracted content

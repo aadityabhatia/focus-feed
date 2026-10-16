@@ -6,7 +6,7 @@ Education content exists as disconnected files (PDF, HTML, MP4) in a `data` dire
 
 ## Scope
 
-This system processes education content files in the `data` directory and generates RSS/Atom feeds placed alongside them for personal consumption via mobile apps on an existing internal web server. The system now supports per-folder feed generation, enhanced metadata extraction, conditional feed generation, and auto-generated index pages.
+This system processes education content files in the `data` directory and generates RSS/Atom feeds placed alongside them for personal consumption via mobile apps on an existing internal web server. The system now supports per-folder feed generation, enhanced metadata extraction, conditional feed generation, and a root-level index page for feed discovery.
 
 ---
 
@@ -234,7 +234,7 @@ This system processes education content files in the `data` directory and genera
 - `transcribe`: Transcribe audio files
 - `summarize`: Generate summaries from transcripts or extracted content
 - `extract`: Extract metadata from PDF/HTML files
-- `feeds`: Generate RSS/Atom feeds and finalize JSON metadata by computing feed eligibility, and generate index.html pages
+- `feeds`: Generate RSS/Atom feeds and finalize JSON metadata by computing feed eligibility, and generate root-level index.html
 - `validate`: Validate all metadata files and finalize JSON by setting step completion statuses
 
 **FR-026**: All CLI subcommands SHALL accept the following flags:
@@ -815,21 +815,19 @@ Per-folder feed generation allows users to organize content into separate feeds 
 ```
 data/
 \u251c\u2500\u2500 feed.json                    # Root-level feed config (REQUIRED for root feeds)
-\u251c\u2500\u2500 podcast.xml                  # Root-level podcast feed (only if MP4 files present)
-\u251c\u2500\u2500 articles.xml                 # Root-level articles feed (only if PDF/HTML files present)
-\u251c\u2500\u2500 index.html                    # Root-level index page
-\u251c\u2500\u2500 Course1/
+   \u251c\u2500\u2500 podcast.xml                  # Root-level podcast feed (only if MP4 files present)
+   \u251c\u2500\u2500 articles.xml                 # Root-level articles feed (only if PDF/HTML files present)
+   \u251c\u2500\u2500 index.html                    # Root-level index page
+   \u251c\u2500\u2500 Course1/
 \u2502   \u251c\u2500\u2500 feed.json               # Per-folder feed config
 \u2502   \u251c\u2500\u2500 podcast.xml             # Course1 podcast feed (only if MP4 files present)
 \u2502   \u251c\u2500\u2500 articles.xml            # Course1 articles feed (only if PDF/HTML files present)
-\u2502   \u251c\u2500\u2500 index.html              # Course1 index page
 \u2502   \u251c\u2500\u2500 lecture1.mp4
 \u2502   \u2502\u2500 lecture1.mp4.json
 \u2514\u2500 Course2/
-    \u251c\u2500\u2500 feed.json
-    \u251c\u2500\u2500 podcast.xml              # NOT generated if no MP4 files
-    \u251c\u2500\u2500 articles.xml             # Generated if PDF/HTML files present
-    \u251c\u2500\u2500 index.html
+     \u251c\u2500\u2500 feed.json
+     \u251c\u2500\u2500 podcast.xml              # NOT generated if no MP4 files
+     \u251c\u2500\u2500 articles.xml             # Generated if PDF/HTML files present
     \u251c\u2500\u2500 lecture1.mp4
     \u2502\u2500 lecture1.mp4.json
 ```
@@ -939,32 +937,30 @@ The system automatically generates `index.html` files to provide a discovery mec
 - `index.html` is generated in every folder that contains a `feed.json` file
 - Contains links only to feeds that exist (based on conditional generation rules)
 - Includes feed titles and descriptions from `feed.json`
-- Provides hierarchical navigation
+- Lists all feeds from all folders with feed.json
 
 **Content:**
 ```html
 <!DOCTYPE html>
 <html>
-<head><title>Course 1 - Feeds</title></head>
+<head><title>Available Feeds</title></head>
 <body>
-  <h1>Course 1</h1>
-  <p>All materials for Course 1 covering AI fundamentals</p>
-  <h2>Available Feeds</h2>
+  <h1>Available Feeds</h1>
+  <h2>Podcast Feeds</h2>
   <ul>
-    <li><a href="podcast.xml">Podcast Feed (MP4 Audio)</a></li>
-    <li><a href="articles.xml">Articles Feed (PDF/HTML)</a></li>
+    <li><a href="course1/podcast.xml">Course 1 Podcast</a></li>
+    <li><a href="course2/podcast.xml">Course 2 Podcast</a></li>
   </ul>
-  <h2>Subfolders</h2>
+  <h2>Articles Feeds</h2>
   <ul>
-    <li><a href="Module1/index.html">Module 1</a></li>
-    <li><a href="Module2/index.html">Module 2</a></li>
+    <li><a href="course1/articles.xml">Course 1 Articles</a></li>
+    <li><a href="course3/articles.xml">Course 3 Articles</a></li>
   </ul>
 </body>
 </html>
 ```
 
 **Benefits:**
-- Easy discovery of all feeds
-- Human-readable directory structure
-- Self-documenting feed organization
+- Easy discovery of all feeds from a single page
+- Lists all available podcast and articles feeds
 - Works with any web browser
