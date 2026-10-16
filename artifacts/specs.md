@@ -61,6 +61,7 @@ This system processes education content files in the `data` directory and genera
   "duration": 3600.5,          // For MP4: duration in seconds (float, optional)
   "creation_time": "2024-01-15T10:30:00.000000Z", // ISO-8601 (MP4 only, optional)
   "size": 12345678,
+  "hash": "string",            // OPTIONAL: SHA256 hash of source file
   
   // Step maps tracking processing steps
   "transcribe": {
@@ -128,6 +129,8 @@ This system processes education content files in the `data` directory and genera
 
 **FR-010i**: The system SHALL generate summaries for PDF/HTML files when the `summarize` command is explicitly invoked on those files.
 
+**FR-010j**: When a file is processed for the first time (no existing JSON or incomplete processing), the system SHALL compute the SHA256 hash of the source file and store it in the `hash` field of the JSON metadata.
+
 **FR-010k**: For PDF/HTML files, the system SHALL use publication_date from document metadata for feed pubDate when available, falling back to the date field.
 
 ### Audio Processing
@@ -178,7 +181,7 @@ This system processes education content files in the `data` directory and genera
 - Description (from JSON metadata: for MP4 use summary field, for PDF/HTML use summary field or description)
 - Link to the source file (computed as BASE_URL + filepath)
 - Publication date (from JSON metadata: for MP4 use date field, for PDF/HTML use publication_date field when available, falling back to date field)
-- Unique identifier (file path)
+- Unique identifier (guid): When the `hash` field is present in JSON metadata, use the last 12 characters of the hash value. Otherwise, use the file path as fallback.
 
 **FR-021**: Feed items SHALL be sorted by folder name, then filename (alphabetical)
 
@@ -626,6 +629,7 @@ This section documents the evolution of the JSON metadata schema through multipl
   "duration": 45.5,
   "creation_time": "2024-01-01T00:00:00.000000Z",
   "size": 12345678,
+  "hash": "a1b2c3d4e5f6...",  // OPTIONAL: SHA256 hash of source file
   
   "transcribe": {
     "status": "complete",
@@ -671,15 +675,16 @@ This section documents the evolution of the JSON metadata schema through multipl
 - `publication_date` field added for PDF/HTML files (extracted from document metadata)
 - `duration` and `creation_time` fields added for MP4 files
 - Step maps include `start_time` and `end_time` with millisecond precision
+- `hash` field added for storing SHA256 hash of source file (optional)
 
 #### Schema Changes Summary
 
-| Version | Status Fields | Date Format | Title Format | Content Field | Timestamps |
-|---------|---------------|-------------|--------------|---------------|------------|
-| Legacy | Single `status` string | ISO8601 strings | String | `transcript` | Basic |
-| Intermediate | Individual fields (`transcribe_status`, etc.) | ISO8601 strings | String | `transcript` | Basic |
-| Previous | Unified `status` map | UNIX epoch integers | String | `transcript` | Second precision |
-| **Current** | **Step maps** | **UNIX epoch floats (ms)** | **Dict with sources** | **`content` (all types)** | **Millisecond precision** |
+| Version | Status Fields | Date Format | Title Format | Content Field | Timestamps | Hash Field |
+|---------|---------------|-------------|--------------|---------------|------------|------------|
+| Legacy | Single `status` string | ISO8601 strings | String | `transcript` | Basic | N/A |
+| Intermediate | Individual fields (`transcribe_status`, etc.) | ISO8601 strings | String | `transcript` | Basic | N/A |
+| Previous | Unified `status` map | UNIX epoch integers | String | `transcript` | Second precision | N/A |
+| **Current** | **Step maps** | **UNIX epoch floats (ms)** | **Dict with sources** | **`content` (all types)** | **Millisecond precision** | **SHA256 hash (optional)** |
 
 #### Migration and Compatibility
 
