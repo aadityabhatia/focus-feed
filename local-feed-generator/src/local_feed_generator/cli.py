@@ -441,6 +441,8 @@ def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
     - **MP4**: ``transcribe`` step map exists with ``status == "complete"``
       and ``summarize`` step map exists with ``status == "complete"``.
     - **PDF/HTML**: ``extract`` step map exists with ``status == "complete"``.
+      If ``content`` exists, the ``summarize`` step map must also exist with
+      ``status == "complete"``.
     """
     if metadata.get("error"):
         return False
@@ -455,10 +457,15 @@ def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
         )
     if filetype in ("pdf", "html"):
         extract = metadata.get("extract")
-        return (
-            isinstance(extract, dict)
-            and extract.get("status") == "complete"
-        )
+        if not (isinstance(extract, dict) and extract.get("status") == "complete"):
+            return False
+        # If content exists, summarize step must also be complete.
+        content = metadata.get("content")
+        if content:
+            summarize = metadata.get("summarize")
+            if not (isinstance(summarize, dict) and summarize.get("status") == "complete"):
+                return False
+        return True
     return False
 
 
@@ -1386,17 +1393,18 @@ def summarize(
     force: bool,
     dry_run: bool,
 ) -> None:
-    """Generate summaries from existing transcripts.
+    """Generate summaries from existing content.
 
-    Scans the data directory for MP4 files that have a transcript (content)
-    but no summary, generates a key-takeaways summary via the LLM, and
-    writes the summary to the adjacent JSON metadata file.
+    Scans the data directory for MP4, PDF, and HTML files that have content
+    (transcript for MP4, extracted text for PDF/HTML) but no summary,
+    generates a key-takeaways summary via the LLM, and writes the summary
+    to the adjacent JSON metadata file.
 
     Files with ``summarize.status="complete"`` are skipped unless
     ``--force`` is specified.  Use ``--dry-run`` to preview which files
     would be processed without making any changes.
 
-    When ``--file`` is specified, only that MP4 file is summarized.
+    When ``--file`` is specified, only that file is summarized.
     """
     _load_config(config_file, data_dir)
 
@@ -1415,10 +1423,10 @@ def summarize(
         files = _find_files_needing_summary(data_dir_path, force=force)
 
     if not files:
-        click.echo("No MP4 files need summarization.")
+        click.echo("No files need summarization.")
         return
 
-    click.echo(f"Found {len(files)} MP4 file(s) to summarize.")
+    click.echo(f"Found {len(files)} file(s) to summarize.")
 
     if dry_run:
         click.echo("[Dry run] Files that would be summarized:")
@@ -1442,9 +1450,9 @@ def summarize(
                 error_count += 1
                 continue
 
-            transcript = metadata.get("content") or ""
-            if not transcript.strip():
-                click.echo(f"  WARNING: No transcript found for {relative_path}; skipping.")
+            content = metadata.get("content") or ""
+            if not content.strip():
+                click.echo(f"  WARNING: No content found for {relative_path}; skipping.")
                 error_count += 1
                 continue
 
@@ -1454,11 +1462,11 @@ def summarize(
             summarize_step = metadata.get("summarize") or {}
             summarize_step["status"] = "in_progress"
             summarize_step["start_time"] = int(now.timestamp())
-            summarize_step["input_size"] = len(transcript.encode("utf-8")) if transcript else 0
+            summarize_step["input_size"] = len(content.encode("utf-8")) if content else 0
             metadata["summarize"] = summarize_step
             _write_json_metadata(metadata, source_file)
 
-            summary, prompt_tokens, completion_tokens = summarizer.summarize(transcript)
+            summary, prompt_tokens, completion_tokens = summarizer.summarize(content)
 
             # Update summarize step to complete after successful summarization.
             summarize_step["status"] = "complete"
@@ -1470,7 +1478,10 @@ def summarize(
             summarize_step["output_tokens"] = completion_tokens
             metadata["summarize"] = summarize_step
             metadata["summary"] = summary
-            metadata["description"] = ""  # MP4: leave description blank, use summary instead
+            # For MP4 files, leave description blank and use summary instead.
+            # For PDF/HTML files, keep the existing description from extraction.
+            if metadata.get("filetype") == "mp4":
+                metadata["description"] = ""
             _write_json_metadata(metadata, source_file)
 
             success_count += 1
