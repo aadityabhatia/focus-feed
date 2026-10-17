@@ -33,6 +33,11 @@ Title precedence for the final title: generated > extracted > filename.
 The module name prefix is applied to the final title after precedence
 resolution.
 
+When a file is processed for the first time (no existing JSON metadata or
+incomplete processing), the SHA256 hash of the source file is computed and
+stored in the ``hash`` field of the JSON metadata.  This hash is used by the
+feed generator for guid generation (last 12 characters).
+
 Design references:
 - design.md section 2.2 (Producer Pipeline responsibility)
 - design.md section 5.2 (Producer module responsibilities)
@@ -42,6 +47,7 @@ Design references:
 """
 
 from datetime import UTC, datetime
+import hashlib
 import json
 import logging
 from pathlib import Path
@@ -108,6 +114,31 @@ def _sanitize_filename(filename: str) -> str:
         The sanitized filename (no extension, no underscores).
     """
     return _clean_title(Path(filename).stem) or ""
+
+
+def _compute_file_hash(filepath: str) -> str:
+    """Compute the SHA256 hash of a file.
+
+    Reads the file in binary mode and returns the full hex digest (64
+    characters).  Used to populate the ``hash`` field in JSON metadata
+    for guid generation in feeds.
+
+    Args:
+        filepath: Absolute path to the source file.
+
+    Returns:
+        The SHA256 hex digest string (64 characters), or an empty string
+        if the file cannot be read.
+    """
+    try:
+        sha256_hash = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                sha256_hash.update(chunk)
+        return sha256_hash.hexdigest()
+    except OSError as e:
+        _logger.warning("Failed to compute hash for %s: %s", filepath, e)
+        return ""
 
 
 class Producer:
@@ -231,6 +262,7 @@ class Producer:
         existing_summarize: dict[str, Any] | None = None
         existing_extract: dict[str, Any] | None = None
         existing_content: str | None = None
+        existing_hash: str | None = None
         if json_path.exists() and not force:
             try:
                 existing_data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -239,14 +271,26 @@ class Producer:
                     existing_summarize = existing_data.get("summarize")
                     existing_extract = existing_data.get("extract")
                     existing_content = existing_data.get("content")
+                    existing_hash = existing_data.get("hash")
             except json.JSONDecodeError, OSError:
                 pass
+
+        # Compute SHA256 hash of the source file when processing for the first
+        # time (no existing JSON) or when the hash field is not yet present
+        # (backward compatibility with legacy files).  When force=True, always
+        # recompute the hash since the file is being reprocessed from scratch.
+        if force or existing_hash is None:
+            file_hash = _compute_file_hash(absolute_path)
+        else:
+            file_hash = existing_hash
 
         partial_metadata: dict[str, Any] = {
             "filename": filename,
             "filepath": filepath,
             "filetype": filetype,
         }
+        if file_hash:
+            partial_metadata["hash"] = file_hash
         # Set the initial step status based on file type, preserving
         # existing step maps so completed steps are not overwritten.
         now_ts = _now_timestamp()
@@ -539,7 +583,10 @@ class Producer:
         # Check for reflection.md in the source file's directory.
         reflection_questions = _check_reflection_md(absolute_path)
         summary, prompt_tokens, completion_tokens = self.summarizer.summarize(
-            transcript, reflection_questions=reflection_questions, filepath=filepath
+            transcript,
+            reflection_questions=reflection_questions,
+            filepath=filepath,
+            filetype="mp4",
         )
         summarize_end = datetime.now(UTC)
 
@@ -641,6 +688,7 @@ class Producer:
             duration=duration,
             creation_time=creation_time_str,
             content=transcript,
+            hash=metadata_dict.get("hash"),
             transcribe=StepMap(**transcribe_step),
             summarize=StepMap(**summarize_step),
         )
@@ -790,6 +838,7 @@ class Producer:
             publication_date=file_publication_date,
             size=file_size,
             content=file_content,
+            hash=metadata_dict.get("hash"),
             extract=StepMap(**extract_step),
         )
         return metadata
@@ -939,6 +988,7 @@ class Producer:
             publication_date=file_publication_date,
             size=file_size,
             content=file_content,
+            hash=metadata_dict.get("hash"),
             extract=StepMap(**extract_step),
         )
         return metadata
@@ -1097,6 +1147,9 @@ class Producer:
                     # Preserve existing content (transcript for MP4).
                     if "content" in existing:
                         error_metadata["content"] = existing["content"]
+                    # Preserve hash if already computed.
+                    if "hash" in existing:
+                        error_metadata["hash"] = existing["hash"]
             except json.JSONDecodeError, OSError:
                 pass
 

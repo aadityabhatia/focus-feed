@@ -55,12 +55,15 @@ class TestStepMap:
         )
         assert step.status == "in_progress"
 
-    @pytest.mark.parametrize("input_size,output_size,words,extra_field", [
-        (-1, 0, None, None),       # negative input_size
-        (0, -1, None, None),       # negative output_size
-        (0, 0, -1, None),          # negative words
-        (0, 0, None, "bad"),       # extra field
-    ])
+    @pytest.mark.parametrize(
+        "input_size,output_size,words,extra_field",
+        [
+            (-1, 0, None, None),  # negative input_size
+            (0, -1, None, None),  # negative output_size
+            (0, 0, -1, None),  # negative words
+            (0, 0, None, "bad"),  # extra field
+        ],
+    )
     def test_step_map_validation_errors(self, input_size, output_size, words, extra_field):
         """StepMap should reject negative sizes, words, and extra fields."""
         kwargs = {"input_size": input_size, "output_size": output_size}
@@ -279,16 +282,19 @@ class TestValidMetadata:
 class TestFeedEligible:
     """Tests for the feed_eligible computed property."""
 
-    @pytest.mark.parametrize("filetype,step_map,expected", [
-        ("mp4", {"transcribe": "complete", "summarize": "complete"}, True),
-        ("mp4", {"transcribe": "in_progress", "summarize": "complete"}, False),
-        ("mp4", {"transcribe": "complete", "summarize": "in_progress"}, False),
-        ("mp4", {"transcribe": None, "summarize": None}, False),
-        ("mp4", {"transcribe": "complete", "summarize": None}, False),  # missing summarize
-        ("pdf", {"extract": "complete"}, True),
-        ("html", {"extract": "complete"}, True),
-        ("pdf", {"extract": "in_progress"}, False),
-    ])
+    @pytest.mark.parametrize(
+        "filetype,step_map,expected",
+        [
+            ("mp4", {"transcribe": "complete", "summarize": "complete"}, True),
+            ("mp4", {"transcribe": "in_progress", "summarize": "complete"}, False),
+            ("mp4", {"transcribe": "complete", "summarize": "in_progress"}, False),
+            ("mp4", {"transcribe": None, "summarize": None}, False),
+            ("mp4", {"transcribe": "complete", "summarize": None}, False),  # missing summarize
+            ("pdf", {"extract": "complete"}, True),
+            ("html", {"extract": "complete"}, True),
+            ("pdf", {"extract": "in_progress"}, False),
+        ],
+    )
     def test_feed_eligible_computation(self, filetype, step_map, expected):
         """feed_eligible should be computed correctly based on step map statuses."""
         kwargs = {
@@ -302,12 +308,18 @@ class TestFeedEligible:
         }
         if filetype == "mp4":
             if step_map["transcribe"] is not None:
-                kwargs["transcribe"] = StepMap(status=step_map["transcribe"], input_size=100, output_size=0)
+                kwargs["transcribe"] = StepMap(
+                    status=step_map["transcribe"], input_size=100, output_size=0
+                )
             if step_map.get("summarize") is not None:
-                kwargs["summarize"] = StepMap(status=step_map["summarize"], input_size=100, output_size=0)
+                kwargs["summarize"] = StepMap(
+                    status=step_map["summarize"], input_size=100, output_size=0
+                )
         else:
             if step_map["extract"] is not None:
-                kwargs["extract"] = StepMap(status=step_map["extract"], input_size=100, output_size=0)
+                kwargs["extract"] = StepMap(
+                    status=step_map["extract"], input_size=100, output_size=0
+                )
         metadata = Metadata(**kwargs)
         assert metadata.feed_eligible is expected
 
@@ -378,11 +390,14 @@ class TestErrorFieldValidation:
 class TestSerialization:
     """Tests for serialization methods."""
 
-    @pytest.mark.parametrize("status,include_error", [
-        ("complete", False),   # Complete MP4 with all fields
-        ("in_progress", False),  # In-progress MP4
-        ("error", True),   # Error metadata (no step maps)
-    ])
+    @pytest.mark.parametrize(
+        "status,include_error",
+        [
+            ("complete", False),  # Complete MP4 with all fields
+            ("in_progress", False),  # In-progress MP4
+            ("error", True),  # Error metadata (no step maps)
+        ],
+    )
     def test_to_json_serialization(self, status, include_error):
         """to_json should correctly serialize metadata with various states."""
         kwargs = {
@@ -395,13 +410,18 @@ class TestSerialization:
             "size": 100,
         }
         if status == "complete":
-            kwargs["transcribe"] = StepMap(status="complete", input_size=12345678, output_size=456789)
+            kwargs["transcribe"] = StepMap(
+                status="complete", input_size=12345678, output_size=456789
+            )
             kwargs["summarize"] = StepMap(status="complete", input_size=456789, output_size=1997)
             kwargs["content"] = "Transcript here"
         elif status == "in_progress":
             kwargs["transcribe"] = StepMap(
-                status="in_progress", start_time=1728931200, input_size=12345678,
-                output_size=0, model="large-v3-turbo",
+                status="in_progress",
+                start_time=1728931200,
+                input_size=12345678,
+                output_size=0,
+                model="large-v3-turbo",
             )
         elif status == "error":
             kwargs["error"] = "Transcription failed"
@@ -472,10 +492,13 @@ class TestSerialization:
         assert "transcribe" not in data
         assert "summarize" not in data
 
-    @pytest.mark.parametrize("filetype,expected_content", [
-        ("pdf", "This is the extracted plaintext."),
-        ("html", "Plaintext from HTML."),
-    ])
+    @pytest.mark.parametrize(
+        "filetype,expected_content",
+        [
+            ("pdf", "This is the extracted plaintext."),
+            ("html", "Plaintext from HTML."),
+        ],
+    )
     def test_to_json_with_content(self, filetype, expected_content):
         """to_json should include content field for PDF/HTML with content."""
         metadata = Metadata(
@@ -522,10 +545,13 @@ class TestSerialization:
 class TestDeserialization:
     """Tests for deserialization methods."""
 
-    @pytest.mark.parametrize("filetype,expected_content", [
-        ("pdf", "Extracted plaintext from PDF."),
-        ("html", "Plaintext from HTML body."),
-    ])
+    @pytest.mark.parametrize(
+        "filetype,expected_content",
+        [
+            ("pdf", "Extracted plaintext from PDF."),
+            ("html", "Plaintext from HTML body."),
+        ],
+    )
     def test_from_json_with_content(self, filetype, expected_content):
         """from_json should deserialize a PDF/HTML with content field."""
         json_str = json.dumps(
@@ -654,6 +680,7 @@ class TestDeserialization:
         )
         with pytest.raises(ValidationError):
             Metadata.from_json(json_str)
+
 
 class TestExtraFields:
     """Tests for extra field rejection."""
@@ -893,6 +920,7 @@ class TestSchemaCompliance:
             "content",
             "duration",
             "creation_time",
+            "hash",
             "error",
         }
         assert expected_fields.issubset(set(properties.keys()))
@@ -1057,6 +1085,111 @@ class TestSchemaCompliance:
         data = json.loads(metadata.to_json())
         assert "publication_date" not in data
 
+    def test_hash_field_exists(self):
+        """hash field should exist in the Metadata model."""
+        json_schema = Metadata.model_json_schema()
+        assert "hash" in json_schema["properties"]
+
+    def test_hash_defaults_to_none(self):
+        """hash should default to None when not provided."""
+        metadata = Metadata(
+            extract=StepMap(
+                status="complete",
+                input_size=5000,
+                output_size=1234,
+            ),
+            title={"filename": "test", "extracted": None, "generated": None},
+            description="Test",
+            filename="test.pdf",
+            filepath="docs/test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            size=5000,
+        )
+        assert metadata.hash is None
+
+    def test_hash_stored_when_provided(self):
+        """hash should be stored when provided."""
+        metadata = Metadata(
+            extract=StepMap(
+                status="complete",
+                input_size=5000,
+                output_size=1234,
+            ),
+            title={"filename": "test", "extracted": None, "generated": None},
+            description="Test",
+            filename="test.pdf",
+            filepath="docs/test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            size=5000,
+            hash="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        )
+        assert metadata.hash == "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+
+    def test_hash_serialized_when_set(self):
+        """hash should be included in JSON serialization when set."""
+        metadata = Metadata(
+            extract=StepMap(
+                status="complete",
+                input_size=5000,
+                output_size=1234,
+            ),
+            title={"filename": "test", "extracted": None, "generated": None},
+            description="Test",
+            filename="test.pdf",
+            filepath="docs/test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            size=5000,
+            hash="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        )
+        data = json.loads(metadata.to_json())
+        assert "hash" in data
+        assert data["hash"] == "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+
+    def test_hash_excluded_when_none(self):
+        """hash should be excluded from JSON serialization when None."""
+        metadata = Metadata(
+            extract=StepMap(
+                status="complete",
+                input_size=5000,
+                output_size=1234,
+            ),
+            title={"filename": "test", "extracted": None, "generated": None},
+            description="Test",
+            filename="test.pdf",
+            filepath="docs/test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            size=5000,
+        )
+        data = json.loads(metadata.to_json())
+        assert "hash" not in data
+
+    def test_hash_roundtrip(self, tmp_path):
+        """hash should survive a write/read roundtrip."""
+        original = Metadata(
+            extract=StepMap(
+                status="complete",
+                input_size=5000,
+                output_size=1234,
+            ),
+            title={"filename": "test", "extracted": None, "generated": None},
+            description="Test",
+            filename="test.pdf",
+            filepath="docs/test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            size=5000,
+            hash="a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2",
+        )
+        json_path = tmp_path / "test.pdf.json"
+        original.to_json_file(json_path)
+
+        loaded = Metadata.from_json_file(json_path)
+        assert loaded.hash == original.hash
+
 
 # ---------------------------------------------------------------------------
 # Title dict tests
@@ -1146,9 +1279,7 @@ class TestTitleDict:
 
     def test_final_title_empty_when_all_empty(self):
         """final_title should return empty string when all values are empty."""
-        metadata = self._make_base_metadata(
-            {"filename": "", "extracted": "", "generated": ""}
-        )
+        metadata = self._make_base_metadata({"filename": "", "extracted": "", "generated": ""})
         assert metadata.final_title == ""
 
     def test_final_title_empty_when_all_none(self):
@@ -1240,9 +1371,7 @@ class TestTitleDict:
         assert metadata.final_title == "ext"
 
         # Test: filename is the fallback
-        metadata = self._make_base_metadata(
-            {"filename": "fname", "extracted": "", "generated": ""}
-        )
+        metadata = self._make_base_metadata({"filename": "fname", "extracted": "", "generated": ""})
         assert metadata.final_title == "fname"
 
     def test_title_dict_with_extra_keys_keeps_required(self):

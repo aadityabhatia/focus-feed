@@ -34,9 +34,17 @@ def _set_valid_env(monkeypatch):
     monkeypatch.setenv("LLM_ENDPOINT", "https://llm.example.com/v1")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "test-model")
-    monkeypatch.setenv("LLM_SYSTEM_PROMPT", "Test system prompt")
-    monkeypatch.setenv("SUMMARY_PROMPT", "Summarize key takeaways from this document.")
-    monkeypatch.setenv("TITLE_PROMPT", "Generate a concise, descriptive title.")
+    monkeypatch.setenv("PROMPT_ARTICLE", "Summarize key takeaways from this document.")
+    monkeypatch.setenv(
+        "PROMPT_ARTICLE_REFLECTION",
+        "Summarize key takeaways from this document with reflection.",
+    )
+    monkeypatch.setenv("PROMPT_PODCAST", "Summarize key takeaways from this podcast.")
+    monkeypatch.setenv(
+        "PROMPT_PODCAST_REFLECTION",
+        "Summarize key takeaways from this podcast with reflection.",
+    )
+    monkeypatch.setenv("PROMPT_TITLE", "Generate a concise, descriptive title.")
     # Clear transcription endpoint to force local mode (not remote).
     # Using setenv with empty string overrides the .env file value (env vars
     # take precedence over .env in pydantic-settings).
@@ -223,7 +231,10 @@ class TestProcessFileMP4:
         producer.process_file(scanned)
 
         mock_summarizer.summarize.assert_called_once_with(
-            "This is a test transcript.", reflection_questions=None, filepath="lecture.mp4"
+            "This is a test transcript.",
+            reflection_questions=None,
+            filepath="lecture.mp4",
+            filetype="mp4",
         )
 
     def test_mp4_generates_title_from_transcript(self, producer, mock_summarizer, tmp_path):
@@ -305,7 +316,9 @@ class TestProcessFileMP4:
         # generated should be the LLM-generated title
         assert title["generated"] == "Generated Title"
 
-    def test_mp4_title_dict_extracted_from_audio_metadata(self, producer, mock_transcriber, mock_summarizer, tmp_path):
+    def test_mp4_title_dict_extracted_from_audio_metadata(
+        self, producer, mock_transcriber, mock_summarizer, tmp_path
+    ):
         """MP4 title dict should include extracted title from audio metadata."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
@@ -434,7 +447,10 @@ class TestProcessFileMP4:
         mock_transcriber.transcribe.assert_not_called()
         # Summarizer SHOULD have been called with the existing transcript
         mock_summarizer.summarize.assert_called_once_with(
-            existing_transcript, reflection_questions=None, filepath="lecture.mp4"
+            existing_transcript,
+            reflection_questions=None,
+            filepath="lecture.mp4",
+            filetype="mp4",
         )
         # Metadata should have the existing transcript
         assert metadata is not None
@@ -537,13 +553,22 @@ class TestProcessFilePDF:
         mock_summarizer.generate_title.assert_called_once()
         assert metadata.final_title == "Generated Title"
 
-    @pytest.mark.parametrize("content_present,should_call_llm", [
-        ("Some content here", True),
-        ("", False),
-        (None, False),
-    ])
+    @pytest.mark.parametrize(
+        "content_present,should_call_llm",
+        [
+            ("Some content here", True),
+            ("", False),
+            (None, False),
+        ],
+    )
     def test_pdf_title_generation_logic(
-        self, producer, mock_pdf_extractor, mock_summarizer, tmp_path, content_present, should_call_llm
+        self,
+        producer,
+        mock_pdf_extractor,
+        mock_summarizer,
+        tmp_path,
+        content_present,
+        should_call_llm,
     ):
         """PDF should call LLM for title only when content is available."""
         mock_pdf_extractor.extract.return_value = {
@@ -1146,10 +1171,13 @@ class TestIntermediateStateSaving:
         data = json.loads(json_path.read_text())
         assert data["transcribe"]["model"] == "large-v3-turbo"
 
-    @pytest.mark.parametrize("filetype,content", [
-        ("pdf", b"pdf data"),
-        ("html", "<html>test</html>"),
-    ])
+    @pytest.mark.parametrize(
+        "filetype,content",
+        [
+            ("pdf", b"pdf data"),
+            ("html", "<html>test</html>"),
+        ],
+    )
     def test_final_state_no_stage_field(self, producer, filetype, content, tmp_path):
         """Final JSON state should not have stage field for PDF/HTML."""
         source = tmp_path / f"file.{filetype}"
@@ -1401,11 +1429,14 @@ class TestIntermediateStateSaving:
         assert metadata.transcribe.model == "large-v3-turbo"
         assert metadata.feed_eligible is True
 
-    @pytest.mark.parametrize("filetype,step_map,source_content", [
-        ("mp4", "transcribe", b"video data"),
-        ("pdf", "extract", b"pdf data"),
-        ("html", "extract", "<html>test</html>"),
-    ])
+    @pytest.mark.parametrize(
+        "filetype,step_map,source_content",
+        [
+            ("mp4", "transcribe", b"video data"),
+            ("pdf", "extract", b"pdf data"),
+            ("html", "extract", "<html>test</html>"),
+        ],
+    )
     def test_metadata_object_has_step_map_timing(
         self, producer, filetype, step_map, source_content, tmp_path
     ):
@@ -2062,3 +2093,291 @@ class TestPublicationDate:
         json_path = tmp_path / "doc.pdf.json"
         data = json.loads(json_path.read_text())
         assert "publication_date" not in data
+
+
+# ---------------------------------------------------------------------------
+# Hash computation tests
+# ---------------------------------------------------------------------------
+
+
+class TestHashComputation:
+    """Tests for SHA256 hash computation in the producer."""
+
+    def test_hash_computed_on_first_process_mp4(self, producer, tmp_path):
+        """Hash should be computed and stored when processing an MP4 file for the first time."""
+        import hashlib
+
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        expected_hash = hashlib.sha256(b"video data").hexdigest()
+        assert metadata is not None
+        assert metadata.hash == expected_hash
+
+    def test_hash_computed_on_first_process_pdf(self, producer, tmp_path):
+        """Hash should be computed and stored when processing a PDF file for the first time."""
+        import hashlib
+
+        source = tmp_path / "document.pdf"
+        source.write_bytes(b"pdf data")
+        scanned = _make_scanned_file(
+            "document.pdf",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        expected_hash = hashlib.sha256(b"pdf data").hexdigest()
+        assert metadata is not None
+        assert metadata.hash == expected_hash
+
+    def test_hash_computed_on_first_process_html(self, producer, tmp_path):
+        """Hash should be computed and stored when processing an HTML file for the first time."""
+        import hashlib
+
+        source = tmp_path / "article.html"
+        source.write_text("<html>test</html>")
+        scanned = _make_scanned_file(
+            "article.html",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        expected_hash = hashlib.sha256(b"<html>test</html>").hexdigest()
+        assert metadata is not None
+        assert metadata.hash == expected_hash
+
+    def test_hash_stored_in_json_metadata(self, producer, tmp_path):
+        """Hash should be written to the JSON metadata file."""
+        import hashlib
+
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        producer.process_file(scanned)
+
+        json_path = tmp_path / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        expected_hash = hashlib.sha256(b"video data").hexdigest()
+        assert data["hash"] == expected_hash
+
+    def test_hash_preserved_when_not_force(self, producer, tmp_path):
+        """Hash should be preserved when reprocessing without --force."""
+        import hashlib
+
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        # First processing
+        producer.process_file(scanned)
+
+        # Pre-write JSON with existing hash and complete steps
+        existing_hash = hashlib.sha256(b"video data").hexdigest()
+        json_path = tmp_path / "lecture.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "hash": existing_hash,
+                    "transcribe": {
+                        "status": "complete",
+                        "input_size": 1000,
+                        "output_size": 500,
+                    },
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                    },
+                    "content": "Existing transcript.",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "title": {"filename": "lecture", "extracted": None, "generated": None},
+                    "description": "",
+                    "summary": "Summary",
+                    "date": 1728931200,
+                    "size": 10,
+                }
+            )
+        )
+
+        # Reprocess without force
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.hash == existing_hash
+
+    def test_hash_recomputed_when_force(self, producer, tmp_path):
+        """Hash should be recomputed when reprocessing with --force."""
+        import hashlib
+
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        # First processing
+        producer.process_file(scanned)
+
+        # Pre-write JSON with a different hash and complete steps
+        json_path = tmp_path / "lecture.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "hash": "0" * 64,  # Fake hash
+                    "transcribe": {
+                        "status": "complete",
+                        "input_size": 1000,
+                        "output_size": 500,
+                    },
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                    },
+                    "content": "Existing transcript.",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "title": {"filename": "lecture", "extracted": None, "generated": None},
+                    "description": "",
+                    "summary": "Summary",
+                    "date": 1728931200,
+                    "size": 10,
+                }
+            )
+        )
+
+        # Reprocess with force
+        metadata = producer.process_file(scanned, force=True)
+
+        expected_hash = hashlib.sha256(b"video data").hexdigest()
+        assert metadata is not None
+        assert metadata.hash == expected_hash
+
+    def test_hash_computed_for_legacy_file_without_hash(self, producer, tmp_path):
+        """Hash should be computed when processing a legacy file that has no hash field."""
+        import hashlib
+
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        # Pre-write JSON without hash field, with incomplete processing
+        json_path = tmp_path / "lecture.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "transcribe": {
+                        "status": "in_progress",
+                        "input_size": 0,
+                        "output_size": 0,
+                    },
+                    "summarize": {
+                        "status": None,
+                        "input_size": 0,
+                        "output_size": 0,
+                    },
+                    "content": "Partial transcript.",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "title": {"filename": "lecture", "extracted": None, "generated": None},
+                    "description": "",
+                    "date": 1728931200,
+                    "size": 10,
+                }
+            )
+        )
+
+        metadata = producer.process_file(scanned)
+
+        expected_hash = hashlib.sha256(b"video data").hexdigest()
+        assert metadata is not None
+        assert metadata.hash == expected_hash
+
+    def test_hash_preserved_in_error_metadata(self, producer, mock_transcriber, tmp_path):
+        """Hash should be preserved in error metadata when an error occurs."""
+        import hashlib
+
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        # Make transcription fail
+        mock_transcriber.transcribe.side_effect = RuntimeError("GPU error")
+
+        producer.process_file(scanned)
+
+        json_path = tmp_path / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        expected_hash = hashlib.sha256(b"video data").hexdigest()
+        assert data["hash"] == expected_hash
+        assert data["error"] is not None
+
+    def test_hash_is_64_char_hex_digest(self, producer, tmp_path):
+        """Hash should be a 64-character hex string (SHA256)."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert len(metadata.hash) == 64
+        # Verify it's a valid hex string
+        int(metadata.hash, 16)  # Raises ValueError if not hex
+
+    @pytest.mark.parametrize(
+        "filetype,content",
+        [
+            ("mp4", b"video data"),
+            ("pdf", b"pdf data"),
+            ("html", b"<html>test</html>"),
+        ],
+    )
+    def test_hash_computed_for_all_file_types(self, producer, filetype, content, tmp_path):
+        """Hash should be computed for all supported file types."""
+        import hashlib
+
+        source = tmp_path / f"file.{filetype}"
+        if filetype == "html":
+            source.write_text(content.decode("utf-8"))
+        else:
+            source.write_bytes(content)
+        scanned = _make_scanned_file(
+            f"file.{filetype}",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        expected_hash = hashlib.sha256(content).hexdigest()
+        assert metadata is not None
+        assert metadata.hash == expected_hash

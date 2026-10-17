@@ -41,6 +41,7 @@ millisecond precision.
             "duration": 3600.5,          # Audio duration in seconds (MP4, optional)
             "creation_time": "2024-01-15T10:30:00.000000Z",  # Media creation time
             "content": "Plaintext content (transcript for MP4, extracted text for PDF/HTML)",
+            "hash": "a1b2c3d4e5f6...",  # OPTIONAL: SHA256 hash of source file
             "transcribe": {
                 "status": "complete",
                 "start_time": 1792096505.123,
@@ -256,6 +257,9 @@ class Metadata(BaseModel):
             (MP4 files only, optional)
         content: Plaintext content — transcript for MP4 files, extracted text
             for PDF/HTML files (optional)
+        hash: SHA256 hash of the source file (optional; used for guid generation in
+            feeds). When present, the last 12 characters are used as the feed item
+            guid. Falls back to filepath when not present.
         transcribe: Step map for transcription (MP4 only)
         summarize: Step map for summarization (MP4 only)
         extract: Step map for metadata extraction (PDF/HTML only)
@@ -344,6 +348,10 @@ class Metadata(BaseModel):
     extract: StepMap | None = Field(
         default=None,
         description="Step map for metadata extraction (PDF/HTML files only)",
+    )
+    hash: str | None = Field(
+        default=None,
+        description="SHA256 hash of the source file (optional; used for guid generation in feeds)",
     )
     error: str | None = Field(
         default=None,

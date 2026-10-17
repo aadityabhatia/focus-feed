@@ -15,7 +15,7 @@ Design references:
     - Filters out metadata files where ``feed_eligible`` is ``False``
       (i.e. files with incomplete step statuses or error state).
     - Sorts items by folder name (ascending) then filename (ascending).
-    - Calculates absolute URLs as ``BASE_URL + filepath``.
+    - Calculates absolute URLs as ``BASE_URL + DATA_DIR_basename + filepath``.
     - Writes feeds to ``DATA_DIR/podcast.xml`` and ``DATA_DIR/articles.xml``.
     - Supports per-folder feed generation via ``feed.json`` files.
 """
@@ -34,6 +34,7 @@ from feedgen.feed import FeedGenerator as _FeedGenerator
 
 from local_feed_generator.config import get_config
 from local_feed_generator.metadata import Metadata
+from local_feed_generator.producer import _compute_file_hash
 
 _logger = logging.getLogger("local_feed_generator")
 
@@ -488,6 +489,7 @@ class FeedGenerator:
 
         self.data_dir: Path = Path(data_dir).resolve()
         self.base_url: str = base_url.rstrip("/")
+        self.data_dir_basename: str = self.data_dir.name
 
     # ------------------------------------------------------------------
     # Metadata discovery
@@ -557,6 +559,95 @@ class FeedGenerator:
         metadata_list.sort(key=self._sort_key)
         return metadata_list
 
+    def _update_missing_hashes(self) -> int:
+        """Scan all JSON metadata files and add missing hash fields.
+
+        Walks ``data_dir`` recursively for ``*.json`` files (excluding
+        ``feed.json`` configuration files).  For each metadata file that:
+
+        - Has a corresponding source file that exists (not orphaned), **and**
+        - Does **not** already have a non-empty ``hash`` field,
+
+        computes the SHA256 hash of the source file and writes it back to
+        the JSON file.  This ensures all feed items can use hash-based
+        guids, eliminating legacy files without hashes.
+
+        Files that cannot be parsed as valid JSON, or whose source file
+        cannot be read, are logged as warnings and skipped so that a single
+        corrupt file does not abort the update pass.
+
+        Returns:
+            The number of JSON files that were updated with a hash.
+        """
+        if not self.data_dir.exists() or not self.data_dir.is_dir():
+            return 0
+
+        updated_count = 0
+
+        for root, _dirs, files in os.walk(self.data_dir):
+            root_path = Path(root)
+            for filename in files:
+                if not filename.lower().endswith(".json"):
+                    continue
+                if filename == "feed.json":
+                    continue
+
+                json_path = root_path / filename
+
+                # Skip orphaned JSON files (no corresponding source file).
+                if self._is_orphaned_json(json_path):
+                    continue
+
+                try:
+                    data = json.loads(json_path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError) as exc:
+                    _logger.warning(
+                        "Failed to read JSON file %s during hash update: %s",
+                        json_path,
+                        exc,
+                    )
+                    continue
+
+                # Skip if hash is already present and non-empty.
+                if data.get("hash"):
+                    continue
+
+                # Determine the source file path (strip .json suffix).
+                source_filename = filename[: -len(".json")]
+                source_path = root_path / source_filename
+
+                # Compute the SHA256 hash of the source file.
+                file_hash = _compute_file_hash(str(source_path))
+
+                if not file_hash:
+                    _logger.warning(
+                        "Failed to compute hash for %s; skipping hash update",
+                        source_path,
+                    )
+                    continue
+
+                # Update the JSON dict with the hash.
+                data["hash"] = file_hash
+
+                # Write back atomically (write to temp file, then rename).
+                try:
+                    tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
+                    tmp_path.write_text(
+                        json.dumps(data, indent=2),
+                        encoding="utf-8",
+                    )
+                    tmp_path.replace(json_path)
+                    updated_count += 1
+                    _logger.info("Added hash to %s", json_path)
+                except OSError as exc:
+                    _logger.warning(
+                        "Failed to write updated JSON to %s: %s",
+                        json_path,
+                        exc,
+                    )
+
+        return updated_count
+
     def _is_orphaned_json(self, json_path: Path) -> bool:
         """Check if a JSON metadata file is orphaned (no corresponding source).
 
@@ -606,14 +697,40 @@ class FeedGenerator:
     def _absolute_url(self, filepath: str) -> str:
         """Construct an absolute URL from BASE_URL and a relative filepath.
 
+        The DATA_DIR basename is automatically prepended to the filepath to
+        account for the web server serving DATA_DIR at a subpath of BASE_URL.
+        When DATA_DIR is the root directory (basename is empty), the basename
+        component is omitted to avoid a double slash.
+
         Args:
             filepath: Relative path from the data directory root
                 (e.g., ``"videos/lecture.mp4"``).
 
         Returns:
-            Absolute URL string (e.g., ``"https://example.com/videos/lecture.mp4"``).
+            Absolute URL string (e.g.,
+            ``"https://example.com/data/videos/lecture.mp4"``).
         """
+        if self.data_dir_basename:
+            return f"{self.base_url}/{self.data_dir_basename}/{filepath}"
         return f"{self.base_url}/{filepath}"
+
+    def _compute_guid(self, metadata: Metadata) -> str:
+        """Compute the GUID for a feed item.
+
+        When the ``hash`` field is present in the metadata, the last 12
+        characters of the hash value are used as the guid.  Otherwise, the
+        file path is used as a fallback (design doc section 3.4, FR-020).
+
+        Args:
+            metadata: The :class:`Metadata` instance for the feed item.
+
+        Returns:
+            The guid string — either the last 12 chars of the hash, or the
+            absolute URL constructed from the filepath.
+        """
+        if metadata.hash:
+            return metadata.hash[-12:]
+        return self._absolute_url(metadata.filepath)
 
     def _feed_rel_path(self, output_dir: Path, feed_filename: str) -> str:
         """Compute the feed file path relative to ``data_dir``.
@@ -727,7 +844,8 @@ class FeedGenerator:
             - **link**: absolute URL to the source MP4 file.
             - **enclosure**: URL, type ``audio/mp4``, and length (file size).
             - **publication date**: from metadata ``date``.
-            - **GUID**: based on the filepath (as a permalink URL).
+            - **GUID**: last 12 characters of the ``hash`` field when present,
+              otherwise the absolute URL of the file path (FR-020).
 
         The feed is written to ``output_dir/podcast.xml``, overwriting any
         existing file (idempotent regeneration).
@@ -785,7 +903,7 @@ class FeedGenerator:
         for metadata in mp4_items:
             entry = fg.add_entry()
             entry.id(str(metadata.filepath))
-            entry.guid(self._absolute_url(metadata.filepath))
+            entry.guid(self._compute_guid(metadata))
             entry.title(metadata.final_title)
 
             # Description from summary field (holds LLM key takeaways for MP4),
@@ -845,7 +963,8 @@ class FeedGenerator:
             - **publication date**: from metadata ``publication_date``
               (document metadata date) if available, otherwise from
               ``date`` (file modification time).
-            - **GUID**: based on the filepath (as a permalink URL).
+            - **GUID**: last 12 characters of the ``hash`` field when present,
+              otherwise the absolute URL of the file path (FR-020).
 
         The feed is written to ``output_dir/articles.xml``, overwriting any
         existing file (idempotent regeneration).
@@ -906,7 +1025,7 @@ class FeedGenerator:
         for metadata in article_items:
             entry = fg.add_entry()
             entry.id(str(metadata.filepath))
-            entry.guid(self._absolute_url(metadata.filepath))
+            entry.guid(self._compute_guid(metadata))
             entry.title(metadata.final_title)
 
             # Description from summary (if available), fallback to
@@ -1029,23 +1148,28 @@ class FeedGenerator:
     def generate_all_feeds(self, validate: bool = False) -> dict[str, list[Metadata]]:
         """Generate root-level and per-folder RSS feeds.
 
-        This method performs two phases of feed generation:
+        This method performs three phases:
 
-         1. **Root-level feeds**: Generates ``podcast.xml`` and
-            ``articles.xml`` in ``data_dir``.  Root-level feeds are only
-            generated if a ``data_dir/feed.json`` file exists; its
-            ``title``, ``description``, and optional ``link`` are used
-            for the root-level feeds.  When ``link`` is omitted in
-            ``feed.json``, the channel link defaults to ``BASE_URL``.
-            ``podcast.xml`` is only created if MP4 files are present;
-            ``articles.xml`` is only created if PDF/HTML files are present.
+         0. **Hash update**: Scans all JSON metadata files for missing
+            ``hash`` fields and computes the SHA256 of the corresponding
+            source file, writing the hash back to disk.  This ensures all
+            feed items use hash-based guids (FR-020).
 
-         2. **Per-folder feeds**: Walks ``data_dir`` recursively for
-            ``feed.json`` files.  For each folder containing a
-            ``feed.json``, generates ``podcast.xml`` (only if MP4 files
-            are present in that folder tree) and ``articles.xml`` (only
-            if PDF/HTML files are present).  Feeds are written to the
-            folder containing the ``feed.json``.
+          1. **Root-level feeds**: Generates ``podcast.xml`` and
+             ``articles.xml`` in ``data_dir``.  Root-level feeds are only
+             generated if a ``data_dir/feed.json`` file exists; its
+             ``title``, ``description``, and optional ``link`` are used
+             for the root-level feeds.  When ``link`` is omitted in
+             ``feed.json``, the channel link defaults to ``BASE_URL``.
+             ``podcast.xml`` is only created if MP4 files are present;
+             ``articles.xml`` is only created if PDF/HTML files are present.
+
+          2. **Per-folder feeds**: Walks ``data_dir`` recursively for
+             ``feed.json`` files.  For each folder containing a
+             ``feed.json``, generates ``podcast.xml`` (only if MP4 files
+             are present in that folder tree) and ``articles.xml`` (only
+             if PDF/HTML files are present).  Feeds are written to the
+             folder containing the ``feed.json``.
 
         If any individual feed generation fails, the error is logged and
         other feeds continue to be generated.
@@ -1071,6 +1195,12 @@ class FeedGenerator:
             "podcast": [],
             "articles": [],
         }
+
+        # --- Phase 0: Update missing hash fields in JSON metadata ---
+        # Before generating feeds, ensure all existing JSON metadata files
+        # have a hash field by computing the SHA256 of the source file.
+        # This ensures all feed items use hash-based guids.
+        self._update_missing_hashes()
 
         # --- Phase 1: Root-level feeds (only if feed.json exists) ---
         root_feed_json = self.data_dir / "feed.json"

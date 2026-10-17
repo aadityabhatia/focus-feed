@@ -43,6 +43,7 @@ def make_metadata(
     error: str | None = None,
     date: int = 1728931200,
     publication_date: float | None = None,
+    hash: str | None = None,
 ) -> Metadata:
     """Create a Metadata object for testing.
 
@@ -56,10 +57,11 @@ def make_metadata(
         size: File size in bytes.
         feed_eligible: If True, set status to "complete" for all applicable steps.
             If False, leave status as None.
-    error: Error message (if provided, feed_eligible is set to False).
-    date: UNIX epoch date (seconds).
-    publication_date: Publication date from document metadata (seconds).
-        If None, the date field is used for pubDate in articles feed.
+        error: Error message (if provided, feed_eligible is set to False).
+        date: UNIX epoch date (seconds).
+        publication_date: Publication date from document metadata (seconds).
+            If None, the date field is used for pubDate in articles feed.
+        hash: SHA256 hash string (optional; used for guid generation).
 
     Returns:
         A validated Metadata instance.
@@ -73,6 +75,8 @@ def make_metadata(
         "date": date,
         "size": size,
     }
+    if hash is not None:
+        kwargs["hash"] = hash
     if filetype == "mp4":
         # For MP4, transcript maps to content, summary holds the LLM key
         # takeaways, and description is left blank.
@@ -160,11 +164,14 @@ def parse_rss_file(path: Path) -> str:
 class TestFeedGeneratorConstruction:
     """Tests for FeedGenerator initialization."""
 
-    @pytest.mark.parametrize("data_dir_arg,base_url", [
-        (None, "https://example.com/feeds"),
-        ("https://example.com", "https://example.com"),
-        (None, "https://example.com/feeds/"),  # trailing slash stripped
-    ])
+    @pytest.mark.parametrize(
+        "data_dir_arg,base_url",
+        [
+            (None, "https://example.com/feeds"),
+            ("https://example.com", "https://example.com"),
+            (None, "https://example.com/feeds/"),  # trailing slash stripped
+        ],
+    )
     def test_init_with_args(self, tmp_path, data_dir_arg, base_url):
         """FeedGenerator should accept explicit data_dir and base_url; strip trailing slash."""
         dir_arg = tmp_path if data_dir_arg is None else str(tmp_path)
@@ -173,6 +180,18 @@ class TestFeedGeneratorConstruction:
         assert fg.data_dir.is_absolute()
         expected_url = base_url.rstrip("/") if base_url.endswith("/") else base_url
         assert fg.base_url == expected_url
+
+    def test_init_stores_data_dir_basename(self, tmp_path):
+        """FeedGenerator should store the DATA_DIR basename for URL construction."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com")
+        assert fg.data_dir_basename == "data"
+
+    def test_init_data_dir_basename_for_root(self, tmp_path):
+        """FeedGenerator should store empty basename when DATA_DIR is root."""
+        fg = FeedGenerator(data_dir=Path("/"), base_url="https://example.com")
+        assert fg.data_dir_basename == ""
 
 
 # ---------------------------------------------------------------------------
@@ -303,6 +322,8 @@ class TestMetadataDiscovery:
         # feed.json is config, not metadata — it should not appear in results
         # and should not produce an orphaned JSON warning.
         assert result == []
+
+
 # ---------------------------------------------------------------------------
 
 
@@ -348,10 +369,13 @@ class TestSorting:
         filenames = [m.filename for m in result]
         assert filenames == ["apple.pdf", "mango.html", "zebra.mp4"]
 
-    @pytest.mark.parametrize("filepath,expected_key", [
-        ("videos/lecture.mp4", ("videos", "lecture.mp4")),
-        ("lecture.mp4", ("", "lecture.mp4")),
-    ])
+    @pytest.mark.parametrize(
+        "filepath,expected_key",
+        [
+            ("videos/lecture.mp4", ("videos", "lecture.mp4")),
+            ("lecture.mp4", ("", "lecture.mp4")),
+        ],
+    )
     def test_sort_key_method(self, filepath, expected_key):
         """_sort_key should return (folder_name, filename) tuple."""
         metadata = make_metadata(filepath=filepath)
@@ -367,16 +391,43 @@ class TestSorting:
 class TestUrlCalculation:
     """Tests for absolute URL calculation."""
 
-    @pytest.mark.parametrize("base_url,filepath,expected", [
-        ("https://example.com/feeds", "videos/lecture.mp4", "https://example.com/feeds/videos/lecture.mp4"),
-        ("https://example.com", "doc.pdf", "https://example.com/doc.pdf"),
-        ("https://example.com/feeds", "Course1/Sub/lesson.mp4", "https://example.com/feeds/Course1/Sub/lesson.mp4"),
-    ])
+    @pytest.mark.parametrize(
+        "base_url,filepath,expected",
+        [
+            (
+                "https://example.com/feeds",
+                "videos/lecture.mp4",
+                "https://example.com/feeds/data/videos/lecture.mp4",
+            ),
+            ("https://example.com", "doc.pdf", "https://example.com/data/doc.pdf"),
+            (
+                "https://example.com/feeds",
+                "Course1/Sub/lesson.mp4",
+                "https://example.com/feeds/data/Course1/Sub/lesson.mp4",
+            ),
+        ],
+    )
     def test_absolute_url(self, tmp_path, base_url, filepath, expected):
-        """Absolute URL should be BASE_URL + filepath."""
-        fg = FeedGenerator(data_dir=tmp_path, base_url=base_url)
+        """Absolute URL should be BASE_URL + DATA_DIR_basename + filepath."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        fg = FeedGenerator(data_dir=data_dir, base_url=base_url)
         url = fg._absolute_url(filepath)
         assert url == expected
+
+    def test_absolute_url_includes_data_dir_basename(self, tmp_path):
+        """URL should include the DATA_DIR basename in the path."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com")
+        url = fg._absolute_url("videos/lecture.mp4")
+        assert url == "https://example.com/data/videos/lecture.mp4"
+
+    def test_absolute_url_empty_basename_for_root(self, tmp_path):
+        """When DATA_DIR is root, basename should be empty and not added."""
+        fg = FeedGenerator(data_dir=Path("/"), base_url="https://example.com")
+        url = fg._absolute_url("doc.pdf")
+        assert url == "https://example.com/doc.pdf"
 
 
 # ---------------------------------------------------------------------------
@@ -387,10 +438,13 @@ class TestUrlCalculation:
 class TestPodcastFeedGeneration:
     """Tests for generate_podcast_feed()."""
 
-    @pytest.mark.parametrize("xml_name,method,filetype,filepath", [
-        ("podcast.xml", "generate_podcast_feed", "mp4", "videos/lecture.mp4"),
-        ("articles.xml", "generate_articles_feed", "pdf", "documents/doc.pdf"),
-    ])
+    @pytest.mark.parametrize(
+        "xml_name,method,filetype,filepath",
+        [
+            ("podcast.xml", "generate_podcast_feed", "mp4", "videos/lecture.mp4"),
+            ("articles.xml", "generate_articles_feed", "pdf", "documents/doc.pdf"),
+        ],
+    )
     def test_feed_file_created(self, tmp_path, xml_name, method, filetype, filepath):
         """Feed XML should be written to DATA_DIR."""
         write_metadata_file(tmp_path, filepath, filetype=filetype)
@@ -400,10 +454,13 @@ class TestPodcastFeedGeneration:
 
         assert (tmp_path / xml_name).exists()
 
-    @pytest.mark.parametrize("method,filetype,filepath", [
-        ("generate_podcast_feed", "mp4", "videos/lecture1.mp4"),
-        ("generate_articles_feed", "pdf", "documents/doc.pdf"),
-    ])
+    @pytest.mark.parametrize(
+        "method,filetype,filepath",
+        [
+            ("generate_podcast_feed", "mp4", "videos/lecture1.mp4"),
+            ("generate_articles_feed", "pdf", "documents/doc.pdf"),
+        ],
+    )
     def test_feed_includes_correct_items(self, tmp_path, method, filetype, filepath):
         """Feed should include only items of the correct filetype."""
         write_metadata_file(tmp_path, filepath, filetype=filetype)
@@ -417,10 +474,13 @@ class TestPodcastFeedGeneration:
         assert len(items) == 1
         assert all(m.filetype == filetype for m in items)
 
-    @pytest.mark.parametrize("method,xml_name,filetype,filepath,title", [
-        ("generate_podcast_feed", "podcast.xml", "mp4", "videos/lecture.mp4", "My Lecture"),
-        ("generate_articles_feed", "articles.xml", "pdf", "documents/doc.pdf", "My Document"),
-    ])
+    @pytest.mark.parametrize(
+        "method,xml_name,filetype,filepath,title",
+        [
+            ("generate_podcast_feed", "podcast.xml", "mp4", "videos/lecture.mp4", "My Lecture"),
+            ("generate_articles_feed", "articles.xml", "pdf", "documents/doc.pdf", "My Document"),
+        ],
+    )
     def test_feed_item_has_title(self, tmp_path, method, xml_name, filetype, filepath, title):
         """Each feed item should have a title (with module prefix applied)."""
         write_metadata_file(tmp_path, filepath, filetype=filetype, title=title)
@@ -494,30 +554,37 @@ class TestPodcastFeedGeneration:
 
     def test_podcast_feed_item_has_enclosure(self, tmp_path):
         """Each podcast item should have an enclosure with URL, type, and length (FR-018)."""
-        write_metadata_file(tmp_path, "videos/lecture.mp4", size=12345678)
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        write_metadata_file(data_dir, "videos/lecture.mp4", size=12345678)
 
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
         fg.generate_podcast_feed()
 
-        content = parse_rss_file(tmp_path / "podcast.xml")
+        content = parse_rss_file(data_dir / "podcast.xml")
         assert "<enclosure" in content
-        assert 'url="https://example.com/feeds/videos/lecture.mp4"' in content
+        assert 'url="https://example.com/feeds/data/videos/lecture.mp4"' in content
         assert 'length="12345678"' in content
         assert 'type="audio/mp4"' in content
 
-    @pytest.mark.parametrize("field,substring", [
-        ("link", "https://example.com/feeds/videos/lecture.mp4"),
-        ("guid", "https://example.com/feeds/videos/lecture.mp4"),
-        ("pubdate", "<pubDate>"),
-    ])
+    @pytest.mark.parametrize(
+        "field,substring",
+        [
+            ("link", "https://example.com/feeds/data/videos/lecture.mp4"),
+            ("guid", "https://example.com/feeds/data/videos/lecture.mp4"),
+            ("pubdate", "<pubDate>"),
+        ],
+    )
     def test_podcast_feed_item_has_required_fields(self, tmp_path, field, substring):
         """Each podcast item should have link, guid, and pubDate (feedgen built-in)."""
-        write_metadata_file(tmp_path, "videos/lecture.mp4")
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        write_metadata_file(data_dir, "videos/lecture.mp4")
 
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
         fg.generate_podcast_feed()
 
-        content = parse_rss_file(tmp_path / "podcast.xml")
+        content = parse_rss_file(data_dir / "podcast.xml")
         if field == "link":
             assert f"<link>{substring}</link>" in content
         elif field == "guid":
@@ -538,11 +605,30 @@ class TestPodcastFeedGeneration:
         filepaths = [m.filepath for m in items]
         assert filepaths == ["alpha/first.mp4", "alpha/middle.mp4", "zebra/last.mp4"]
 
-    @pytest.mark.parametrize("method,xml_name,good_filetype,bad_filetype,good_path,bad_path", [
-        ("generate_podcast_feed", "podcast.xml", "mp4", "pdf", "videos/good.mp4", "videos/bad.mp4"),
-        ("generate_articles_feed", "articles.xml", "pdf", "mp4", "documents/good.pdf", "documents/bad.pdf"),
-    ])
-    def test_feed_excludes_error_entries(self, tmp_path, method, xml_name, good_filetype, bad_filetype, good_path, bad_path):
+    @pytest.mark.parametrize(
+        "method,xml_name,good_filetype,bad_filetype,good_path,bad_path",
+        [
+            (
+                "generate_podcast_feed",
+                "podcast.xml",
+                "mp4",
+                "pdf",
+                "videos/good.mp4",
+                "videos/bad.mp4",
+            ),
+            (
+                "generate_articles_feed",
+                "articles.xml",
+                "pdf",
+                "mp4",
+                "documents/good.pdf",
+                "documents/bad.pdf",
+            ),
+        ],
+    )
+    def test_feed_excludes_error_entries(
+        self, tmp_path, method, xml_name, good_filetype, bad_filetype, good_path, bad_path
+    ):
         """Error entries should not appear in feeds."""
         write_metadata_file(tmp_path, good_path, filetype=good_filetype)
         write_metadata_file(tmp_path, bad_path, filetype=bad_filetype, error="Failed")
@@ -565,11 +651,28 @@ class TestPodcastFeedGeneration:
         content = parse_rss_file(tmp_path / "podcast.xml")
         assert "itunes" in content
 
-    @pytest.mark.parametrize("method,xml_name,exists_filetype,exists_path,not_exists_path", [
-        ("generate_podcast_feed", "podcast.xml", "pdf", "documents/doc.pdf", "videos/lecture.mp4"),
-        ("generate_articles_feed", "articles.xml", "mp4", "videos/lecture.mp4", "documents/doc.pdf"),
-    ])
-    def test_feed_not_created_when_no_applicable_files(self, tmp_path, method, xml_name, exists_filetype, exists_path, not_exists_path):
+    @pytest.mark.parametrize(
+        "method,xml_name,exists_filetype,exists_path,not_exists_path",
+        [
+            (
+                "generate_podcast_feed",
+                "podcast.xml",
+                "pdf",
+                "documents/doc.pdf",
+                "videos/lecture.mp4",
+            ),
+            (
+                "generate_articles_feed",
+                "articles.xml",
+                "mp4",
+                "videos/lecture.mp4",
+                "documents/doc.pdf",
+            ),
+        ],
+    )
+    def test_feed_not_created_when_no_applicable_files(
+        self, tmp_path, method, xml_name, exists_filetype, exists_path, not_exists_path
+    ):
         """Feed should not be created when no applicable file types are present."""
         write_metadata_file(tmp_path, exists_path, filetype=exists_filetype)
 
@@ -579,10 +682,13 @@ class TestPodcastFeedGeneration:
         assert items == []
         assert not (tmp_path / xml_name).exists()
 
-    @pytest.mark.parametrize("method,xml_name,filetype,filepath", [
-        ("generate_podcast_feed", "podcast.xml", "mp4", "videos/lecture.mp4"),
-        ("generate_articles_feed", "articles.xml", "pdf", "documents/doc.pdf"),
-    ])
+    @pytest.mark.parametrize(
+        "method,xml_name,filetype,filepath",
+        [
+            ("generate_podcast_feed", "podcast.xml", "mp4", "videos/lecture.mp4"),
+            ("generate_articles_feed", "articles.xml", "pdf", "documents/doc.pdf"),
+        ],
+    )
     def test_feed_overwrites_existing(self, tmp_path, method, xml_name, filetype, filepath):
         """Regenerating feed should overwrite existing file."""
         write_metadata_file(tmp_path, filepath, filetype=filetype)
@@ -693,19 +799,24 @@ class TestArticlesFeedGeneration:
         content = parse_rss_file(tmp_path / "articles.xml")
         assert "The fallback description" in content
 
-    @pytest.mark.parametrize("field,substring", [
-        ("link", "https://example.com/feeds/documents/doc.pdf"),
-        ("guid", "https://example.com/feeds/documents/doc.pdf"),
-        ("pubdate", "<pubDate>"),
-    ])
+    @pytest.mark.parametrize(
+        "field,substring",
+        [
+            ("link", "https://example.com/feeds/data/documents/doc.pdf"),
+            ("guid", "https://example.com/feeds/data/documents/doc.pdf"),
+            ("pubdate", "<pubDate>"),
+        ],
+    )
     def test_articles_feed_item_has_required_fields(self, tmp_path, field, substring):
         """Each articles item should have link, guid, and pubDate (feedgen built-in)."""
-        write_metadata_file(tmp_path, "documents/doc.pdf")
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        write_metadata_file(data_dir, "documents/doc.pdf")
 
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
         fg.generate_articles_feed()
 
-        content = parse_rss_file(tmp_path / "articles.xml")
+        content = parse_rss_file(data_dir / "articles.xml")
         if field == "link":
             assert f"<link>{substring}</link>" in content
         elif field == "guid":
@@ -743,9 +854,7 @@ class TestArticlesFeedGeneration:
         # pubDate should reflect publication_date (June 2024), not date (Oct 2024)
         from datetime import UTC, datetime
 
-        expected = datetime.fromtimestamp(1719200000.0, tz=UTC).strftime(
-            "%a, %d %b %Y"
-        )
+        expected = datetime.fromtimestamp(1719200000.0, tz=UTC).strftime("%a, %d %b %Y")
         assert expected in content
 
     def test_articles_feed_pubdate_falls_back_to_date(self, tmp_path):
@@ -765,9 +874,7 @@ class TestArticlesFeedGeneration:
         # pubDate should reflect date (Oct 2024) since publication_date is None
         from datetime import UTC, datetime
 
-        expected = datetime.fromtimestamp(1728931200, tz=UTC).strftime(
-            "%a, %d %b %Y"
-        )
+        expected = datetime.fromtimestamp(1728931200, tz=UTC).strftime("%a, %d %b %Y")
         assert expected in content
 
     def test_articles_feed_excludes_error_entries(self, tmp_path):
@@ -834,10 +941,13 @@ class TestGenerateAllFeeds:
         assert len(results["podcast"]) == 1
         assert len(results["articles"]) == 1
 
-    @pytest.mark.parametrize("failing_feed,working_feed", [
-        ("generate_podcast_feed", "articles"),
-        ("generate_articles_feed", "podcast"),
-    ])
+    @pytest.mark.parametrize(
+        "failing_feed,working_feed",
+        [
+            ("generate_podcast_feed", "articles"),
+            ("generate_articles_feed", "podcast"),
+        ],
+    )
     def test_error_in_one_feed_does_not_block_other(self, tmp_path, failing_feed, working_feed):
         """If one feed generation fails, the other should still be generated."""
         write_metadata_file(tmp_path, "videos/lecture.mp4")
@@ -895,11 +1005,14 @@ class TestXmlEscaping:
     XML escaping; we only need to ensure our code doesn't interfere.
     """
 
-    @pytest.mark.parametrize("filetype,xml_name,field,content", [
-        ("mp4", "podcast.xml", "title", "Lecture <with> & \"quotes\""),
-        ("mp4", "podcast.xml", "summary", "Summary with <tags> & ampersand"),
-        ("pdf", "articles.xml", "description", "Description with <html> & special chars"),
-    ])
+    @pytest.mark.parametrize(
+        "filetype,xml_name,field,content",
+        [
+            ("mp4", "podcast.xml", "title", 'Lecture <with> & "quotes"'),
+            ("mp4", "podcast.xml", "summary", "Summary with <tags> & ampersand"),
+            ("pdf", "articles.xml", "description", "Description with <html> & special chars"),
+        ],
+    )
     def test_special_characters_handled_by_feedgen(
         self, tmp_path, filetype, xml_name, field, content
     ):
@@ -982,23 +1095,28 @@ class TestEdgeCases:
             "Failed to parse" in record.message for record in caplog.records if record.levelno >= 30
         )
 
-    @pytest.mark.parametrize("filetype,xml_name", [
-        ("mp4", "podcast.xml"),
-        ("pdf", "articles.xml"),
-    ])
+    @pytest.mark.parametrize(
+        "filetype,xml_name",
+        [
+            ("mp4", "podcast.xml"),
+            ("pdf", "articles.xml"),
+        ],
+    )
     def test_feed_links_to_self(self, tmp_path, filetype, xml_name):
         """Feed should include a self-referencing link."""
-        write_metadata_file(tmp_path, f"file.{filetype}", filetype=filetype)
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        write_metadata_file(data_dir, f"file.{filetype}", filetype=filetype)
 
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
         if filetype == "mp4":
             fg.generate_podcast_feed()
         else:
             fg.generate_articles_feed()
 
-        content = parse_rss_file(tmp_path / xml_name)
+        content = parse_rss_file(data_dir / xml_name)
         assert 'rel="self"' in content
-        assert f"https://example.com/feeds/{xml_name}" in content
+        assert f"https://example.com/feeds/data/{xml_name}" in content
 
 
 # ---------------------------------------------------------------------------
@@ -1098,10 +1216,13 @@ _UNESCAPED_XML = """\
 class TestValidateFeed:
     """Tests for the standalone validate_feed() function."""
 
-    @pytest.mark.parametrize("xml,feed_name,is_podcast", [
-        (_VALID_PODCAST_XML, "podcast.xml", True),
-        (_VALID_ARTICLES_XML, "articles.xml", False),
-    ])
+    @pytest.mark.parametrize(
+        "xml,feed_name,is_podcast",
+        [
+            (_VALID_PODCAST_XML, "podcast.xml", True),
+            (_VALID_ARTICLES_XML, "articles.xml", False),
+        ],
+    )
     def test_valid_feed_passes(self, xml, feed_name, is_podcast):
         """A well-formed feed with all required elements should pass."""
         result = validate_feed(xml, feed_name=feed_name, is_podcast=is_podcast)
@@ -1126,25 +1247,31 @@ class TestValidateFeed:
         assert len(result.warnings) == 1
         assert "No <item>" in result.warnings[0]
 
-    @pytest.mark.parametrize("xml,expected_error_substring", [
-        (_MALFORMED_XML, "not well-formed"),
-        (_UNESCAPED_XML, "not well-formed"),
-        (_ATOM_FEED_XML, "expected <rss>"),
-        (_WRONG_VERSION_XML, "expected '2.0'"),
-        (_NO_CHANNEL_XML, "Missing <channel>"),
-    ])
+    @pytest.mark.parametrize(
+        "xml,expected_error_substring",
+        [
+            (_MALFORMED_XML, "not well-formed"),
+            (_UNESCAPED_XML, "not well-formed"),
+            (_ATOM_FEED_XML, "expected <rss>"),
+            (_WRONG_VERSION_XML, "expected '2.0'"),
+            (_NO_CHANNEL_XML, "Missing <channel>"),
+        ],
+    )
     def test_feed_structure_errors(self, xml, expected_error_substring):
         """Invalid feed structure should produce appropriate errors."""
         result = validate_feed(xml, feed_name="test.xml")
         assert not result.is_valid
         assert any(expected_error_substring in e for e in result.errors)
 
-    @pytest.mark.parametrize("element,error_substring", [
-        ("<title>Test Item</title>", "missing or empty <title>"),
-        ("<link>https://example.com/test.mp4</link>", "missing or empty <link>"),
-        ("<guid>https://example.com/test.mp4</guid>", "missing or empty <guid>"),
-        ("<pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>", "missing <pubDate>"),
-    ])
+    @pytest.mark.parametrize(
+        "element,error_substring",
+        [
+            ("<title>Test Item</title>", "missing or empty <title>"),
+            ("<link>https://example.com/test.mp4</link>", "missing or empty <link>"),
+            ("<guid>https://example.com/test.mp4</guid>", "missing or empty <guid>"),
+            ("<pubDate>Wed, 14 Oct 2026 12:00:00 +0000</pubDate>", "missing <pubDate>"),
+        ],
+    )
     def test_item_missing_required_element_fails(self, element, error_substring):
         """An item missing a required element should produce an error."""
         xml = _VALID_PODCAST_XML.replace(f"      {element}\n", "")
@@ -1152,11 +1279,22 @@ class TestValidateFeed:
         assert not result.is_valid
         assert any(error_substring in e for e in result.errors)
 
-    @pytest.mark.parametrize("old_element,new_element,error_substring", [
-        ("<title>Test Item</title>", "<title></title>", "missing or empty <title>"),
-        ("<link>https://example.com/test.mp4</link>", "<link></link>", "missing or empty <link>"),
-        ("<guid>https://example.com/test.mp4</guid>", "<guid></guid>", "missing or empty <guid>"),
-    ])
+    @pytest.mark.parametrize(
+        "old_element,new_element,error_substring",
+        [
+            ("<title>Test Item</title>", "<title></title>", "missing or empty <title>"),
+            (
+                "<link>https://example.com/test.mp4</link>",
+                "<link></link>",
+                "missing or empty <link>",
+            ),
+            (
+                "<guid>https://example.com/test.mp4</guid>",
+                "<guid></guid>",
+                "missing or empty <guid>",
+            ),
+        ],
+    )
     def test_item_empty_required_element_fails(self, old_element, new_element, error_substring):
         """An item with an empty required element should produce an error."""
         xml = _VALID_PODCAST_XML.replace(f"      {old_element}\n", f"      {new_element}\n")
@@ -1174,29 +1312,35 @@ class TestValidateFeed:
         result = validate_feed(xml, feed_name="podcast.xml", is_podcast=True)
         assert result.is_valid
 
-    @pytest.mark.parametrize("xml_modification,error_substring", [
-        (lambda xml: xml.replace(
-            '      <enclosure url="https://example.com/test.mp4" '
-            'length="12345" type="audio/mp4"/>\n',
-            "",
-        ), "missing <enclosure>"),
-        (
-            lambda xml: xml.replace(' url="https://example.com/test.mp4"', ""),
-            "enclosure missing 'url'",
-        ),
-        (
-            lambda xml: xml.replace(' length="12345"', ""),
-            "enclosure missing 'length'",
-        ),
-        (
-            lambda xml: xml.replace(' type="audio/mp4"', ' type="audio/mpeg"'),
-            "expected 'audio/mp4'",
-        ),
-        (
-            lambda xml: xml.replace(' length="12345"', ' length="not-a-number"'),
-            "not a valid integer",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        "xml_modification,error_substring",
+        [
+            (
+                lambda xml: xml.replace(
+                    '      <enclosure url="https://example.com/test.mp4" '
+                    'length="12345" type="audio/mp4"/>\n',
+                    "",
+                ),
+                "missing <enclosure>",
+            ),
+            (
+                lambda xml: xml.replace(' url="https://example.com/test.mp4"', ""),
+                "enclosure missing 'url'",
+            ),
+            (
+                lambda xml: xml.replace(' length="12345"', ""),
+                "enclosure missing 'length'",
+            ),
+            (
+                lambda xml: xml.replace(' type="audio/mp4"', ' type="audio/mpeg"'),
+                "expected 'audio/mp4'",
+            ),
+            (
+                lambda xml: xml.replace(' length="12345"', ' length="not-a-number"'),
+                "not a valid integer",
+            ),
+        ],
+    )
     def test_podcast_enclosure_issues(self, xml_modification, error_substring):
         """Podcasts with enclosure issues should produce errors."""
         xml = xml_modification(_VALID_PODCAST_XML)
@@ -1204,14 +1348,17 @@ class TestValidateFeed:
         assert not result.is_valid
         assert any(error_substring in e for e in result.errors)
 
-    @pytest.mark.parametrize("xml,is_podcast,should_be_valid", [
-        # Podcast XML validated as articles: enclosure present but not required
-        (_VALID_PODCAST_XML, False, True),
-        # Articles XML (no enclosure) validated as articles: should pass
-        (_VALID_ARTICLES_XML, False, True),
-        # Podcast XML validated as podcast: enclosure required, present -> valid
-        (_VALID_PODCAST_XML, True, True),
-    ])
+    @pytest.mark.parametrize(
+        "xml,is_podcast,should_be_valid",
+        [
+            # Podcast XML validated as articles: enclosure present but not required
+            (_VALID_PODCAST_XML, False, True),
+            # Articles XML (no enclosure) validated as articles: should pass
+            (_VALID_ARTICLES_XML, False, True),
+            # Podcast XML validated as podcast: enclosure required, present -> valid
+            (_VALID_PODCAST_XML, True, True),
+        ],
+    )
     def test_articles_feed_skips_enclosure_check(self, xml, is_podcast, should_be_valid):
         """Articles feed validation should skip enclosure checks."""
         result = validate_feed(xml, feed_name="test.xml", is_podcast=is_podcast)
@@ -1247,16 +1394,19 @@ class TestValidateFeed:
         # Item 1 should have no errors
         assert not any("Item 1" in e for e in result.errors)
 
-    @pytest.mark.parametrize("valid,kwargs,expected_valid,expected_errors", [
-        (True, {"feed_name": "test.xml"}, True, []),
-        (
-            False,
-            {"feed_name": "test.xml", "valid": False, "errors": ["Some error"]},
-            False,
-            ["Some error"],
-        ),
-        (True, {"feed_name": "test.xml", "warnings": ["Some warning"]}, True, []),
-    ])
+    @pytest.mark.parametrize(
+        "valid,kwargs,expected_valid,expected_errors",
+        [
+            (True, {"feed_name": "test.xml"}, True, []),
+            (
+                False,
+                {"feed_name": "test.xml", "valid": False, "errors": ["Some error"]},
+                False,
+                ["Some error"],
+            ),
+            (True, {"feed_name": "test.xml", "warnings": ["Some warning"]}, True, []),
+        ],
+    )
     def test_feed_validation_result_dataclass(self, valid, kwargs, expected_valid, expected_errors):
         """FeedValidationResult should have correct default values and behavior."""
         result = FeedValidationResult(**kwargs)
@@ -1294,10 +1444,13 @@ class TestValidateOutput:
         assert not results[feed_name].is_valid
         assert any("does not exist" in e for e in results[feed_name].errors)
 
-    @pytest.mark.parametrize("filetype,generate_method", [
-        ("mp4", "generate_podcast_feed"),
-        ("pdf", "generate_articles_feed"),
-    ])
+    @pytest.mark.parametrize(
+        "filetype,generate_method",
+        [
+            ("mp4", "generate_podcast_feed"),
+            ("pdf", "generate_articles_feed"),
+        ],
+    )
     def test_validate_output_enclosure_behavior(self, tmp_path, filetype, generate_method):
         """validate_output() should enforce enclosure checks on podcast but not articles."""
         write_metadata_file(tmp_path, f"test.{filetype}", filetype=filetype)
@@ -1350,33 +1503,43 @@ class TestGenerateAllFeedsWithValidation:
 class TestMarkdownToHtml:
     """Tests for the _markdown_to_html() function."""
 
-    @pytest.mark.parametrize("md,expected", [
-        (None, ""),
-        ("", ""),
-        # Headers
-        ("# Heading 1", "<h1>Heading 1</h1>"),
-        ("## Heading 2", "<h2>Heading 2</h2>"),
-        ("### Heading 3", "<h3>Heading 3</h3>"),
-        ("# Header with **bold**", "<h1>Header with <strong>bold</strong></h1>"),
-        # Bold — single-paragraph output has outer <p> stripped
-        ("**bold**", "<strong>bold</strong>"),
-        ("This is **bold** text", "This is <strong>bold</strong> text"),
-        # Italic — single-paragraph output has outer <p> stripped
-        ("*italic*", "<em>italic</em>"),
-        ("_italic_", "<em>italic</em>"),
-        # Paragraphs — single-paragraph output has outer <p> stripped
-        ("Some text", "Some text"),
-    ])
+    @pytest.mark.parametrize(
+        "md,expected",
+        [
+            (None, ""),
+            ("", ""),
+            # Headers
+            ("# Heading 1", "<h1>Heading 1</h1>"),
+            ("## Heading 2", "<h2>Heading 2</h2>"),
+            ("### Heading 3", "<h3>Heading 3</h3>"),
+            ("# Header with **bold**", "<h1>Header with <strong>bold</strong></h1>"),
+            # Bold — single-paragraph output has outer <p> stripped
+            ("**bold**", "<strong>bold</strong>"),
+            ("This is **bold** text", "This is <strong>bold</strong> text"),
+            # Italic — single-paragraph output has outer <p> stripped
+            ("*italic*", "<em>italic</em>"),
+            ("_italic_", "<em>italic</em>"),
+            # Paragraphs — single-paragraph output has outer <p> stripped
+            ("Some text", "Some text"),
+        ],
+    )
     def test_markdown_conversion(self, md, expected):
         """Parameterized test for markdown-to-HTML conversion."""
         assert _markdown_to_html(md) == expected
 
-    @pytest.mark.parametrize("md,expected_substring,should_not_contain", [
-        ("[example](https://example.com)", '<a href="https://example.com">example</a>', None),
-        ("[email](mailto:test@example.com)", '<a href="mailto:test@example.com">email</a>', None),
-        ("[page](/path/to/page)", '<a href="/path/to/page">page</a>', None),
-        ("[bad](javascript:alert(1))", None, "javascript:"),
-    ])
+    @pytest.mark.parametrize(
+        "md,expected_substring,should_not_contain",
+        [
+            ("[example](https://example.com)", '<a href="https://example.com">example</a>', None),
+            (
+                "[email](mailto:test@example.com)",
+                '<a href="mailto:test@example.com">email</a>',
+                None,
+            ),
+            ("[page](/path/to/page)", '<a href="/path/to/page">page</a>', None),
+            ("[bad](javascript:alert(1))", None, "javascript:"),
+        ],
+    )
     def test_link_conversion(self, md, expected_substring, should_not_contain):
         """Parameterized test for link conversion and XSS protection."""
         result = _markdown_to_html(md)
@@ -1388,34 +1551,43 @@ class TestMarkdownToHtml:
             # Link text should still appear even for unsafe URLs
             assert "safe text" in result or "bad" in result
 
-    @pytest.mark.parametrize("md,expected_substrings", [
-        ("- item 1\n- item 2", ["<ul>", "<li>item 1</li>", "<li>item 2</li>", "</ul>"]),
-        ("1. first\n2. second", ["<ol>", "<li>first</li>", "<li>second</li>", "</ol>"]),
-    ])
+    @pytest.mark.parametrize(
+        "md,expected_substrings",
+        [
+            ("- item 1\n- item 2", ["<ul>", "<li>item 1</li>", "<li>item 2</li>", "</ul>"]),
+            ("1. first\n2. second", ["<ol>", "<li>first</li>", "<li>second</li>", "</ol>"]),
+        ],
+    )
     def test_list_conversion(self, md, expected_substrings):
         """Parameterized test for list conversion."""
         result = _markdown_to_html(md)
         for substring in expected_substrings:
             assert substring in result
 
-    @pytest.mark.parametrize("md,expected_substrings", [
-        ("- **bold** item", ["<li><strong>bold</strong> item</li>"]),
-        ("Para 1\n\nPara 2", ["<p>Para 1</p>", "<p>Para 2</p>"]),
-        ("Line 1\nLine 2", ["<br>", "Line 1", "Line 2"]),
-    ])
+    @pytest.mark.parametrize(
+        "md,expected_substrings",
+        [
+            ("- **bold** item", ["<li><strong>bold</strong> item</li>"]),
+            ("Para 1\n\nPara 2", ["<p>Para 1</p>", "<p>Para 2</p>"]),
+            ("Line 1\nLine 2", ["<br>", "Line 1", "Line 2"]),
+        ],
+    )
     def test_inline_and_paragraph_conversions(self, md, expected_substrings):
         """Test inline markdown, paragraph separation, and line breaks."""
         result = _markdown_to_html(md)
         for substring in expected_substrings:
             assert substring in result
 
-    @pytest.mark.parametrize("md,expected_substrings", [
-        ("<script>alert(1)</script>", ["&lt;script&gt;"]),
-        ("a & b", ["a &amp; b"]),
-        ("a < b", ["a &lt; b"]),
-        ("a > b", ["a &gt; b"]),
-        ('say "hello"', ["&quot;"]),
-    ])
+    @pytest.mark.parametrize(
+        "md,expected_substrings",
+        [
+            ("<script>alert(1)</script>", ["&lt;script&gt;"]),
+            ("a & b", ["a &amp; b"]),
+            ("a < b", ["a &lt; b"]),
+            ("a > b", ["a &gt; b"]),
+            ('say "hello"', ["&quot;"]),
+        ],
+    )
     def test_html_escaping(self, md, expected_substrings):
         """Parameterized test for HTML special character escaping."""
         result = _markdown_to_html(md)
@@ -1425,27 +1597,35 @@ class TestMarkdownToHtml:
         assert "<script>" not in result
         assert "<script" not in result
 
-    @pytest.mark.parametrize("md,expected", [
-        # Single paragraph: outer <p> wrapper should be stripped
-        ("Hello world", "Hello world"),
-        ("Some text", "Some text"),
-        ("**bold** text", "<strong>bold</strong> text"),
-        ("*italic* text", "<em>italic</em> text"),
-        # Headers: no <p> wrapper to strip
-        ("# Heading", "<h1>Heading</h1>"),
-        # Lists: no <p> wrapper to strip
-        ("- item", "<ul>\n<li>item</li>\n</ul>"),
-    ])
+    @pytest.mark.parametrize(
+        "md,expected",
+        [
+            # Single paragraph: outer <p> wrapper should be stripped
+            ("Hello world", "Hello world"),
+            ("Some text", "Some text"),
+            ("**bold** text", "<strong>bold</strong> text"),
+            ("*italic* text", "<em>italic</em> text"),
+            # Headers: no <p> wrapper to strip
+            ("# Heading", "<h1>Heading</h1>"),
+            # Lists: no <p> wrapper to strip
+            ("- item", "<ul>\n<li>item</li>\n</ul>"),
+        ],
+    )
     def test_p_wrapper_stripped_for_single_paragraph(self, md, expected):
         """Single-paragraph output should not have outer <p> wrapper."""
         assert _markdown_to_html(md) == expected
 
-    @pytest.mark.parametrize("md,expected_substrings", [
-        # Multiple paragraphs: <p> tags should be preserved
-        ("Para 1\n\nPara 2", ["<p>Para 1</p>", "<p>Para 2</p>"]),
-        ("First paragraph.\n\nSecond paragraph.",
-         ["<p>First paragraph.</p>", "<p>Second paragraph.</p>"]),
-    ])
+    @pytest.mark.parametrize(
+        "md,expected_substrings",
+        [
+            # Multiple paragraphs: <p> tags should be preserved
+            ("Para 1\n\nPara 2", ["<p>Para 1</p>", "<p>Para 2</p>"]),
+            (
+                "First paragraph.\n\nSecond paragraph.",
+                ["<p>First paragraph.</p>", "<p>Second paragraph.</p>"],
+            ),
+        ],
+    )
     def test_p_tags_preserved_for_multiple_paragraphs(self, md, expected_substrings):
         """Multiple-paragraph output should preserve <p> tags."""
         result = _markdown_to_html(md)
@@ -1518,13 +1698,18 @@ class TestGenerateAllFeedsWithPerFolder:
         assert not (tmp_path / "podcast.xml").exists()
         assert not (tmp_path / "articles.xml").exists()
 
-    @pytest.mark.parametrize("filetype,expected_podcast,expected_articles,folder", [
-        ("pdf", False, True, ""),   # PDF only: podcast skipped, articles generated
-        ("mp4", True, False, ""),   # MP4 only: podcast generated, articles skipped
-        ("pdf", False, True, "Course1/"),   # Per-folder PDF: podcast skipped, articles generated
-        ("mp4", True, False, "Course1/"),   # Per-folder MP4: podcast generated, articles skipped
-    ])
-    def test_conditional_feed_generation(self, tmp_path, filetype, expected_podcast, expected_articles, folder):
+    @pytest.mark.parametrize(
+        "filetype,expected_podcast,expected_articles,folder",
+        [
+            ("pdf", False, True, ""),  # PDF only: podcast skipped, articles generated
+            ("mp4", True, False, ""),  # MP4 only: podcast generated, articles skipped
+            ("pdf", False, True, "Course1/"),  # Per-folder PDF: podcast skipped, articles generated
+            ("mp4", True, False, "Course1/"),  # Per-folder MP4: podcast generated, articles skipped
+        ],
+    )
+    def test_conditional_feed_generation(
+        self, tmp_path, filetype, expected_podcast, expected_articles, folder
+    ):
         """Feeds should only be generated if applicable file types exist (root and per-folder)."""
         write_metadata_file(tmp_path, f"{folder}file.{filetype}", filetype=filetype)
         if folder:
@@ -1946,15 +2131,21 @@ class TestNestedFeedScenarios:
 
         # Root feed self link
         root_content = parse_rss_file(tmp_path / "podcast.xml")
-        assert 'href="https://example.com/feeds/podcast.xml"' in root_content
+        assert f'href="https://example.com/feeds/{tmp_path.name}/podcast.xml"' in root_content
 
         # Course1 feed self link
         course1_content = parse_rss_file(tmp_path / "Course1" / "podcast.xml")
-        assert 'href="https://example.com/feeds/Course1/podcast.xml"' in course1_content
+        assert (
+            f'href="https://example.com/feeds/{tmp_path.name}/Course1/podcast.xml"'
+            in course1_content
+        )
 
         # Unit1 feed self link
         unit1_content = parse_rss_file(tmp_path / "Course1" / "Unit1" / "podcast.xml")
-        assert 'href="https://example.com/feeds/Course1/Unit1/podcast.xml"' in unit1_content
+        assert (
+            f'href="https://example.com/feeds/{tmp_path.name}/Course1/Unit1/podcast.xml"'
+            in unit1_content
+        )
 
     def test_filter_metadata_includes_deeply_nested_files(self, tmp_path):
         """_filter_metadata_for_folder should include deeply nested files."""
@@ -2161,32 +2352,37 @@ class TestGenerateIndexHtml:
         assert "&amp;" in content
         assert "&Co" not in content  # Should not have unescaped &
 
-    @pytest.mark.parametrize("filetype,should_list_podcast,should_list_articles", [
-        ("mp4", True, False),
-        ("pdf", False, True),
-    ])
+    @pytest.mark.parametrize(
+        "filetype,should_list_podcast,should_list_articles",
+        [
+            ("mp4", True, False),
+            ("pdf", False, True),
+        ],
+    )
     def test_index_html_only_lists_applicable_feeds(
         self, tmp_path, filetype, should_list_podcast, should_list_articles
     ):
         """index.html should only list feeds that exist based on file types."""
-        write_metadata_file(tmp_path, f"file.{filetype}", filetype=filetype)
-        (tmp_path / "feed.json").write_text(
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        write_metadata_file(data_dir, f"file.{filetype}", filetype=filetype)
+        (data_dir / "feed.json").write_text(
             json.dumps({"title": "Root", "description": "Root Desc"}),
             encoding="utf-8",
         )
 
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
         fg.generate_all_feeds()
 
-        content = (tmp_path / "index.html").read_text(encoding="utf-8")
+        content = (data_dir / "index.html").read_text(encoding="utf-8")
         if should_list_podcast:
-            assert 'href="https://example.com/feeds/podcast.xml"' in content
+            assert f'href="https://example.com/feeds/data/podcast.xml"' in content
         else:
-            assert 'href="https://example.com/feeds/podcast.xml"' not in content
+            assert f'href="https://example.com/feeds/data/podcast.xml"' not in content
         if should_list_articles:
-            assert 'href="https://example.com/feeds/articles.xml"' in content
+            assert f'href="https://example.com/feeds/data/articles.xml"' in content
         else:
-            assert 'href="https://example.com/feeds/articles.xml"' not in content
+            assert f'href="https://example.com/feeds/data/articles.xml"' not in content
         # Both sections should exist even if one feed is empty
         assert "<h2>Podcast Feeds</h2>" in content
         assert "<h2>Articles Feeds</h2>" in content
@@ -2213,25 +2409,32 @@ class TestGenerateIndexHtml:
         # index.html should still be created (it only lists XML files that exist)
         assert (tmp_path / "index.html").exists()
 
-    @pytest.mark.parametrize("base_url,expected_href", [
-        ("https://example.com/feeds", 'href="https://example.com/feeds/podcast.xml"'),
-        ("https://example.com/feeds/", 'href="https://example.com/feeds/podcast.xml"'),
-    ])
-    def test_index_html_url_uses_base_url_without_double_slash(self, tmp_path, base_url, expected_href):
+    @pytest.mark.parametrize(
+        "base_url,expected_href",
+        [
+            ("https://example.com/feeds", 'href="https://example.com/feeds/data/podcast.xml"'),
+            ("https://example.com/feeds/", 'href="https://example.com/feeds/data/podcast.xml"'),
+        ],
+    )
+    def test_index_html_url_uses_base_url_without_double_slash(
+        self, tmp_path, base_url, expected_href
+    ):
         """index.html links should use the configured BASE_URL without double slashes."""
-        write_metadata_file(tmp_path, "videos/lecture.mp4")
-        (tmp_path / "feed.json").write_text(
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        write_metadata_file(data_dir, "videos/lecture.mp4")
+        (data_dir / "feed.json").write_text(
             json.dumps({"title": "Root", "description": "Root Desc"}),
             encoding="utf-8",
         )
 
-        fg = FeedGenerator(data_dir=tmp_path, base_url=base_url)
+        fg = FeedGenerator(data_dir=data_dir, base_url=base_url)
         fg.generate_all_feeds()
 
-        content = (tmp_path / "index.html").read_text(encoding="utf-8")
+        content = (data_dir / "index.html").read_text(encoding="utf-8")
         assert expected_href in content
         # articles.xml should NOT exist since no PDF/HTML files
-        assert 'href="https://example.com/feeds/articles.xml"' not in content
+        assert 'href="https://example.com/feeds/data/articles.xml"' not in content
         assert "//podcast.xml" not in content
 
     def test_index_html_lists_feeds_from_root_and_subfolders(self, tmp_path):
@@ -2275,17 +2478,19 @@ class TestFeedLinkHandling:
 
         content = parse_rss_file(tmp_path / "podcast.xml")
         # The channel link (not rel="self") should be BASE_URL
-        assert '<link>https://example.com/feeds</link>' in content
+        assert "<link>https://example.com/feeds</link>" in content
 
     def test_feed_link_uses_feed_json_link_when_present(self, tmp_path):
         """Feed-level channel link should use feed.json link when present."""
         write_metadata_file(tmp_path, "videos/lecture.mp4", filetype="mp4")
         (tmp_path / "feed.json").write_text(
-            json.dumps({
-                "title": "Root Feed",
-                "description": "Root Description",
-                "link": "https://example.com/custom-homepage",
-            }),
+            json.dumps(
+                {
+                    "title": "Root Feed",
+                    "description": "Root Description",
+                    "link": "https://example.com/custom-homepage",
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -2294,18 +2499,20 @@ class TestFeedLinkHandling:
 
         content = parse_rss_file(tmp_path / "podcast.xml")
         # The channel link should use the feed.json link, not BASE_URL
-        assert '<link>https://example.com/custom-homepage</link>' in content
-        assert '<link>https://example.com/feeds</link>' not in content
+        assert "<link>https://example.com/custom-homepage</link>" in content
+        assert "<link>https://example.com/feeds</link>" not in content
 
     def test_feed_link_uses_feed_json_link_for_articles(self, tmp_path):
         """Articles feed should also use feed.json link when present."""
         write_metadata_file(tmp_path, "documents/doc.pdf", filetype="pdf")
         (tmp_path / "feed.json").write_text(
-            json.dumps({
-                "title": "Root Feed",
-                "description": "Root Description",
-                "link": "https://example.com/articles-home",
-            }),
+            json.dumps(
+                {
+                    "title": "Root Feed",
+                    "description": "Root Description",
+                    "link": "https://example.com/articles-home",
+                }
+            ),
             encoding="utf-8",
         )
 
@@ -2313,7 +2520,7 @@ class TestFeedLinkHandling:
         fg.generate_all_feeds()
 
         content = parse_rss_file(tmp_path / "articles.xml")
-        assert '<link>https://example.com/articles-home</link>' in content
+        assert "<link>https://example.com/articles-home</link>" in content
 
     def test_feed_link_falls_back_to_base_url_when_link_omitted(self, tmp_path):
         """Feed link should fall back to BASE_URL when feed.json has no link field."""
@@ -2328,18 +2535,20 @@ class TestFeedLinkHandling:
         fg.generate_all_feeds()
 
         content = parse_rss_file(tmp_path / "podcast.xml")
-        assert '<link>https://example.com/feeds</link>' in content
+        assert "<link>https://example.com/feeds</link>" in content
 
     def test_per_folder_feed_link_uses_feed_json_link(self, tmp_path):
         """Per-folder feed should use its feed.json link when present."""
         write_metadata_file(tmp_path, "Course1/lecture.mp4", filetype="mp4")
-        write_feed_json_with_link(tmp_path, "Course1", "Course 1", "Desc", "https://example.com/course1")
+        write_feed_json_with_link(
+            tmp_path, "Course1", "Course 1", "Desc", "https://example.com/course1"
+        )
 
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
         fg.generate_all_feeds()
 
         content = parse_rss_file(tmp_path / "Course1" / "podcast.xml")
-        assert '<link>https://example.com/course1</link>' in content
+        assert "<link>https://example.com/course1</link>" in content
 
     def test_per_folder_feed_link_falls_back_to_base_url(self, tmp_path):
         """Per-folder feed should fall back to BASE_URL when no link in feed.json."""
@@ -2350,26 +2559,30 @@ class TestFeedLinkHandling:
         fg.generate_all_feeds()
 
         content = parse_rss_file(tmp_path / "Course1" / "podcast.xml")
-        assert '<link>https://example.com/feeds</link>' in content
+        assert "<link>https://example.com/feeds</link>" in content
 
     def test_item_links_always_use_base_url_plus_filepath(self, tmp_path):
-        """Item links should always be BASE_URL + filepath, regardless of feed.json link."""
-        write_metadata_file(tmp_path, "videos/lecture.mp4", filetype="mp4")
-        (tmp_path / "feed.json").write_text(
-            json.dumps({
-                "title": "Root Feed",
-                "description": "Root Description",
-                "link": "https://example.com/custom-homepage",
-            }),
+        """Item links should always be BASE_URL + DATA_DIR_basename + filepath, regardless of feed.json link."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        write_metadata_file(data_dir, "videos/lecture.mp4", filetype="mp4")
+        (data_dir / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "Root Feed",
+                    "description": "Root Description",
+                    "link": "https://example.com/custom-homepage",
+                }
+            ),
             encoding="utf-8",
         )
 
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
         fg.generate_all_feeds()
 
-        content = parse_rss_file(tmp_path / "podcast.xml")
-        # Item link should be BASE_URL + filepath, NOT the feed.json link
-        assert '<link>https://example.com/feeds/videos/lecture.mp4</link>' in content
+        content = parse_rss_file(data_dir / "podcast.xml")
+        # Item link should be BASE_URL + data_dir_basename + filepath, NOT the feed.json link
+        assert "<link>https://example.com/feeds/data/videos/lecture.mp4</link>" in content
 
     def test_link_parameter_overrides_base_url_directly(self, tmp_path):
         """generate_podcast_feed link parameter should override base_url for channel link."""
@@ -2379,8 +2592,8 @@ class TestFeedLinkHandling:
         fg.generate_podcast_feed(link="https://custom.example.com")
 
         content = parse_rss_file(tmp_path / "podcast.xml")
-        assert '<link>https://custom.example.com</link>' in content
-        assert '<link>https://example.com/feeds</link>' not in content
+        assert "<link>https://custom.example.com</link>" in content
+        assert "<link>https://example.com/feeds</link>" not in content
 
 
 def write_feed_json_with_link(
@@ -2399,3 +2612,748 @@ def write_feed_json_with_link(
         encoding="utf-8",
     )
     return feed_json_path
+
+
+# ---------------------------------------------------------------------------
+# Hash-based GUID tests
+# ---------------------------------------------------------------------------
+
+
+class TestHashBasedGuid:
+    """Tests for hash-based guid generation (FR-020).
+
+    When the ``hash`` field is present in metadata, the guid should be the
+    last 12 characters of the hash.  When the hash field is absent (legacy
+    files), the guid should fall back to the absolute URL of the filepath.
+    """
+
+    @pytest.mark.parametrize(
+        "filetype,filepath",
+        [
+            ("mp4", "videos/lecture.mp4"),
+            ("pdf", "documents/doc.pdf"),
+            ("html", "pages/article.html"),
+        ],
+    )
+    def test_guid_uses_hash_when_present(self, tmp_path, filetype, filepath):
+        """GUID should use the last 12 chars of hash when hash is present."""
+        test_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        write_metadata_file(
+            tmp_path,
+            filepath,
+            filetype=filetype,
+            hash=test_hash,
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        if filetype == "mp4":
+            fg.generate_podcast_feed()
+            xml_name = "podcast.xml"
+        else:
+            fg.generate_articles_feed()
+            xml_name = "articles.xml"
+
+        content = parse_rss_file(tmp_path / xml_name)
+        expected_guid = test_hash[-12:]
+        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
+
+    @pytest.mark.parametrize(
+        "filetype,xml_name,filepath",
+        [
+            ("mp4", "podcast.xml", "videos/lecture.mp4"),
+            ("pdf", "articles.xml", "documents/doc.pdf"),
+        ],
+    )
+    def test_guid_falls_back_to_filepath_when_no_hash(self, tmp_path, filetype, xml_name, filepath):
+        """GUID should fall back to absolute URL when hash is not present."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        write_metadata_file(
+            data_dir,
+            filepath,
+            filetype=filetype,
+        )
+
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
+        if filetype == "mp4":
+            fg.generate_podcast_feed()
+        else:
+            fg.generate_articles_feed()
+
+        content = parse_rss_file(data_dir / xml_name)
+        expected_guid = f"https://example.com/feeds/data/{filepath}"
+        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
+
+    def test_guid_uses_hash_for_mp4(self, tmp_path):
+        """Podcast feed GUID should use hash[-12:] when hash is present."""
+        test_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        write_metadata_file(
+            data_dir,
+            "videos/lecture.mp4",
+            filetype="mp4",
+            hash=test_hash,
+        )
+
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
+        fg.generate_podcast_feed()
+
+        content = parse_rss_file(data_dir / "podcast.xml")
+        expected_guid = test_hash[-12:]
+        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
+        # Should NOT contain the filepath-based guid
+        guid_section = content.split("<guid")[1].split("</guid>")[0]
+        assert "https://example.com/feeds/data/videos/lecture.mp4" not in guid_section
+
+    def test_guid_uses_hash_for_pdf(self, tmp_path):
+        """Articles feed GUID should use hash[-12:] when hash is present."""
+        test_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        write_metadata_file(
+            tmp_path,
+            "documents/doc.pdf",
+            filetype="pdf",
+            hash=test_hash,
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_articles_feed()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        expected_guid = test_hash[-12:]
+        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
+
+    def test_guid_uses_hash_for_html(self, tmp_path):
+        """Articles feed GUID should use hash[-12:] for HTML files when hash is present."""
+        test_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        write_metadata_file(
+            tmp_path,
+            "pages/article.html",
+            filetype="html",
+            hash=test_hash,
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_articles_feed()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        expected_guid = test_hash[-12:]
+        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
+
+    def test_guid_last_12_chars_of_hash(self, tmp_path):
+        """GUID should be exactly the last 12 characters of the hash."""
+        test_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        write_metadata_file(
+            tmp_path,
+            "videos/lecture.mp4",
+            filetype="mp4",
+            hash=test_hash,
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_podcast_feed()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        expected_guid = test_hash[-12:]
+        assert expected_guid == "456789abcdef"
+        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
+
+    def test_guid_fallback_for_mixed_hash_and_no_hash(self, tmp_path):
+        """When some items have hash and others don't, each should use its own guid."""
+        hash_with = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        write_metadata_file(
+            data_dir,
+            "videos/with_hash.mp4",
+            filetype="mp4",
+            hash=hash_with,
+        )
+        write_metadata_file(
+            data_dir,
+            "videos/without_hash.mp4",
+            filetype="mp4",
+        )
+
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
+        fg.generate_podcast_feed()
+
+        content = parse_rss_file(data_dir / "podcast.xml")
+        # First item should use hash[-12:]
+        assert f'<guid isPermaLink="false">{hash_with[-12:]}</guid>' in content
+        # Second item should use filepath URL
+        assert (
+            '<guid isPermaLink="false">https://example.com/feeds/data/videos/without_hash.mp4</guid>'
+            in content
+        )
+
+
+class TestComputeGuid:
+    """Tests for the _compute_guid() helper method."""
+
+    def test_compute_guid_with_hash(self, tmp_path):
+        """_compute_guid should return hash[-12:] when hash is present."""
+        test_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        metadata = make_metadata(
+            "videos/lecture.mp4",
+            filetype="mp4",
+            hash=test_hash,
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        guid = fg._compute_guid(metadata)
+
+        assert guid == test_hash[-12:]
+
+    def test_compute_guid_without_hash(self, tmp_path):
+        """_compute_guid should return absolute URL when hash is not present."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        metadata = make_metadata(
+            "videos/lecture.mp4",
+            filetype="mp4",
+        )
+
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
+        guid = fg._compute_guid(metadata)
+
+        assert guid == "https://example.com/feeds/data/videos/lecture.mp4"
+
+    def test_compute_guid_with_empty_hash(self, tmp_path):
+        """_compute_guid should return absolute URL when hash is empty string."""
+        data_dir = tmp_path / "data"
+        data_dir.mkdir()
+        metadata = make_metadata(
+            "videos/lecture.mp4",
+            filetype="mp4",
+            hash="",
+        )
+
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
+        guid = fg._compute_guid(metadata)
+
+        assert guid == "https://example.com/feeds/data/videos/lecture.mp4"
+
+
+# ---------------------------------------------------------------------------
+# Hash update before feed generation
+# ---------------------------------------------------------------------------
+
+
+class TestUpdateMissingHashes:
+    """Tests for _update_missing_hashes() and integration with generate_all_feeds()."""
+
+    def test_json_without_hash_gets_updated(self, tmp_path):
+        """JSON metadata files without a hash field should get one added."""
+        # Create a source file and JSON metadata without hash
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        json_path = tmp_path / "lecture.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
+                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "title": {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
+                    "description": "",
+                    "summary": "Summary text",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1000,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        updated = fg._update_missing_hashes()
+
+        assert updated == 1
+        # Read back the JSON and verify hash was added
+        updated_data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "hash" in updated_data
+        assert len(updated_data["hash"]) == 64  # SHA256 hex digest length
+
+    def test_json_with_hash_not_modified(self, tmp_path):
+        """JSON metadata files that already have a hash should not be modified."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        existing_hash = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
+        json_path = tmp_path / "lecture.mp4.json"
+        original_data = {
+            "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
+            "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+            "title": {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
+            "description": "",
+            "summary": "Summary text",
+            "filename": "lecture.mp4",
+            "filepath": "lecture.mp4",
+            "filetype": "mp4",
+            "date": 1728931200,
+            "size": 1000,
+            "hash": existing_hash,
+        }
+        json_path.write_text(json.dumps(original_data), encoding="utf-8")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        updated = fg._update_missing_hashes()
+
+        assert updated == 0
+        # Verify hash was not changed
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert data["hash"] == existing_hash
+
+    def test_hash_computed_correctly(self, tmp_path):
+        """The hash should be the actual SHA256 of the source file content."""
+        import hashlib
+
+        source = tmp_path / "doc.pdf"
+        source.write_bytes(b"hello world")
+        json_path = tmp_path / "doc.pdf.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 11, "output_size": 11},
+                    "title": {"filename": "doc", "extracted": None, "generated": "Doc"},
+                    "description": "desc",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 11,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg._update_missing_hashes()
+
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        expected_hash = hashlib.sha256(b"hello world").hexdigest()
+        assert data["hash"] == expected_hash
+
+    def test_orphaned_json_skipped(self, tmp_path):
+        """JSON files without a corresponding source file should be skipped."""
+        # Create only JSON, no source file
+        json_path = tmp_path / "orphan.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
+                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "title": "Orphan",
+                    "description": "",
+                    "filename": "orphan.mp4",
+                    "filepath": "orphan.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1000,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        updated = fg._update_missing_hashes()
+
+        assert updated == 0
+        # Verify no hash was added
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "hash" not in data
+
+    def test_feed_json_not_modified(self, tmp_path):
+        """feed.json configuration files should not be treated as metadata."""
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "My Feed", "description": "Desc"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        updated = fg._update_missing_hashes()
+
+        assert updated == 0
+        # feed.json should be unchanged
+        data = json.loads((tmp_path / "feed.json").read_text(encoding="utf-8"))
+        assert "hash" not in data
+
+    def test_invalid_json_skipped_with_warning(self, tmp_path, caplog):
+        """Invalid JSON files should be skipped with a warning."""
+        source = tmp_path / "bad.mp4"
+        source.write_bytes(b"data")
+        json_path = tmp_path / "bad.mp4.json"
+        json_path.write_text("{invalid json", encoding="utf-8")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        updated = fg._update_missing_hashes()
+
+        assert updated == 0
+        assert any(
+            "Failed to read JSON" in record.message
+            for record in caplog.records
+            if record.levelno >= 30
+        )
+
+    def test_hash_added_to_ineligible_file(self, tmp_path):
+        """Hash should be added even to files that are not yet feed-eligible."""
+        source = tmp_path / "incomplete.mp4"
+        source.write_bytes(b"data")
+        json_path = tmp_path / "incomplete.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "in_progress", "input_size": 1000, "output_size": 0},
+                    "title": {"filename": "incomplete", "extracted": None, "generated": None},
+                    "description": "",
+                    "filename": "incomplete.mp4",
+                    "filepath": "incomplete.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1000,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        updated = fg._update_missing_hashes()
+
+        assert updated == 1
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "hash" in data
+        assert len(data["hash"]) == 64
+
+    def test_nonexistent_data_dir_returns_zero(self, tmp_path):
+        """_update_missing_hashes should return 0 for nonexistent directory."""
+        fg = FeedGenerator(
+            data_dir=tmp_path / "nonexistent",
+            base_url="https://example.com/feeds",
+        )
+        updated = fg._update_missing_hashes()
+        assert updated == 0
+
+    def test_multiple_files_updated(self, tmp_path):
+        """Multiple JSON files without hashes should all be updated."""
+        for name, content in [("a.mp4", b"aaa"), ("b.pdf", b"bbb")]:
+            source = tmp_path / name
+            source.write_bytes(content)
+            json_path = tmp_path / (name + ".json")
+            stem = Path(name).stem
+            if name.endswith(".mp4"):
+                step_data = {
+                    "transcribe": {"status": "complete", "input_size": 3, "output_size": 3},
+                    "summarize": {"status": "complete", "input_size": 3, "output_size": 3},
+                }
+                filetype = "mp4"
+            else:
+                step_data = {
+                    "extract": {"status": "complete", "input_size": 3, "output_size": 3},
+                }
+                filetype = "pdf"
+            json_path.write_text(
+                json.dumps(
+                    {
+                        **step_data,
+                        "title": {"filename": stem, "extracted": None, "generated": stem},
+                        "description": "",
+                        "filename": name,
+                        "filepath": name,
+                        "filetype": filetype,
+                        "date": 1728931200,
+                        "size": 3,
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        updated = fg._update_missing_hashes()
+
+        assert updated == 2
+        for name in ["a.mp4", "b.pdf"]:
+            data = json.loads((tmp_path / (name + ".json")).read_text(encoding="utf-8"))
+            assert "hash" in data
+            assert len(data["hash"]) == 64
+
+    def test_empty_hash_treated_as_missing(self, tmp_path):
+        """JSON files with an empty string hash should be updated."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        json_path = tmp_path / "lecture.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
+                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "title": {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
+                    "description": "",
+                    "summary": "Summary text",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1000,
+                    "hash": "",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        updated = fg._update_missing_hashes()
+
+        assert updated == 1
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert data["hash"]  # Should now be non-empty
+        assert len(data["hash"]) == 64
+
+    def test_hash_added_to_html_file(self, tmp_path):
+        """Hash should be added to HTML file metadata as well."""
+        source = tmp_path / "page.html"
+        source.write_text("<html><body>Test</body></html>", encoding="utf-8")
+        json_path = tmp_path / "page.html.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 100, "output_size": 50},
+                    "title": {"filename": "page", "extracted": None, "generated": "Page"},
+                    "description": "desc",
+                    "filename": "page.html",
+                    "filepath": "page.html",
+                    "filetype": "html",
+                    "date": 1728931200,
+                    "size": 100,
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg._update_missing_hashes()
+
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "hash" in data
+        assert len(data["hash"]) == 64
+
+
+class TestHashUpdateIntegration:
+    """Integration tests for hash update in generate_all_feeds()."""
+
+    def test_generate_all_feeds_updates_missing_hash(self, tmp_path):
+        """generate_all_feeds() should add hash and feeds should use hash-based guid."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        json_path = tmp_path / "lecture.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
+                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "title": {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
+                    "description": "",
+                    "summary": "Summary text",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1000,
+                }
+            ),
+            encoding="utf-8",
+        )
+        # Create root feed.json so root-level feeds are generated
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Root Feed", "description": "Root Description"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        # Verify JSON was updated with hash
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "hash" in data
+        assert len(data["hash"]) == 64
+
+        # Verify the feed uses hash-based guid (last 12 chars of hash)
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        expected_guid = data["hash"][-12:]
+        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
+
+    def test_generate_all_feeds_existing_hash_not_changed(self, tmp_path):
+        """generate_all_feeds() should not change JSON files that already have a hash."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        existing_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+        json_path = tmp_path / "lecture.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
+                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "title": {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
+                    "description": "",
+                    "summary": "Summary text",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1000,
+                    "hash": existing_hash,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Root Feed", "description": "Root Description"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        # Verify hash was not changed
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert data["hash"] == existing_hash
+
+        # Verify the feed uses the existing hash-based guid
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        expected_guid = existing_hash[-12:]
+        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
+
+    def test_generate_all_feeds_hash_for_articles(self, tmp_path):
+        """generate_all_feeds() should add hash to PDF metadata and use it in articles feed."""
+        source = tmp_path / "doc.pdf"
+        source.write_bytes(b"pdf data")
+        json_path = tmp_path / "doc.pdf.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 1000, "output_size": 500},
+                    "title": {"filename": "doc", "extracted": None, "generated": "My Doc"},
+                    "description": "Description",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1000,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Root Feed", "description": "Root Description"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        # Verify JSON was updated with hash
+        data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "hash" in data
+        assert len(data["hash"]) == 64
+
+        # Verify the articles feed uses hash-based guid
+        content = parse_rss_file(tmp_path / "articles.xml")
+        expected_guid = data["hash"][-12:]
+        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
+
+    def test_generate_all_feeds_skips_orphaned_json(self, tmp_path):
+        """generate_all_feeds() should skip orphaned JSON files during hash update."""
+        # Create only JSON, no source file
+        json_path = tmp_path / "orphan.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
+                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "title": {"filename": "orphan", "extracted": None, "generated": "Orphan"},
+                    "description": "",
+                    "summary": "Summary",
+                    "filename": "orphan.mp4",
+                    "filepath": "orphan.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1000,
+                }
+            ),
+            encoding="utf-8",
+        )
+        # Create a real file with hash for comparison
+        source = tmp_path / "real.mp4"
+        source.write_bytes(b"real data")
+        real_json = tmp_path / "real.mp4.json"
+        real_json.write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
+                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "title": {"filename": "real", "extracted": None, "generated": "Real"},
+                    "description": "",
+                    "summary": "Summary",
+                    "filename": "real.mp4",
+                    "filepath": "real.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1000,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Root Feed", "description": "Root Description"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        # Orphaned JSON should not have hash
+        orphan_data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "hash" not in orphan_data
+
+        # Real file should have hash
+        real_data = json.loads(real_json.read_text(encoding="utf-8"))
+        assert "hash" in real_data
+
+    def test_generate_all_feeds_idempotent_hash_update(self, tmp_path):
+        """Running generate_all_feeds() twice should not change hashes."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        json_path = tmp_path / "lecture.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
+                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "title": {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
+                    "description": "",
+                    "summary": "Summary text",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1000,
+                }
+            ),
+            encoding="utf-8",
+        )
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Root Feed", "description": "Root Description"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+
+        # First run: should add hash
+        fg.generate_all_feeds()
+        data1 = json.loads(json_path.read_text(encoding="utf-8"))
+        assert "hash" in data1
+
+        # Second run: should not change hash
+        fg.generate_all_feeds()
+        data2 = json.loads(json_path.read_text(encoding="utf-8"))
+        assert data2["hash"] == data1["hash"]
