@@ -105,15 +105,17 @@ def _configure_error_log(
     """Configure a FileHandler for the dedicated ``error.log`` file.
 
     Creates or appends to an ``error.log`` file in the specified *data_dir*
-    or the ``DATA_DIR`` from configuration (falling back to the current
-    working directory when configuration is unavailable).  The handler
+    or the project root directory (when *data_dir* is ``None``).  The handler
     captures ``ERROR``-level messages with full details including timestamp,
     error type, message, file path, stage, retry info, and endpoint.
 
+    The project root is determined as the parent directory of the
+    ``local-feed-generator`` package, i.e. four levels up from this file:
+    ``Path(__file__).parent.parent.parent.parent``.
+
     Args:
         data_dir: Directory in which to create ``error.log``.  When
-            ``None``, uses ``DATA_DIR`` from configuration, falling back to
-            the current working directory.
+            ``None``, uses the project root directory.
         force: If ``True``, reconfigure even when a handler is already
             attached (useful in tests).
 
@@ -131,17 +133,12 @@ def _configure_error_log(
         _error_log_logger.removeHandler(_error_log_handler)
         _error_log_handler = None
 
-    # Determine log directory.
+    # Determine log directory — always use the project root (parent of the
+    # local-feed-generator package), not the data directory.
     if data_dir is not None:
         log_dir = Path(data_dir).resolve()
     else:
-        try:
-            from local_feed_generator.config import get_config
-
-            config = get_config()
-            log_dir = Path(config.data_dir).resolve()
-        except Exception:
-            log_dir = Path.cwd()
+        log_dir = Path(__file__).parent.parent.parent.parent.resolve()
 
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -158,7 +155,7 @@ def _configure_error_log(
 
         _error_log_logger.addHandler(handler)
         _error_log_handler = handler
-    except (OSError, PermissionError):
+    except OSError, PermissionError:
         pass
 
     return _error_log_handler
@@ -347,9 +344,7 @@ def log_error(
 
     # Print to stdout when requested (e.g. for connection errors).
     if print_stdout:
-        _print_error_to_stdout(
-            exc, filepath, stage, retry_info, endpoint, model
-        )
+        _print_error_to_stdout(exc, filepath, stage, retry_info, endpoint, model)
 
 
 def _print_error_to_stdout(

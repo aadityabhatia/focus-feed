@@ -3,6 +3,7 @@
 from io import StringIO
 import json
 import logging
+from pathlib import Path
 from unittest import mock
 
 from local_feed_generator.errors import (
@@ -22,12 +23,15 @@ import pytest
 class TestExceptionHierarchy:
     """Tests for custom exception class hierarchy and raisability."""
 
-    @pytest.mark.parametrize("exc_class,exc_msg", [
-        (ProcessingError, "something went wrong"),
-        (TranscriptionError, "audio decode failed"),
-        (SummarizationError, "LLM request failed"),
-        (ValidationError, "field is required"),
-    ])
+    @pytest.mark.parametrize(
+        "exc_class,exc_msg",
+        [
+            (ProcessingError, "something went wrong"),
+            (TranscriptionError, "audio decode failed"),
+            (SummarizationError, "LLM request failed"),
+            (ValidationError, "field is required"),
+        ],
+    )
     def test_exception_can_be_raised(self, exc_class, exc_msg):
         """All exception classes should be raisable and catchable."""
         with pytest.raises(exc_class):
@@ -51,11 +55,14 @@ class TestExceptionHierarchy:
         with pytest.raises(ProcessingError):
             raise exc_class("test error")
 
-    @pytest.mark.parametrize("exc_class,exc_msg,attr_name", [
-        (ProcessingError, "disk full", "message"),
-        (ProcessingError, None, "filepath"),
-        (ValidationError, "invalid value", "field"),
-    ])
+    @pytest.mark.parametrize(
+        "exc_class,exc_msg,attr_name",
+        [
+            (ProcessingError, "disk full", "message"),
+            (ProcessingError, None, "filepath"),
+            (ValidationError, "invalid value", "field"),
+        ],
+    )
     def test_attribute_storage(self, exc_class, exc_msg, attr_name):
         """Exceptions should store their specific attributes."""
         kwargs = {}
@@ -97,17 +104,29 @@ class TestCreateErrorMetadata:
         assert "date" in metadata
         assert metadata["date"] is not None
         assert "processing_date" not in metadata
-        expected_fields = {"title", "description", "filename", "filepath", "filetype", "date", "size", "error"}
+        expected_fields = {
+            "title",
+            "description",
+            "filename",
+            "filepath",
+            "filetype",
+            "date",
+            "size",
+            "error",
+        }
         assert expected_fields.issubset(set(metadata.keys()))
         assert "status" not in metadata
 
-    @pytest.mark.parametrize("exc_class,exc_msg", [
-        (ProcessingError, "failed"),
-        (TranscriptionError, "gpu error"),
-        (SummarizationError, "api timeout"),
-        (ValidationError, "bad schema"),
-        (RuntimeError, "unexpected failure"),
-    ])
+    @pytest.mark.parametrize(
+        "exc_class,exc_msg",
+        [
+            (ProcessingError, "failed"),
+            (TranscriptionError, "gpu error"),
+            (SummarizationError, "api timeout"),
+            (ValidationError, "bad schema"),
+            (RuntimeError, "unexpected failure"),
+        ],
+    )
     def test_works_with_various_exception_types(self, exc_class, exc_msg):
         """create_error_metadata should work with various exception types."""
         exc = exc_class(exc_msg)
@@ -156,12 +175,15 @@ class TestLogError:
         log.addHandler(handler)
         return log, stream
 
-    @pytest.mark.parametrize("exc,exc_name,exc_msg", [
-        (ProcessingError("disk full"), "ProcessingError", "disk full"),
-        (TranscriptionError("gpu error"), "TranscriptionError", "gpu error"),
-        (SummarizationError("api timeout"), "SummarizationError", "api timeout"),
-        (ValidationError("bad schema"), "ValidationError", "bad schema"),
-    ])
+    @pytest.mark.parametrize(
+        "exc,exc_name,exc_msg",
+        [
+            (ProcessingError("disk full"), "ProcessingError", "disk full"),
+            (TranscriptionError("gpu error"), "TranscriptionError", "gpu error"),
+            (SummarizationError("api timeout"), "SummarizationError", "api timeout"),
+            (ValidationError("bad schema"), "ValidationError", "bad schema"),
+        ],
+    )
     def test_logs_exception_details(self, capture_logger, exc, exc_name, exc_msg):
         """log_error should include both the exception class name and message."""
         log, stream = capture_logger
@@ -229,10 +251,13 @@ class TestLogError:
             assert "|" in line
             assert "ERROR" in line
 
-    @pytest.mark.parametrize("stage,expected_in_output", [
-        ("transcription", "stage=transcription"),
-        (None, None),
-    ])
+    @pytest.mark.parametrize(
+        "stage,expected_in_output",
+        [
+            ("transcription", "stage=transcription"),
+            (None, None),
+        ],
+    )
     def test_stage_logging(self, capture_logger, stage, expected_in_output):
         """log_error should include stage when provided, omit when not."""
         log, stream = capture_logger
@@ -387,23 +412,26 @@ class TestConfigureErrorLog:
         assert "key:" not in content  # credentials removed
         assert "https://llm.example.com/v1" in content
 
-    def test_fallback_to_cwd_when_get_config_fails(self, tmp_path, monkeypatch):
-        """_configure_error_log should fall back to cwd when get_config() fails."""
-        # Make get_config raise an exception
-        import local_feed_generator.config as config_module
+    def test_uses_project_root_when_data_dir_not_provided(self, tmp_path, monkeypatch):
+        """_configure_error_log should use the project root when data_dir is not provided.
 
-        monkeypatch.setattr(
-            config_module,
-            "get_config",
-            mock.Mock(side_effect=RuntimeError("config error")),
-        )
+        The project root is the parent directory of the local-feed-generator
+        package, determined via ``Path(__file__).parent.parent.parent.parent``
+        from the errors module's location.
+        """
+        import local_feed_generator.errors as errors_module
 
-        # Change to tmp_path so we can verify the error.log is created there
+        # Change to tmp_path so we can verify error.log is NOT created there
         monkeypatch.chdir(tmp_path)
 
         handler = _configure_error_log(force=True)
         assert handler is not None
-        assert (tmp_path / "error.log").exists()
+
+        # error.log should be written to the project root, not tmp_path
+        project_root = Path(errors_module.__file__).parent.parent.parent.parent.resolve()
+        assert (project_root / "error.log").exists()
+        # error.log should NOT be in the current working directory (tmp_path)
+        assert not (tmp_path / "error.log").exists()
 
     def test_returns_none_on_permission_error(self, monkeypatch, tmp_path):
         """_configure_error_log should return None on PermissionError during mkdir."""
