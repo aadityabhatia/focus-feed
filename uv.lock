@@ -565,6 +565,7 @@ name = "local-feed-generator"
 version = "0.1.0"
 source = { editable = "." }
 dependencies = [
+    { name = "av" },
     { name = "beautifulsoup4" },
     { name = "click" },
     { name = "feedgen" },
@@ -578,7 +579,6 @@ dependencies = [
 
 [package.optional-dependencies]
 local-transcription = [
-    { name = "av" },
     { name = "faster-whisper" },
 ]
 
@@ -593,7 +593,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
-    { name = "av", marker = "extra == 'local-transcription'", specifier = ">=11.0,<19.0" },
+    { name = "av", specifier = ">=11.0" },
     { name = "beautifulsoup4", specifier = ">=4.12.0" },
     { name = "click", specifier = ">=8.5.0" },
     { name = "faster-whisper", marker = "extra == 'local-transcription'", specifier = ">=1.0.0" },
