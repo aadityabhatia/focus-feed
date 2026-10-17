@@ -131,6 +131,7 @@ def _compute_file_hash(filepath: str) -> str:
         if the file cannot be read.
     """
     try:
+        _logger.debug("Computing hash for %s", filepath)
         sha256_hash = hashlib.sha256()
         with open(filepath, "rb") as f:
             for chunk in iter(lambda: f.read(8192), b""):
@@ -554,6 +555,7 @@ class Producer:
             metadata_dict["transcribe"] = transcribe_step
             self._write_metadata_partial(metadata_dict, absolute_path)
 
+            _logger.info("Starting transcription for %s (step 1/3)", filepath)
             # Step 1: Transcribe audio to markdown text.
             transcript = self.transcriber.transcribe(absolute_path)
             transcribe_end = datetime.now(UTC)
@@ -567,6 +569,11 @@ class Producer:
 
         # After transcription, before summarization: update statuses.
         metadata_dict["content"] = transcript
+        _logger.info(
+            "Transcription completed for %s: %d words",
+            filepath,
+            len(transcript.split()) if transcript else 0,
+        )
         summarize_step = metadata_dict.get("summarize") or {}
         summarize_step["status"] = "in_progress"
         summarize_step["start_time"] = _now_timestamp()
@@ -579,6 +586,7 @@ class Producer:
         metadata_dict["summarize"] = summarize_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
+        _logger.info("Starting summarization for %s (step 2/3)", filepath)
         # Step 2: Summarize the transcript via LLM.
         # Check for reflection.md in the source file's directory.
         reflection_questions = _check_reflection_md(absolute_path)
@@ -600,6 +608,7 @@ class Producer:
         summarize_step["output_tokens"] = completion_tokens
         metadata_dict["summarize"] = summarize_step
         self._write_metadata_partial(metadata_dict, absolute_path)
+        _logger.info("Summarization completed for %s", filepath)
 
         # Step 3: Extract audio metadata via ffprobe for duration and creation_time.
         # This is done before title generation so the extracted title (if any)
@@ -607,6 +616,7 @@ class Producer:
         file_size = stat_result.st_size
         file_mtime = int(stat_result.st_mtime * 1000) / 1000.0
 
+        _logger.debug("Extracting audio metadata for %s", absolute_path)
         audio_meta = get_audio_metadata(absolute_path)
 
         # Use creation_time from media metadata as the date when available;
@@ -639,6 +649,7 @@ class Producer:
         # (without extension, underscores→spaces) and any extracted title
         # from audio metadata as context to the LLM.
         filename_title = _sanitize_filename(filename)
+        _logger.info("Starting title generation for %s (step 3/3)", filepath)
         generated_title, _, _ = self.summarizer.generate_title(
             transcript,
             filename=filename_title,
@@ -646,6 +657,7 @@ class Producer:
             filepath=filepath,
         )
         generated_title = _clean_title(generated_title) or generated_title
+        _logger.info("Title generation completed for %s", filepath)
 
         # Module prefix is applied in Metadata.final_title after precedence
         # resolution, so it is not applied here.
@@ -765,6 +777,7 @@ class Producer:
         metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
+        _logger.info("Starting extraction for %s (step 1/2)", filepath)
         # Step 1: Extract metadata from the PDF.
         extracted = self.pdf_extractor.extract(absolute_path)
 
@@ -787,9 +800,16 @@ class Producer:
         extract_step["words"] = len(file_content.split()) if file_content else 0
         metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
+        _logger.info(
+            "Extraction completed for %s: title='%s', %d content chars",
+            filepath,
+            filename_title[:50],
+            len(file_content) if file_content else 0,
+        )
 
         # Step 2: Generate title via LLM using filename, extracted title,
         # and the extracted content (summarizer truncates to ~4000 chars).
+        _logger.info("Starting title generation for %s (step 2/2)", filepath)
         if file_content and file_content.strip():
             generated_title, _, _ = self.summarizer.generate_title(
                 file_content,
@@ -801,6 +821,7 @@ class Producer:
         else:
             # No content available; fall back to filename-derived title.
             generated_title = filename_title
+        _logger.info("Title generation completed for %s", filepath)
 
         # Module prefix is applied in Metadata.final_title after precedence
         # resolution, so it is not applied here.
@@ -915,6 +936,7 @@ class Producer:
         metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
+        _logger.info("Starting extraction for %s (step 1/2)", filepath)
         # Step 1: Extract metadata from the HTML.
         extracted = self.html_extractor.extract(absolute_path)
 
@@ -937,9 +959,16 @@ class Producer:
         extract_step["words"] = len(file_content.split()) if file_content else 0
         metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
+        _logger.info(
+            "Extraction completed for %s: title='%s', %d content chars",
+            filepath,
+            filename_title[:50],
+            len(file_content) if file_content else 0,
+        )
 
         # Step 2: Generate title via LLM using filename, extracted title,
         # and the extracted content (summarizer truncates to ~4000 chars).
+        _logger.info("Starting title generation for %s (step 2/2)", filepath)
         if file_content and file_content.strip():
             generated_title, _, _ = self.summarizer.generate_title(
                 file_content,
@@ -951,6 +980,7 @@ class Producer:
         else:
             # No content available; fall back to filename-derived title.
             generated_title = filename_title
+        _logger.info("Title generation completed for %s", filepath)
 
         # Module prefix is applied in Metadata.final_title after precedence
         # resolution, so it is not applied here.
@@ -1089,6 +1119,7 @@ class Producer:
             encoding="utf-8",
         )
         tmp_path.replace(json_path)
+        _logger.debug("Wrote metadata to %s", json_path)
 
     def _handle_error(
         self,

@@ -201,6 +201,7 @@ class Scanner:
             caught, logged, and skipped so a single inaccessible path does not
             abort the entire scan.
         """
+        _logger.info("Starting scan of %s", self.data_dir)
         if not self.data_dir.exists():
             _logger.warning("Data directory does not exist: %s", self.data_dir)
             return []
@@ -254,6 +255,7 @@ class Scanner:
                     )
 
         files_to_process.sort(key=lambda f: f.filepath)
+        _logger.info("Scan complete: %d file(s) need processing", len(files_to_process))
         return files_to_process
 
     def _read_json_metadata(self, json_path: Path) -> dict[str, Any] | None:

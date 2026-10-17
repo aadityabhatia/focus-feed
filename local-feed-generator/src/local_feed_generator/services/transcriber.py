@@ -260,20 +260,23 @@ class LocalTranscriber:
                 ):
                     existing_transcript = existing_data.get("transcript")
                     if isinstance(existing_transcript, str) and existing_transcript:
+                        _logger.debug("Transcription already complete for %s, skipping", filepath)
                         return existing_transcript
             except json.JSONDecodeError, OSError:
                 pass
 
-        # Get audio file info for user-facing output.
+        _logger.info("Starting transcription for %s", filepath)
+
+        # Get audio file info for logging.
         file_size = self._get_file_size(path)
         audio_length = self._get_audio_duration(path)
 
         if audio_length is not None and file_size is not None:
-            print(f"Transcribing {path.name}: {audio_length:.1f}s, {file_size:,} bytes")
+            _logger.debug("Transcribing %s: %.1fs, %d bytes", path.name, audio_length, file_size)
         elif file_size is not None:
-            print(f"Transcribing {path.name}: {file_size:,} bytes")
+            _logger.debug("Transcribing %s: %d bytes", path.name, file_size)
         else:
-            print(f"Transcribing {path.name}")
+            _logger.debug("Transcribing %s", path.name)
 
         start_time = time.time()
 
@@ -294,7 +297,14 @@ class LocalTranscriber:
 
             elapsed = time.time() - start_time
             word_count = len(transcript.split())
-            print(f"Completed in {elapsed:.2f}s ({word_count} words)")
+            model_name = get_config().transcription_model
+            _logger.info(
+                "Transcription completed for %s: %d words, model: %s",
+                filepath,
+                len(transcript.split()) if transcript else 0,
+                model_name,
+            )
+            _logger.debug("Completed in %.2fs (%d words)", elapsed, word_count)
 
             return transcript
 

@@ -31,6 +31,7 @@ import re
 import xml.etree.ElementTree as ET
 
 from feedgen.feed import FeedGenerator as _FeedGenerator
+import markdown as _md
 
 from local_feed_generator.config import get_config
 from local_feed_generator.metadata import Metadata
@@ -54,22 +55,18 @@ _SAFE_URL_SCHEMES = re.compile(r"^(https?://|mailto:|/|#|\.\.)")
 
 
 def _markdown_to_html(text: str | None) -> str:
-    """Convert markdown text to HTML with XSS protection.
+    """Convert markdown text to HTML using the ``markdown`` library.
 
-    Attempts to use the third-party ``markdown`` library if it is installed.
-    If the library is not available, falls back to a built-in simple converter
-    that handles:
+    Uses the third-party ``markdown`` library (a required dependency) for
+    conversion.  The ``nl2br`` extension is enabled so that single newlines
+    within paragraphs are rendered as ``<br>`` elements.
 
-    - **Headers**: ``#`` through ``######`` (h1-h6)
-    - **Bold**: ``**text**`` → ``<strong>text</strong>``
-    - *Italic*: ``*text*`` or ``_text_`` → ``<em>text</em>``
-    - Links: ``[text](url)`` → ``<a href="url">text</a>`` (safe schemes only)
-    - Lists: unordered (``-``, ``*``, ``+``) and ordered (``1.``)
-    - Paragraphs (double-newline separation) and line breaks (``<br>``)
-
-    All text content is HTML-escaped to prevent XSS vulnerabilities.  URLs
-    in links are validated to only allow safe schemes (``http://``,
-    ``https://``, ``mailto:``, relative paths, and fragment identifiers).
+    The ``markdown`` library handles HTML escaping of text content to
+    prevent XSS vulnerabilities.  URLs in links are additionally validated
+    to only allow safe schemes (``http://``, ``https://``, ``mailto:``,
+    relative paths, and fragment identifiers).  Links with unsafe schemes
+    (e.g. ``javascript:``) have their ``<a>`` tags removed but the link
+    text is preserved.
 
     If the entire output is a single ``<p>`` wrapper (i.e. the input was a
     plain paragraph with no other markdown elements), the outer ``<p>`` and
@@ -86,202 +83,38 @@ def _markdown_to_html(text: str | None) -> str:
     if text is None:
         return ""
 
-    # Try to use the markdown library if available.
-    try:
-        import markdown as _md  # type: ignore[import-untyped]
+    # Use the markdown library with the nl2br extension (single newlines → <br>).
+    # Deregister the html_block preprocessor and html inline pattern so that
+    # raw HTML in the input is escaped rather than passed through, preventing
+    # XSS vulnerabilities (the markdown library does not sanitize by default).
+    md = _md.Markdown(extensions=["nl2br"])
+    md.preprocessors.deregister("html_block")
+    md.inlinePatterns.deregister("html")
+    result = md.convert(text)
 
-        result = _md.markdown(text)
-    except ImportError:
-        # Fall back to the built-in simple converter.
-        result = _simple_markdown_to_html(text)
+    # Sanitize URLs in <a> tags — only allow safe schemes.  Unsafe links
+    # have their <a> tags removed but the link text is preserved.
+    result = re.sub(
+        r'<a\s[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
+        lambda m: m.group(2) if not _SAFE_URL_SCHEMES.match(m.group(1)) else m.group(0),
+        result,
+        flags=re.DOTALL,
+    )
+
+    # Replace XHTML-style <br /> with HTML-style <br> for consistency.
+    result = result.replace("<br />", "<br>")
 
     # Strip the outer <p> wrapper when the entire output is a single
     # <p> element.  This avoids redundant paragraph tags for plain-text
     # descriptions while preserving legitimate <p> tags from actual
     # multi-paragraph markdown content.
-    result = _strip_outer_p_wrapper(result)
+    if result.startswith("<p>") and result.endswith("</p>"):
+        open_count = result.count("<p>")
+        close_count = result.count("</p>")
+        if open_count == 1 and close_count == 1:
+            result = result[3:-4]
 
     return result
-
-
-def _strip_outer_p_wrapper(html: str) -> str:
-    """Strip the outer ``<p>``/``</p>`` wrapper from HTML if it is the only element.
-
-    If the HTML consists of exactly one ``<p>...</p>`` pair wrapping all
-    content (with no other block-level elements), the wrapper tags are
-    removed.  When the HTML contains multiple ``<p>`` tags or other
-    block-level elements (headers, lists, etc.), it is returned unchanged.
-
-    Args:
-        html: The HTML string to process.
-
-    Returns:
-        The HTML with the outer ``<p>`` wrapper removed if applicable,
-        otherwise the original HTML.
-    """
-    if not html:
-        return html
-
-    # Check if the entire output is exactly one <p>...</p> pair.
-    # Use regex to match: starts with <p>, ends with </p>, and there is
-    # exactly one <p> opening tag and one </p> closing tag.
-    if html.startswith("<p>") and html.endswith("</p>"):
-        # Count <p> and </p> tags to ensure there's only one pair.
-        open_count = html.count("<p>")
-        close_count = html.count("</p>")
-        if open_count == 1 and close_count == 1:
-            # Strip the outer <p> (3 chars) and </p> (4 chars).
-            return html[3:-4]
-
-    return html
-
-
-def _simple_markdown_to_html(text: str) -> str:
-    """Convert markdown to HTML using a simple built-in parser.
-
-    Handles basic markdown elements with proper HTML escaping to prevent
-    XSS.  Text is escaped first, then markdown syntax is applied to the
-    escaped text so that user-supplied HTML is always rendered as text.
-
-    Args:
-        text: The markdown string to convert.
-
-    Returns:
-        An HTML string.
-    """
-    # Escape HTML special characters first to prevent XSS.
-    # This ensures any raw HTML in the input is rendered as text.
-    text = html.escape(text)
-
-    lines = text.split("\n")
-    html_parts: list[str] = []
-    in_list: str | None = None  # 'ul', 'ol', or None
-    in_paragraph = False
-    paragraph_lines: list[str] = []
-
-    def _flush_paragraph() -> None:
-        nonlocal in_paragraph, paragraph_lines
-        if in_paragraph and paragraph_lines:
-            content = "\n".join(paragraph_lines)
-            content = _convert_inline_markdown(content)
-            # Convert single newlines within a paragraph to <br>.
-            content = content.replace("\n", "<br>\n")
-            html_parts.append(f"<p>{content}</p>")
-        in_paragraph = False
-        paragraph_lines = []
-
-    def _flush_list() -> None:
-        nonlocal in_list
-        if in_list:
-            html_parts.append(f"</{in_list}>")
-            in_list = None
-
-    for line in lines:
-        stripped = line.strip()
-
-        # Empty line — close paragraph and list.
-        if not stripped:
-            _flush_paragraph()
-            _flush_list()
-            continue
-
-        # Headers (######, #####, ####, ###, ##, #).
-        # Check in reverse order so longer prefixes match first.
-        if stripped.startswith("###### "):
-            _flush_paragraph()
-            _flush_list()
-            html_parts.append(f"<h6>{_convert_inline_markdown(stripped[7:])}</h6>")
-        elif stripped.startswith("##### "):
-            _flush_paragraph()
-            _flush_list()
-            html_parts.append(f"<h5>{_convert_inline_markdown(stripped[6:])}</h5>")
-        elif stripped.startswith("#### "):
-            _flush_paragraph()
-            _flush_list()
-            html_parts.append(f"<h4>{_convert_inline_markdown(stripped[5:])}</h4>")
-        elif stripped.startswith("### "):
-            _flush_paragraph()
-            _flush_list()
-            html_parts.append(f"<h3>{_convert_inline_markdown(stripped[4:])}</h3>")
-        elif stripped.startswith("## "):
-            _flush_paragraph()
-            _flush_list()
-            html_parts.append(f"<h2>{_convert_inline_markdown(stripped[3:])}</h2>")
-        elif stripped.startswith("# "):
-            _flush_paragraph()
-            _flush_list()
-            html_parts.append(f"<h1>{_convert_inline_markdown(stripped[2:])}</h1>")
-        # Unordered list items (-, *, +).
-        elif re.match(r"^[-*+]\s", stripped):
-            _flush_paragraph()
-            if in_list != "ul":
-                _flush_list()
-                html_parts.append("<ul>")
-                in_list = "ul"
-            item_content = re.sub(r"^[-*+]\s", "", stripped)
-            html_parts.append(f"<li>{_convert_inline_markdown(item_content)}</li>")
-        # Ordered list items (1., 2., etc.).
-        elif re.match(r"^\d+\.\s", stripped):
-            _flush_paragraph()
-            if in_list != "ol":
-                _flush_list()
-                html_parts.append("<ol>")
-                in_list = "ol"
-            item_content = re.sub(r"^\d+\.\s", "", stripped)
-            html_parts.append(f"<li>{_convert_inline_markdown(item_content)}</li>")
-        # Regular text — part of a paragraph.
-        else:
-            if not in_paragraph:
-                _flush_list()
-                in_paragraph = True
-            paragraph_lines.append(line)
-
-    # Close any open tags.
-    _flush_paragraph()
-    _flush_list()
-
-    return "\n".join(html_parts)
-
-
-def _convert_inline_markdown(text: str) -> str:
-    """Convert inline markdown elements in text.
-
-    Handles ``**bold**``, ``*italic*``, ``_italic_``, and ``[text](url)``
-    links.  Text is assumed to be already HTML-escaped.  URLs are validated
-    to prevent XSS via ``javascript:`` or other dangerous schemes.
-
-    Args:
-        text: HTML-escaped text containing markdown inline syntax.
-
-    Returns:
-        Text with inline markdown converted to HTML.
-    """
-    # **bold** → <strong>bold</strong>
-    text = re.sub(r"\*\*(.+?)\*\*", r"<strong>\1</strong>", text)
-
-    # *italic* → <em>italic</em>
-    # Match single asterisks that are not part of ** (already converted).
-    text = re.sub(r"(?<!\*)\*(?!\*)([^\*]+?)\*(?!\*)", r"<em>\1</em>", text)
-
-    # _italic_ → <em>italic</em>
-    # Match underscores that are not adjacent to word characters on the opening
-    # side (to avoid matching things like file_name or 100_thing).  Content
-    # can include spaces.
-    text = re.sub(r"(?<!\w)_([^_]+?)_(?!\w)", r"<em>\1</em>", text)
-
-    # [text](url) → <a href="url">text</a> (only safe URL schemes)
-    def _replace_link(match: re.Match[str]) -> str:
-        link_text = match.group(1)
-        url = match.group(2)
-        # Only allow safe URL schemes to prevent XSS.
-        if _SAFE_URL_SCHEMES.match(url):
-            return f'<a href="{url}">{link_text}</a>'
-        # Discard unsafe links but keep the text.
-        return link_text
-
-    text = re.sub(r"\[(.+?)\]\((.+?)\)", _replace_link, text)
-
-    return text
 
 
 @dataclass
@@ -520,6 +353,9 @@ class FeedGenerator:
             return []
 
         metadata_list: list[Metadata] = []
+        total_count = 0
+
+        _logger.debug("Starting metadata discovery in %s", self.data_dir)
 
         for root, _dirs, files in os.walk(self.data_dir):
             root_path = Path(root)
@@ -527,6 +363,7 @@ class FeedGenerator:
                 if not filename.lower().endswith(".json"):
                     continue
 
+                total_count += 1
                 json_path = root_path / filename
 
                 # Skip orphaned JSON files (no corresponding source file).
@@ -557,6 +394,11 @@ class FeedGenerator:
                 metadata_list.append(metadata)
 
         metadata_list.sort(key=self._sort_key)
+        _logger.info(
+            "Discovered %d metadata files (%d feed-eligible)",
+            total_count,
+            len(metadata_list),
+        )
         return metadata_list
 
     def _update_missing_hashes(self) -> int:
@@ -1109,6 +951,8 @@ class FeedGenerator:
         mp4_items = [m for m in metadata_items if m.filetype == "mp4"]
         article_items = [m for m in metadata_items if m.filetype in ("pdf", "html")]
 
+        _logger.info("Generating feeds for folder: %s", folder)
+
         # Generate podcast.xml only if MP4 files are present.
         if mp4_items:
             try:
@@ -1125,6 +969,8 @@ class FeedGenerator:
                     folder,
                     exc,
                 )
+        else:
+            _logger.debug("Skipping podcast feed for %s: no MP4 items", folder)
 
         # Generate articles.xml only if PDF/HTML files are present.
         if article_items:
@@ -1142,7 +988,15 @@ class FeedGenerator:
                     folder,
                     exc,
                 )
+        else:
+            _logger.debug("Skipping articles feed for %s: no PDF/HTML items", folder)
 
+        _logger.info(
+            "Feed generation for %s complete: %d podcast, %d articles",
+            folder,
+            len(results["podcast"]),
+            len(results["articles"]),
+        )
         return results
 
     def generate_all_feeds(self, validate: bool = False) -> dict[str, list[Metadata]]:
@@ -1202,8 +1056,16 @@ class FeedGenerator:
         # This ensures all feed items use hash-based guids.
         self._update_missing_hashes()
 
+        _logger.info("Starting feed generation for all folders")
+
         # --- Phase 1: Root-level feeds (only if feed.json exists) ---
         root_feed_json = self.data_dir / "feed.json"
+
+        _logger.info(
+            "Root feed.json %s; %s root-level feed generation",
+            root_feed_json,
+            "starting" if root_feed_json.exists() else "skipping",
+        )
 
         # Only generate root-level feeds if feed.json exists
         if root_feed_json.exists():
@@ -1255,6 +1117,7 @@ class FeedGenerator:
         all_metadata = self._discover_metadata_files()
 
         for folder_path, config in self._discover_feed_json_dirs():
+            _logger.info("Generating feeds for folder: %s", folder_path)
             # Skip root data_dir (already handled above).
             if folder_path == self.data_dir:
                 continue
@@ -1286,6 +1149,11 @@ class FeedGenerator:
         if validate:
             self._log_validation_results(self.validate_output())
 
+        _logger.info(
+            "Feed generation complete: %d podcast items, %d article items",
+            len(results["podcast"]),
+            len(results["articles"]),
+        )
         return results
 
     # ------------------------------------------------------------------

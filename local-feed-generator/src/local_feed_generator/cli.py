@@ -41,6 +41,7 @@ from watchdog.events import FileSystemEventHandler
 from local_feed_generator.config import reload_config
 from local_feed_generator.errors import log_error
 from local_feed_generator.metadata import Metadata
+from local_feed_generator.producer import _check_reflection_md
 from local_feed_generator.scanner import ScannedFile, Scanner
 from local_feed_generator.services.extractors import _clean_title
 
@@ -1451,6 +1452,7 @@ def summarize(
     for i, source_file in enumerate(files, 1):
         relative_path = source_file.relative_to(data_dir_path)
         click.echo(f"[{i}/{len(files)}] Summarizing {relative_path}...")
+        reflection_questions = None
         try:
             json_path = source_file.with_name(source_file.name + ".json")
             metadata = _get_json_metadata(json_path)
@@ -1475,8 +1477,13 @@ def summarize(
             metadata["summarize"] = summarize_step
             _write_json_metadata(metadata, source_file)
 
+            # Check for reflection.md in the source file's directory.
+            reflection_questions = _check_reflection_md(str(source_file))
             summary, prompt_tokens, completion_tokens = summarizer.summarize(
-                content, filetype=metadata.get("filetype")
+                content,
+                reflection_questions=reflection_questions,
+                filepath=str(relative_path),
+                filetype=metadata.get("filetype"),
             )
 
             # Update summarize step to complete after successful summarization.

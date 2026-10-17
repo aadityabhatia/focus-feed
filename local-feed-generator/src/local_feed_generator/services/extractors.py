@@ -122,6 +122,7 @@ class PDFExtractor:
               if no text could be extracted.
         """
         filepath = Path(filepath)
+        _logger.info("Starting PDF extraction for %s", filepath)
         filename = filepath.stem
         stat_result = filepath.stat()
         size = stat_result.st_size
@@ -164,6 +165,7 @@ class PDFExtractor:
 
         # Fallback date to file modification time
         if date is None:
+            _logger.debug("Using file modification time as date for %s", filepath)
             date = datetime.fromtimestamp(mtime, tz=UTC)
 
         # Ensure date is timezone-aware for consistent epoch conversion
@@ -176,6 +178,13 @@ class PDFExtractor:
             if publication_date.tzinfo is None:
                 publication_date = publication_date.replace(tzinfo=UTC)
             publication_date_epoch = int(publication_date.timestamp() * 1000) / 1000.0
+
+        _logger.info(
+            "PDF extraction completed for %s: title='%s', %d chars",
+            filepath,
+            title[:50] if title else "",
+            len(content) if content else 0,
+        )
 
         return {
             "title": title,
@@ -226,6 +235,7 @@ class HTMLExtractor:
               (tags removed), or None if parsing fails.
         """
         filepath = Path(filepath)
+        _logger.info("Starting HTML extraction for %s", filepath)
         filename = filepath.stem
         stat_result = filepath.stat()
         size = stat_result.st_size
@@ -270,6 +280,7 @@ class HTMLExtractor:
 
         # Fallback date to file modification time
         if date is None:
+            _logger.debug("Using file modification time as date for %s", filepath)
             date = datetime.fromtimestamp(mtime, tz=UTC)
 
         # Ensure date is timezone-aware for consistent epoch conversion
@@ -282,6 +293,13 @@ class HTMLExtractor:
             if publication_date.tzinfo is None:
                 publication_date = publication_date.replace(tzinfo=UTC)
             publication_date_epoch = int(publication_date.timestamp() * 1000) / 1000.0
+
+        _logger.info(
+            "HTML extraction completed for %s: title='%s', %d chars",
+            filepath,
+            title[:50] if title else "",
+            len(text_content) if text_content else 0,
+        )
 
         return {
             "title": title,
@@ -413,6 +431,8 @@ def get_audio_metadata(filepath: str | Path) -> dict[str, Any] | None:
         _logger.warning("ffprobe not found on PATH; cannot extract audio metadata")
         return None
 
+    _logger.debug("Extracting audio metadata for %s using ffprobe", filepath)
+
     cmd = [
         "ffprobe",
         "-v",
@@ -477,10 +497,18 @@ def get_audio_metadata(filepath: str | Path) -> dict[str, Any] | None:
     if title:
         title = _clean_title(title)
 
-    return {
+    audio_meta = {
         "type": format_info.get("format_name"),
         "duration": duration if duration is not None else 0.0,
         "creation_time": tags.get("creation_time"),
         "bit_rate": bit_rate,
         "title": title,
     }
+
+    _logger.info(
+        "Audio metadata extraction completed for %s: duration=%.2fs",
+        filepath,
+        audio_meta.get("duration", 0),
+    )
+
+    return audio_meta

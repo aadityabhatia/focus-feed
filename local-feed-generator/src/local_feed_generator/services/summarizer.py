@@ -38,7 +38,7 @@ from openai import (
 from local_feed_generator.config import Settings, get_config
 from local_feed_generator.errors import SummarizationError, log_error
 
-_logger = logging.getLogger(__name__)
+_logger = logging.getLogger("local_feed_generator")
 
 
 class LLmResponse(NamedTuple):
@@ -190,6 +190,12 @@ class Summarizer:
         if not transcript or not transcript.strip():
             raise SummarizationError("Transcript text must not be empty")
 
+        _logger.info(
+            "Starting summarization for %s (filetype: %s)",
+            filepath or "unknown",
+            filetype or "unknown",
+        )
+
         # Determine which prompt set to use based on filetype.
         if filetype == "mp4":
             regular_prompt = self._config.prompt_podcast
@@ -201,19 +207,27 @@ class Summarizer:
 
         if reflection_questions:
             system_prompt = reflection_prompt or regular_prompt
-            user_content = (
-                "Consider the following reflection questions while summarizing:\n\n"
-                f"{reflection_questions}\n\n{transcript}"
-            )
+            user_content = f"{reflection_questions}\n\n{transcript}"
         else:
             system_prompt = regular_prompt
             user_content = transcript
+
+        _logger.debug(
+            "Using %s prompt for filetype: %s",
+            "reflection" if reflection_questions else "regular",
+            filetype,
+        )
 
         result = self._chat_completion(
             system_prompt=system_prompt,
             user_content=user_content,
             stage="summarization",
             filepath=filepath,
+        )
+        _logger.info(
+            "Summarization completed for %s: %d words",
+            filepath or "unknown",
+            len(result.content.split()) if result.content else 0,
         )
         return result.content, result.prompt_tokens, result.completion_tokens
 
@@ -263,6 +277,8 @@ class Summarizer:
         if not content or not content.strip():
             raise SummarizationError("Content text must not be empty")
 
+        _logger.info("Starting title generation for %s", filepath or "unknown")
+
         # Build user content with filename and extracted title before the
         # content, as specified in design doc section 6.1 / tasks.
         # Format: "Filename: {filename}\nExtracted Title: {extracted}\n\n{content}"
@@ -278,6 +294,11 @@ class Summarizer:
             user_content=user_content,
             stage="title_generation",
             filepath=filepath,
+        )
+        _logger.info(
+            "Title generation completed for %s: '%s'",
+            filepath or "unknown",
+            result.content[:50] + "..." if len(result.content) > 50 else result.content,
         )
         return result.content, result.prompt_tokens, result.completion_tokens
 

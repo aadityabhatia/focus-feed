@@ -14,6 +14,7 @@ dependencies = [
     "beautifulsoup4>=4.12.0",
     "python-dotenv>=1.0.0",
     "av>=11.0",
+    "markdown>=3.5.0",
 ]
 
 [project.optional-dependencies]
@@ -108,6 +109,7 @@ module = [
     "feedgen.*",
     "faster_whisper.*",
     "watchdog.*",
+    "markdown.*",
 ]
 ignore_missing_imports = true
 

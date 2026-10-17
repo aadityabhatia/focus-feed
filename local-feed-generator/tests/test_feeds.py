@@ -1585,7 +1585,10 @@ class TestMarkdownToHtml:
             ("a & b", ["a &amp; b"]),
             ("a < b", ["a &lt; b"]),
             ("a > b", ["a &gt; b"]),
-            ('say "hello"', ["&quot;"]),
+            # The markdown library does not escape double quotes (only & < >).
+            # Quotes are safe in HTML body content and are XML-escaped by
+            # feedgen when the description is embedded in the RSS output.
+            ('say "hello"', ['say "hello"']),
         ],
     )
     def test_html_escaping(self, md, expected_substrings):
