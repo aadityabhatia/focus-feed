@@ -42,6 +42,9 @@ Optional: `PROMPT_ARTICLE_REFLECTION`, `PROMPT_PODCAST_REFLECTION`, `TRANSCRIPTI
 ```bash
 uv sync
 uv run pytest
-uv run ruff check . && uv run ruff format . && uv run mypy .
+uv run ruff check
+uv run ruff format
+uv run mypy .
 ```
+
 Run commands from project root.

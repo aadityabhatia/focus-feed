@@ -1,66 +1,37 @@
 # Education Content Feed System - Proposal
 
-## Problem Statement
-
-Education content exists as disconnected files (PDF, HTML, MP4) in a `data` directory with no unified access method. Users cannot efficiently consume this content across devices through standard applications.
+## Problem
+Education files (PDF, HTML, MP4) in `data/` are disconnected. Users cannot consume them efficiently across devices via standard apps.
 
 ## User Intent
-
-Make education content readily available for personal consumption through mobile applications:
-- **Podcast feed** for Antennapod and other podcast apps (audio content)
-- **Articles feed** for RSS reader apps (text content from PDF/HTML)
-
-Feeds are hosted on an existing internal web server, accessible only to the user, and organized with:
-- Per-folder feeds with custom titles and descriptions via `feed.json`
-- Auto-generated root-level `index.html` page for feed discovery
+Make content accessible via private RSS feeds hosted on an existing internal web server:
+- Podcast feed for Antennapod and podcast apps
+- Articles feed for RSS readers
+Per-folder feeds via `feed.json`, with auto-generated root `index.html` for discovery.
 
 ## Scope
 
 ### In Scope
-
-**Input & Processing:**
-- Input files: PDF, HTML, and MP4 in `data` directory and subfolders
-- Processing modes: batch and incremental (file watching)
-- Audio: Transcribe MP4 to markdown; generate key takeaway summaries using local/compatible LLM
-- Documents: Extract metadata AND content from PDF/HTML; optional summarization
-- Track processing via step maps: `transcribe`, `summarize`, `extract`
-
-**Metadata:**
-- Generate JSON metadata with `.json` extension for each file
-- Fields: `title` (dict: filename/extracted/generated), `extracted_title`, `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date` (UNIX epoch ms), `size`, `publication_date` (PDF/HTML), `duration`, `creation_time` (MP4), `hash`
-- MP4: blank description, key takeaways in summary, full transcript in content
-- PDF/HTML: extracted metadata in description, extracted content in content, null summary unless explicitly summarized
-
-**Feed Generation:**
-- Podcast RSS feed for MP4 files
-- Articles RSS feed for PDF/HTML files
-- Per-folder feeds when `feed.json` exists
-- Conditional: feeds only generated where `feed.json` exists AND applicable files present
-- Root-level feeds require explicit `feed.json` in data directory root
-- Auto-generated root-level `index.html` listing all feeds
-
-**Features:**
-- Reflection questions via `reflection.md` files in source folders
-- Automatic folder name prefixing for titles
-- Markdown to HTML conversion for feed descriptions
-- Control character normalization for XML safety
+- **Input:** PDF, HTML, MP4 in `data/` and subfolders
+- **Processing:** Batch and incremental watch mode
+  - MP4: transcribe to markdown, LLM key takeaway summary
+  - PDF/HTML: extract metadata + content; optional summarization
+  - Track steps: `transcribe`, `summarize`, `extract`
+- **Metadata:** `<filename>.json` per file with title dict, description, summary, content, dates (ms), hash, size, duration/creation_time, step maps
+  - MP4: description blank, summary = takeaways, content = transcript
+  - PDF/HTML: description = extracted metadata, content = plaintext, summary null unless summarized
+- **Feeds:** `podcast.xml` for MP4, `articles.xml` for PDF/HTML, per-folder only when `feed.json` exists
+- **Features:** `reflection.md` injection, auto folder-name title prefix, markdown→HTML conversion, control character sanitization
 
 ### Out of Scope
-
-- AI agent for filling metadata gaps
-- Cloud-based services (all processing local; remote transcription optional)
-- Web server deployment
-- Public distribution
+- AI agents for metadata gap filling
+- Cloud services by default; remote transcription optional
+- Web server deployment / public distribution
 
 ## Success Criteria
-
-- All education content in `data` directory accessible through standard RSS feeds
-- Audio content transcribed and summarized automatically
-- PDF/HTML files have content extracted and optionally summarized
-- Content consumable through Antennapod and any RSS reader
-- No dependency on external/cloud services (remote transcription excepted)
-- Only new or updated files processed (skips complete JSON metadata)
-- Orphaned JSON files and special characters generate warnings
-- Millisecond precision timestamps throughout
-- Feed eligibility computed from step map statuses
-- Root-level `index.html` lists all available feeds
+- Content consumable via standard RSS/podcast apps
+- Automatic transcription + summarization for MP4, extraction for PDF/HTML
+- Local-first processing, incremental skips completed files
+- Warnings for orphaned JSONs and special characters
+- Millisecond timestamps, feed eligibility from step statuses
+- Root `index.html` lists all feeds

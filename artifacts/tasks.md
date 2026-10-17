@@ -66,15 +66,17 @@ Establish the project foundation with dependency management, directory structure
   - Add all dependencies from design doc section 4.1
   - Add optional dependency group for local transcription (faster-whisper only)
   - **Updated:** Add `av` as required dependency (not optional) with no version pinning
+  - **Updated:** Add `markdown>=3.5.0` as required dependency
   - Configure uv as the build system
 - **Dependencies:**
-  - Required packages: `feedgen`, `watchdog`, `openai`, `pydantic-settings`, `pydantic`, `click`, `pypdf`, `beautifulsoup4`, `python-dotenv`, `av>=11.0`
+  - Required packages: `feedgen`, `watchdog`, `openai`, `pydantic-settings`, `pydantic`, `click`, `pypdf`, `beautifulsoup4`, `python-dotenv`, `av>=11.0`, `markdown>=3.5.0`
   - Optional group `local-transcription`: `faster-whisper`
 - **Completion Criteria:**
   - `pyproject.toml` is valid and can be parsed by uv
   - All dependencies are listed
   - Optional dependency group configured
   - `av` is in required dependencies
+  - `markdown>=3.5.0` is in required dependencies
   - `uv lock` succeeds without errors
 
 - [x] T1.3: Set Up Development Environment
@@ -524,21 +526,14 @@ Implement RSS feed generation for podcast and articles feeds with new features.
 - **Description:** Create markdown to HTML converter with XSS protection
 - **File:** `src/local_feed_generator/feeds.py`
 - **Actions:**
-  - Implement `_markdown_to_html()` function
-  - Try to use `markdown` library if installed
-  - Implement fallback simple converter for basic markdown:
-    - Headers (# to ######)
-    - Bold (**text**)
-    - Italic (*text*, _text_)
-    - Links [text](url) with safe URL scheme validation
-    - Lists (ordered and unordered)
-    - Paragraphs
-  - Ensure all text is HTML-escaped to prevent XSS
-  - Only allow safe URL schemes: http, https, mailto, relative paths, fragments
+  - Implement `_markdown_to_html()` function using required `markdown` library
+  - **UPDATED:** Removed try/except ImportError fallback - markdown is now required
+  - **UPDATED:** Removed `_simple_markdown_to_html`, `_convert_inline_markdown`, `_strip_outer_p_wrapper` functions
+  - Ensure all text is HTML-escaped to prevent XSS via deregistering html_block and html_strip inline patterns
+  - Add URL sanitization for safe URL schemes: http, https, mailto, relative paths, fragments
   - Handle None input gracefully (return empty string)
 - **Completion Criteria:**
-  - Markdown conversion works with markdown library
-  - Fallback converter handles basic markdown
+  - Markdown conversion works with markdown library (required dependency)
   - All output is XSS-safe
   - Unsafe URL schemes are rejected or textified
   - None input returns empty string
@@ -1033,9 +1028,26 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
 ## Phase 9: New Features Implementation
 
 ### Objective
-Implement all new features: title dict, millisecond timestamps, per-folder feeds, reflection support, markdown conversion, module prefixing, content extraction, conditional feed generation, root-level index page.
+Implement all new features: title dict, millisecond timestamps, per-folder feeds, reflection support, markdown conversion, module prefixing, content extraction, conditional feed generation, root-level index page, comprehensive event logging.
 
 ### Tasks
+
+- [x] T9.0: Implement Comprehensive Event Logging
+- **Description:** Add detailed logging throughout the pipeline for better observability
+- **Files:** `transcriber.py`, `summarizer.py`, `extractors.py`, `producer.py`, `feeds.py`
+- **Actions:**
+  - Add logging for transcription start/complete/skip in transcriber.py
+  - Add logging for summarization start/complete and title generation start/complete in summarizer.py
+  - Add logging for PDF/HTML/audio extraction start/complete and mtime fallback in extractors.py
+  - Add step-level logging for all processing steps in producer.py
+  - Add logging for feed generation, metadata discovery, per-folder generation in feeds.py
+  - Fix logger names in summarizer.py and extractors.py to use `"local_feed_generator"` instead of `__name__`
+  - Ensure all logging uses consistent format with appropriate log levels
+- **Completion Criteria:**
+  - All major processing steps are logged with start/complete/skip messages
+  - Logger names are consistent across all modules
+  - Log messages include relevant context (filename, filepath, step name, etc.)
+  - Log levels are appropriate (INFO for normal operations, WARNING for issues, ERROR for failures)
 
 - [x] T9.1: Implement Title as Dict with Source Tracking
 - **Description:** Change title field from string to dict with sanitized filename, extracted, and generated sources
@@ -1377,7 +1389,7 @@ Add review tasks to ensure all clarifications and updates are properly implement
 
 ### Tasks
 
-- [ ] T10.1: Review index.html Root-Level Only Implementation
+- [x] T10.1: Review index.html Root-Level Only Implementation
 - **Description:** Verify index.html is generated ONLY at root level, not in subfolders
 - **Actions:**
   - Check that index.html generation code only writes to root data directory
@@ -1391,23 +1403,26 @@ Add review tasks to ensure all clarifications and updates are properly implement
 - **Dependencies:**
   - T4.7 (Index generation)
 
-- [ ] T10.2: Review Reflection.md Optional Nature
+- [x] T10.2: Review Reflection.md Optional Nature
 - **Description:** Verify reflection.md is optional and NOT a prerequisite for summarization
 - **Actions:**
   - Review summarization logic to ensure it works without reflection.md
   - Check that PDF/HTML files can be summarized without reflection.md present
   - Ensure reflection.md is only used to select the prompt (PROMPT_ARTICLE_REFLECTION/PROMPT_PODCAST_REFLECTION vs PROMPT_ARTICLE/PROMPT_PODCAST)
   - Verify summarize command works on PDF/HTML files in folders without reflection.md
+  - **NEW:** Fixed summarizer.py to remove extraneous "Consider the following reflection questions while summarizing" text from user_content
+  - **NEW:** Added _check_reflection_md import and call in cli.py summarize command
 - **Verification:**
   - Test summarization of PDF/HTML file in folder without reflection.md
   - Confirm summary is generated using PROMPT_ARTICLE
   - Test summarization with reflection.md present
   - Confirm summary uses PROMPT_ARTICLE_REFLECTION when available
+  - Confirm process command path now matches individual step execution for reflection.md handling
 - **Dependencies:**
   - T3.3 (Summarizer)
   - T3.1 (Producer)
 
-- [ ] T10.3: Review Nested Feed Subtree Aggregation
+- [x] T10.3: Review Nested Feed Subtree Aggregation
 - **Description:** Verify each feed picks up all subdirectory content (inner feeds are subsets of outer feeds)
 - **Actions:**
   - Review feed generation code to ensure subtree aggregation works correctly
@@ -1423,7 +1438,7 @@ Add review tasks to ensure all clarifications and updates are properly implement
   - T4.4 (Per-folder feed generation)
   - T4.6 (Feed generation method)
 
-- [ ] T10.4: Update av Library Dependency
+- [x] T10.4: Update av Library Dependency
 - **Description:** Verify av is moved from optional to required dependency with no version pinning
 - **Actions:**
   - Update pyproject.toml to move av from optional-dependencies to main dependencies
@@ -1439,7 +1454,7 @@ Add review tasks to ensure all clarifications and updates are properly implement
   - T1.2 (pyproject.toml)
   - T1.4 (Verify installation)
 
-- [ ] T10.5: Review and Update All Documentation
+- [x] T10.5: Review and Update All Documentation
 - **Description:** Ensure all documentation reflects the clarifications
 - **Actions:**
   - Review README.md for accuracy regarding index.html, reflection.md, subtree aggregation
@@ -1447,6 +1462,9 @@ Add review tasks to ensure all clarifications and updates are properly implement
   - Review design.md for consistency with clarifications
   - Update any conflicting information
   - Ensure all examples and use cases reflect the clarifications
+  - **NEW:** Updated design.md to move markdown from optional to required dependency
+  - **NEW:** Updated design.md section 6.7 to note markdown is required with XSS protection
+  - **NEW:** Added event logging section to design.md
 - **Verification:**
   - All documentation is consistent
   - No contradictions between docs
@@ -1507,7 +1525,7 @@ Add review tasks to ensure all clarifications and updates are properly implement
 8. \u2705 Whitespace/control character normalization
 9. \u2705 Content extraction for PDF/HTML files
 10. \u2705 Audio metadata extraction via ffprobe
-11. \u2705 Optional dependencies (faster-whisper, av, markdown)
+11. \u2705 Optional dependencies: faster-whisper (local transcription), Required dependencies: av (audio metadata), markdown (markdown to HTML conversion)
 12. \u2705 Conditional feed generation (feeds only where feed.json exists AND applicable files present)
 13. \u2705 Root-level index.html generation for feed discovery
 14. \u2705 NO root feeds without feed.json
@@ -1524,12 +1542,16 @@ Add review tasks to ensure all clarifications and updates are properly implement
 - **All tests:** \u2705 PASSED (as per integration tests)
 - **Backward compatibility:** \u2705 MAINTAINED
 - **Error handling:** \u2705 COMPREHENSIVE
+- **Event logging:** \u2705 IMPLEMENTED throughout pipeline
+- **Markdown library:** \u2705 Now required dependency with XSS protection
 
 ### Notes
 - Remote transcription is fully implemented and tested
 - Per-folder feeds work with feed.json configuration
 - Reflection questions are supported via reflection.md files (OPTIONAL - not required for summarization)
-- Markdown to HTML conversion has both enhanced (with markdown library) and fallback implementations
+- **FIXED:** summarizer.py removed extraneous "Consider the following reflection questions while summarizing" text
+- **FIXED:** cli.py summarize command now checks for reflection.md and passes it to summarizer (matches process command behavior)
+- Markdown to HTML conversion uses required markdown library with XSS protection (fallback removed)
 - Control characters are automatically removed from extracted content to prevent XML errors
 - All timestamps use millisecond precision
 - Module name prefixing is automatic and intelligent (doesn't double-prefix)
@@ -1543,3 +1565,36 @@ Add review tasks to ensure all clarifications and updates are properly implement
 - feed.json supports optional metadata: title, description, language, author, link, image
 - Feed links are derived from BASE_URL + relative path (not hardcoded)
 - `av` library is now a required dependency (not optional) with no version pinning
+
+## Latest Changes (2026-10-17)
+
+### Code Changes Implemented
+
+1. **Summarizer reflection.md check (FIXED)**
+   - `summarizer.py`: Removed extraneous "Consider the following reflection questions while summarizing:\n\n" from user_content (lines 202-204)
+   - `cli.py summarize command`: Added `_check_reflection_md` import, initialized `reflection_questions=None`, called it for each file, and passed it to `summarizer.summarize()`
+   - **Result:** `process` command path now matches individual step execution for reflection.md handling
+
+2. **feed.json warning**
+   - **Findings:** feed.json was already being properly ignored throughout the codebase. No changes needed.
+
+3. **Feed item URL path**
+   - **Findings:** URL path calculation was already correct. `metadata.filepath` is always relative to data_dir root, and `_absolute_url` correctly constructs URLs as `{base_url}/{data_dir_basename}/{filepath}`. No changes needed.
+
+4. **Markdown library usage (CHANGED)**
+   - `pyproject.toml`: Added `"markdown>=3.5.0"` as required dependency
+   - `feeds.py`: Removed try/except ImportError fallback, removed `_simple_markdown_to_html`, `_convert_inline_markdown`, `_strip_outer_p_wrapper` functions
+   - Added XSS protection via markdown library (deregister html_block and html inline patterns) + URL sanitization
+
+5. **Event logging (ADDED)**
+   - `transcriber.py`: Added logging for transcription start/complete/skip
+   - `summarizer.py`: Added logging for summarization start/complete and title generation start/complete
+   - `extractors.py`: Added logging for PDF/HTML/audio extraction start/complete and mtime fallback
+   - `producer.py`: Added step-level logging for all processing steps
+   - `feeds.py`: Added logging for feed generation, metadata discovery, per-folder generation
+   - Fixed logger names in summarizer.py and extractors.py to use `"local_feed_generator"` instead of `__name__`
+
+### Artifacts Updated
+- **tasks.md**: Added T9.0 for event logging, marked T10.1-T10.5 complete, updated T1.2 to include markdown, updated T4.5 to reflect required markdown, added notes about fixes
+- **design.md**: Moved markdown from optional to required, updated section 6.7, added section 4.5 for event logging, updated dependencies list
+- **specs.md**: Added markdown library as required constraint

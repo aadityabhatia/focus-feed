@@ -252,13 +252,6 @@ uv sync --optional-group local-transcription
 
 Installs `faster-whisper` and `av` for local GPU-accelerated transcription.
 
-### Markdown Conversion
-
-For enhanced markdown to HTML conversion:
-```bash
-uv pip install markdown
-```
-
 ---
 
 ## Troubleshooting
