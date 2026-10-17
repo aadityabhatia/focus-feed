@@ -17,7 +17,7 @@ This document provides a detailed, executable implementation plan for building `
   - feed.json supports metadata fields: title (required), description (optional), language (optional), author (optional), link (optional), image (optional)
   - Added expected metadata fields to feed.json: title (required), description, language, author, link, and image (with url, title, link subfields)
   - Added support for title as dict with source tracking (filename, extracted, generated)
-  - Added new config variables: SUMMARY_PROMPT, TITLE_PROMPT, SUMMARY_REFLECTION_PROMPT
+  - Added new config variables: PROMPT_ARTICLE, PROMPT_PODCAST, PROMPT_TITLE, PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION
   - Added reflection.md support for reflection questions in summarization (OPTIONAL - not a prerequisite)
   - Added per-folder feed generation with feed.json configuration
   - Added markdown to HTML conversion for feed descriptions
@@ -81,13 +81,13 @@ Establish the project foundation with dependency management, directory structure
 - **Description:** Create initial configuration files
 - **Actions:**
   - Create `.env.example` with all environment variables from design doc section 3.2
-  - Include new required variables: SUMMARY_PROMPT, TITLE_PROMPT
-  - Include new optional variable: SUMMARY_REFLECTION_PROMPT
+  - Include new required variables: PROMPT_TITLE, PROMPT_ARTICLE, PROMPT_PODCAST
+  - Include new optional variables: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION
   - Create `.gitignore` file (if using git)
   - Create a basic `README.md` stub
 - **Completion Criteria:**
   - `.env.example` contains all required environment variables with example values
-  - `.env.example` includes: `BASE_URL`, `DATA_DIR`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`, `SUMMARY_PROMPT`, `TITLE_PROMPT`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_DEVICE`, `TRANSCRIPTION_COMPUTE_TYPE`, `SUMMARY_REFLECTION_PROMPT`
+  - `.env.example` includes: `BASE_URL`, `DATA_DIR`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`, `PROMPT_TITLE`, `PROMPT_ARTICLE`, `PROMPT_PODCAST`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_DEVICE`, `TRANSCRIPTION_COMPUTE_TYPE`, `PROMPT_ARTICLE_REFLECTION`, `PROMPT_PODCAST_REFLECTION`
 
 - [x] T1.4: Verify Dependency Installation
 - **Description:** Ensure all dependencies can be installed
@@ -117,8 +117,8 @@ Implement the foundational modules for configuration, file scanning, and metadat
   - Create `Settings` class extending `pydantic_settings.BaseSettings`
   - Define all environment variables with types and defaults
   - Add validation for required fields (`BASE_URL`, `DATA_DIR`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`)
-  - Add new required fields: `SUMMARY_PROMPT`, `TITLE_PROMPT`
-  - Add new optional field: `SUMMARY_REFLECTION_PROMPT` (defaults to None)
+  - Add new required fields: `PROMPT_TITLE`, `PROMPT_ARTICLE`, `PROMPT_PODCAST`
+  - Add new optional fields: `PROMPT_ARTICLE_REFLECTION`, `PROMPT_PODCAST_REFLECTION` (default to None)
   - Implement singleton pattern for config access
 - **Completion Criteria:**
   - Config validations work (errors on missing required fields)
@@ -219,7 +219,7 @@ Implement the file processing pipeline including transcription, summarization, a
     - Writes JSON metadata file adjacent to source file with step maps
     - Handles errors and writes error metadata with preserved step maps
   - Implement `process_all()` method for batch processing
-  - Create `generate_title()` helper method that uses LLM with prompt including filename and extracted title before content. TITLE_PROMPT includes instructions to use extracted or filename titles when generating.
+  - Create `generate_title()` helper method that uses LLM with prompt including filename and extracted title before content. PROMPT_TITLE includes instructions to use extracted or filename titles when generating.
   - **NEW:** Create helper for module name prefixing
 - **Dependencies:**
   - T2.2 (Metadata model)
@@ -273,18 +273,18 @@ Implement the file processing pipeline including transcription, summarization, a
     - Endpoint: `LLM_ENDPOINT`
     - API Key: `LLM_API_KEY`
     - Model: `LLM_MODEL`
-    - **NEW:** System prompt from `SUMMARY_PROMPT` (required)
-    - **NEW:** Reflection prompt from `SUMMARY_REFLECTION_PROMPT` (optional)
-    - **NEW:** Title prompt from `TITLE_PROMPT` (required)
+    - **NEW:** System prompt from `PROMPT_ARTICLE` (for PDF/HTML) or `PROMPT_PODCAST` (for MP4) (required)
+    - **NEW:** Reflection prompt from `PROMPT_ARTICLE_REFLECTION` (PDF/HTML) or `PROMPT_PODCAST_REFLECTION` (MP4) (optional)
+    - **NEW:** Title prompt from `PROMPT_TITLE` (required)
   - Implement `summarize()` method that:
     - Accepts transcript or extracted content text as input
     - Accepts optional `reflection_questions` parameter
-    - Uses `SUMMARY_REFLECTION_PROMPT` when reflection_questions provided, else `SUMMARY_PROMPT`
+    - Uses `PROMPT_ARTICLE_REFLECTION` (PDF/HTML) or `PROMPT_PODCAST_REFLECTION` (MP4) when reflection_questions provided, else `PROMPT_ARTICLE` (PDF/HTML) or `PROMPT_PODCAST` (MP4)
     - Returns key takeaways as string
     - Tracks processing in summarize step map with timing (millisecond precision) and metrics
     - Handles API errors with retry logic (exponential backoff)
     - **NEW:** Works with both MP4 transcripts and PDF/HTML extracted content
-  - Implement `generate_title()` method for generating titles from content using `TITLE_PROMPT`
+  - Implement `generate_title()` method for generating titles from content using `PROMPT_TITLE`
   - **NEW:** Use millisecond precision for timestamps in step maps
 - **Dependencies:**
   - T2.1 (Config)
@@ -1046,7 +1046,7 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
   - Add final_title computed property to extract final title string with precedence: generated > extracted > filename
   - Update feed generator to use final_title from title dict
   - Ensure backward compatibility with string titles
-  - Update generate_title() to include filename and extracted title in LLM prompt before content. TITLE_PROMPT already includes instructions to use extracted or filename titles when generating.
+  - Update generate_title() to include filename and extracted title in LLM prompt before content. PROMPT_TITLE already includes instructions to use extracted or filename titles when generating.
 - **Completion Criteria:**
   - Title dict with all sources (filename=sanitized, extracted, generated) works correctly
   - Final title extraction works with correct precedence (generated > extracted > filename)
@@ -1088,13 +1088,13 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
 - **Actions:**
   - Implement reflection.md detection in producer
   - Pass reflection questions to summarizer
-  - Use SUMMARY_REFLECTION_PROMPT when reflection questions available
+  - Use PROMPT_ARTICLE_REFLECTION (PDF/HTML) or PROMPT_PODCAST_REFLECTION (MP4) when reflection questions available
   - Prepend reflection questions to transcript or extracted content
   - **NEW:** Works with both MP4 and PDF/HTML files
 - **Completion Criteria:**
   - Reflection questions detected and loaded
   - Questions passed to summarizer
-  - SUMMARY_REFLECTION_PROMPT used when available
+  - PROMPT_ARTICLE_REFLECTION (PDF/HTML) or PROMPT_PODCAST_REFLECTION (MP4) used when available
   - Questions prepended to transcript
   - Works with MP4, PDF, and HTML files
 
@@ -1170,13 +1170,13 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
   - Duration and creation_time fields populated correctly
 
 - [x] T9.10: Add New Configuration Variables
-- **Description:** Add SUMMARY_PROMPT, TITLE_PROMPT, SUMMARY_REFLECTION_PROMPT to config
+- **Description:** Add PROMPT_TITLE, PROMPT_ARTICLE, PROMPT_PODCAST, PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION to config
 - **Files:** `config.py`, `summarizer.py`
 - **Actions:**
   - Add new fields to Settings class
-  - Add SUMMARY_PROMPT as required (no default)
-  - Add TITLE_PROMPT as required (no default)
-  - Add SUMMARY_REFLECTION_PROMPT as optional (defaults to None)
+  - Add PROMPT_TITLE as required (no default)
+  - Add PROMPT_ARTICLE and PROMPT_PODCAST as required (no default)
+  - Add PROMPT_ARTICLE_REFLECTION and PROMPT_PODCAST_REFLECTION as optional (defaults to None)
   - Update summarizer to use new prompt variables
 - **Completion Criteria:**
   - New config variables defined and validated
@@ -1362,7 +1362,7 @@ The following tasks can be worked on concurrently:
 4. **Transcription:** Use faster-whisper with large-v3-turbo, CUDA, float16 (local); or remote API (when configured)
 5. **No quantization:** Best quality transcription, no quantization
 6. **LLM:** OpenAI-compatible with 128K context
-7. **Prompts:** SUMMARY_PROMPT and TITLE_PROMPT have defaults; SUMMARY_REFLECTION_PROMPT optional
+7. **Prompts:** PROMPT_TITLE, PROMPT_ARTICLE, PROMPT_PODCAST are required; PROMPT_ARTICLE_REFLECTION and PROMPT_PODCAST_REFLECTION are optional
 8. **Feed Format:** RSS only (Atom not supported)
 10. **URLs:** Absolute URLs = BASE_URL + filepath
 11. **Errors:** Error state written to JSON with step map status = null, excluded from feeds
@@ -1396,13 +1396,13 @@ Add review tasks to ensure all clarifications and updates are properly implement
 - **Actions:**
   - Review summarization logic to ensure it works without reflection.md
   - Check that PDF/HTML files can be summarized without reflection.md present
-  - Ensure reflection.md is only used to select the prompt (SUMMARY_REFLECTION_PROMPT vs SUMMARY_PROMPT)
+  - Ensure reflection.md is only used to select the prompt (PROMPT_ARTICLE_REFLECTION/PROMPT_PODCAST_REFLECTION vs PROMPT_ARTICLE/PROMPT_PODCAST)
   - Verify summarize command works on PDF/HTML files in folders without reflection.md
 - **Verification:**
   - Test summarization of PDF/HTML file in folder without reflection.md
-  - Confirm summary is generated using SUMMARY_PROMPT
+  - Confirm summary is generated using PROMPT_ARTICLE
   - Test summarization with reflection.md present
-  - Confirm summary uses SUMMARY_REFLECTION_PROMPT when available
+  - Confirm summary uses PROMPT_ARTICLE_REFLECTION when available
 - **Dependencies:**
   - T3.3 (Summarizer)
   - T3.1 (Producer)
@@ -1498,7 +1498,7 @@ Add review tasks to ensure all clarifications and updates are properly implement
 
 ### New Features Implemented
 1. \u2705 Title field as dict with source tracking
-2. \u2705 New config variables (SUMMARY_PROMPT, TITLE_PROMPT, SUMMARY_REFLECTION_PROMPT)
+2. \u2705 New config variables (PROMPT_TITLE, PROMPT_ARTICLE, PROMPT_PODCAST, PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION)
 3. \u2705 Reflection.md support
 4. \u2705 Per-folder feed generation with feed.json
 5. \u2705 Markdown to HTML conversion

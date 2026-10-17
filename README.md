@@ -2,555 +2,196 @@
 
 **Transform your education content into mobile-friendly RSS feeds for podcast and article consumption.**
 
-This is a personal feed generator that processes your education content files (PDF, HTML, MP4 audio) and creates standardized RSS feeds. These feeds can be consumed through mobile applications like **Antennapod** for audio content and **any RSS reader** for text content.
+## Project Summary
 
-## Synopsis
+Turn disorganized PDF, HTML, and MP4 audio files into RSS feeds for mobile apps. 
 
-You have education content as a disorganized collection of PDF documents, HTML files, and MP4 audio recordings. There's no easy way to browse, track, or consume this content across your devices. The feed generator solves this by:
+- **Podcast feed** - For MP4 audio (Antennapod and other podcast apps)
+- **Articles feed** - For PDF/HTML documents (any RSS reader)
+- **Per-folder feeds** - Organize with `feed.json` in subfolders
+- **Discovery** - Auto-generated `index.html` lists all available feeds
 
-1. **Processing your files** - Scans your `data` directory (including subfolders) for content
-2. **Transcribing audio** - Converts MP4 files to markdown text using local AI models on your Nvidia GPU, or optionally via a remote OpenAI-compatible API
-3. **Generating summaries** - Creates key takeaways from audio content using a local OpenAI-compatible LLM; PDF/HTML files can also be summarized
-4. **Extracting metadata** - Pulls titles, descriptions, and text content from PDF/HTML files
-5. **Creating feeds** - Generates RSS feeds that work with mobile apps:
-    - `podcast.xml` - For audio content (Antennapod and other podcast apps)
-    - `articles.xml` - For text content (any RSS reader app)
-6. **Per-folder organization** - Optional `feed.json` files in subfolders enable per-folder feeds with custom titles and descriptions
-7. **Index page** - Generates `index.html` with all feed URLs for easy discovery
+All processing happens locally on your infrastructure with optional remote transcription.
 
-Your existing web server serves the `data` directory, making the feeds accessible to your mobile devices. All processing happens locally on your infrastructure - no cloud services required.
+**Documentation:**
+- [Proposal](./artifacts/proposal.md) - Problem and scope
+- [Specifications](./artifacts/specs.md) - Detailed requirements
+- [Design Document](./artifacts/design.md) - Architecture
+
+---
 
 ## Quick Start
 
-1. **Place your education content** in the `data/` directory (supports subfolders)
-2. **Configure environment** variables (see Configuration below)
-3. **Process your files**:
+1. **Place your files** in the `data/` directory (supports subfolders)
+
+2. **Configure** via environment variables or `.env` file
+
+3. **Process your content:**
    ```bash
-   cd local-feed-generator
    uv run local-feed-generator process
    ```
-4. **Access your feeds**:
-   - Navigate to `{BASE_URL}/index.html` to see all available feeds
-   - Podcast feed: `{BASE_URL}/podcast.xml` (only if feed.json exists and MP4 files present)
-   - Articles feed: `{BASE_URL}/articles.xml` (only if feed.json exists and PDF/HTML files present)
 
-### Quick Examples
+4. **Access your feeds** at `{BASE_URL}/index.html`
 
-```bash
-# Process a single file
-uv run local-feed-generator process --file videos/lecture.mp4
-
-# Force reprocessing of a file (even if already complete)
-uv run local-feed-generator process --file videos/lecture.mp4 --force
-
-# Transcribe a specific MP4 file
-uv run local-feed-generator transcribe --file videos/lecture.mp4
-
-# Generate feeds only (no processing)
-uv run local-feed-generator feeds
-
-# Summarize a PDF/HTML file
-uv run local-feed-generator summarize --file documents/report.pdf
-
-# Process with per-folder feeds
-uv run local-feed-generator process --data-dir ./my-course-data
-```
+---
 
 ## Configuration
 
-The feed generator is configured through environment variables. Create a `.env` file or set environment variables directly.
+### Required Environment Variables
 
-### Required Variables
+| Variable | Description |
+|----------|-------------|
+| `BASE_URL` | Root URL where data directory is served (e.g., `https://example.com`) |
+| `DATA_DIR` | Path to your content directory (e.g., `./data`) |
+| `LLM_ENDPOINT` | OpenAI-compatible API endpoint for summarization |
+| `LLM_API_KEY` | API key for LLM endpoint |
+| `LLM_MODEL` | Model identifier for summarization |
+| `PROMPT_ARTICLE` | Article summarization prompt (PDF/HTML) |
+| `PROMPT_PODCAST` | Podcast summarization prompt (MP4) |
+| `PROMPT_TITLE` | Title generation prompt |
 
-- **BASE_URL**: Root URL where your data directory is served (Example: `https://example.com`)
-- **DATA_DIR**: Path to your education content directory (Example: `./data`)
-- **LLM_ENDPOINT**: OpenAI-compatible API endpoint for summarization (Example: `https://llm.example.com/v1`)
-- **LLM_API_KEY**: API key for your LLM endpoint (Example: `your-api-key-here`)
-- **LLM_MODEL**: Model identifier to use for LLM summarization (Example: `mistralai/Mistral-7B-Instruct`)
-- **SUMMARY_PROMPT**: System prompt for LLM summarization (Example: `"Summarize key takeaways from the given content. Output just the summary concisely."`)
-- **TITLE_PROMPT**: System prompt for LLM title generation (Example: `"Generate a concise, descriptive title (5-10 words) for the given content. Do not include any formatting, quotes, or extra text."`)
+### Optional Environment Variables
 
-### Optional Variables
-
-- **FEED_FORMAT**: (Removed - RSS is the only supported format)
-- **TRANSCRIPTION_MODEL**: Default: `large-v3-turbo`. Whisper model size: `tiny`, `base`, `small`, `medium`, `large-v3-turbo`
-- **TRANSCRIPTION_DEVICE**: Default: `cuda`. Device for transcription: `cuda` (recommended) or `cpu`
-- **TRANSCRIPTION_COMPUTE_TYPE**: Default: `float16`. Compute type: `float16` (best quality), `int8` (lower memory)
-- **TRANSCRIPTION_ENDPOINT**: OpenAI-compatible API endpoint for remote transcription (Example: `https://your-transcription-endpoint.example.com/v1`)
-- **TRANSCRIPTION_API_KEY**: API key for your remote transcription endpoint (Example: `your-transcription-api-key-here`)
-- **TRANSCRIPTION_REMOTE_MODEL**: Optional model override for remote transcription endpoint (Example: `whisper-1`)
-- **SUMMARY_REFLECTION_PROMPT**: Optional system prompt for summarization with reflection questions. If not provided, falls back to SUMMARY_PROMPT.
-
-### Server Configuration Notes
-
-When using **remote transcription with a vLLM server**, the server must be configured with the `VLLM_MAX_AUDIO_DECODE_DURATION_S` environment variable to handle longer audio files. This is a **server-side configuration** that controls the maximum audio duration (in seconds) that can be decoded in a single request.
-
-- **Requirement:** Set `VLLM_MAX_AUDIO_DECODE_DURATION_S=3600` (or higher) to handle 1-hour audio files
-- **Example:** For handling 1-hour audio files, set the environment variable to `3600`
-- **Note:** This configuration is applied to the vLLM server itself, not the feed generator client
+| Variable | Default | Description |
+|----------|---------|-------------|
+| `PROMPT_ARTICLE_REFLECTION` | `PROMPT_ARTICLE` | Article summarization with reflection questions |
+| `PROMPT_PODCAST_REFLECTION` | `PROMPT_PODCAST` | Podcast summarization with reflection questions |
+| `TRANSCRIPTION_ENDPOINT` | - | Remote transcription API endpoint (enables remote mode) |
+| `TRANSCRIPTION_API_KEY` | - | Remote transcription API key |
+| `TRANSCRIPTION_REMOTE_MODEL` | - | Remote transcription model override |
+| `TRANSCRIPTION_MODEL` | `large-v3-turbo` | Local transcription model |
+| `TRANSCRIPTION_DEVICE` | `cuda` | Transcription device (cuda/cpu) |
+| `TRANSCRIPTION_COMPUTE_TYPE` | `float16` | Compute type for transcription |
 
 ### Example `.env` File
 
 ```bash
-# Required configuration
+# Required
 BASE_URL=https://example.com
 DATA_DIR=./data
 LLM_ENDPOINT=https://llm.example.com/v1
-LLM_API_KEY=your-api-key-here
+LLM_API_KEY=your-api-key
 LLM_MODEL=mistralai/Mistral-7B-Instruct
 
-# New required prompt configuration
-SUMMARY_PROMPT="Summarize key takeaways from the given content. Output just the summary concisely."
-TITLE_PROMPT="Generate a concise, descriptive title (5-10 words) for the given content. Do not include any formatting, quotes, or extra text."
+# Prompts
+PROMPT_ARTICLE="Summarize key takeaways from this document concisely in a few paragraphs."
+PROMPT_PODCAST="Summarize key takeaways from this podcast transcript concisely in a few paragraphs."
+PROMPT_TITLE="Generate a concise, descriptive title (5-10 words) for the given content."
 
-# Optional reflection prompt (uses SUMMARY_PROMPT if not provided)
-SUMMARY_REFLECTION_PROMPT="Summarize key takeaways focusing on: frameworks, analytical tools, critical thinking, creative thinking, systems thinking. Output just the summary concisely."
+# Optional
+PROMPT_ARTICLE_REFLECTION="Summarize with reflection questions: ..."
+PROMPT_PODCAST_REFLECTION="Summarize with reflection questions: ..."
 
-# Feed format is RSS only (FEED_FORMAT setting removed)
-
-# Optional: Transcription settings
-# For best quality with sufficient GPU memory:
+# Transcription (default: local faster-whisper on GPU)
 TRANSCRIPTION_MODEL=large-v3-turbo
 TRANSCRIPTION_DEVICE=cuda
 TRANSCRIPTION_COMPUTE_TYPE=float16
 
-# For lower GPU memory usage:
-# TRANSCRIPTION_MODEL=small
-# TRANSCRIPTION_COMPUTE_TYPE=int8
-
-# Optional: Remote transcription configuration
-# When TRANSCRIPTION_ENDPOINT is configured, uses OpenAI-compatible API instead of local faster-whisper
-# This is the default transcription mode when TRANSCRIPTION_ENDPOINT is set
-# TRANSCRIPTION_ENDPOINT=https://your-transcription-endpoint.example.com/v1
-# TRANSCRIPTION_API_KEY=your-transcription-api-key-here
-# TRANSCRIPTION_REMOTE_MODEL=whisper-1
+# Remote transcription (optional - overrides local when set)
+# TRANSCRIPTION_ENDPOINT=https://transcription.example.com/v1
+# TRANSCRIPTION_API_KEY=your-transcription-api-key
 ```
 
-## Transcription Model Configuration
+**Note:** When `TRANSCRIPTION_ENDPOINT` is configured, remote transcription mode is used instead of local faster-whisper.
 
-By default, audio transcription uses **local mode** with the `faster-whisper` library on your Nvidia GPU. This provides full offline capability with no external dependencies.
+---
 
-When **remote mode** is activated by configuring `TRANSCRIPTION_ENDPOINT`, the feed generator will automatically use the OpenAI-compatible API at that endpoint for transcription instead of local processing. The remote endpoint determines which model to use by default, and **remote mode becomes the default transcription method** when `TRANSCRIPTION_ENDPOINT` is set.
+## Processing Modes
 
-You can optionally specify `TRANSCRIPTION_REMOTE_MODEL` if your endpoint requires an explicit model parameter, but in most cases this is not needed as the endpoint will use its default transcription model.
+### Batch Mode
 
-Fallback behavior: When using remote mode, if the remote endpoint fails or is unavailable, the system will not automatically fall back to local transcription. Both modes are mutually exclusive based on the `TRANSCRIPTION_ENDPOINT` configuration.
-
-## Optional Dependencies
-
-### Local Transcription (GPU-accelerated)
-
-For local transcription using your Nvidia GPU, install the optional dependencies:
-
-```bash
-uv sync --optional-group local-transcription
-```
-
-This installs:
-- **faster-whisper** - GPU-accelerated Whisper implementation
-- **av** - Audio/video library for media decoding (pinned to compatible version)
-
-### Markdown Conversion
-
-For enhanced markdown to HTML conversion in feeds, optionally install:
-
-```bash
-uv pip install markdown
-```
-
-When not installed, the feed generator uses a built-in simple markdown converter that handles basic formatting.
-
-## Requirements
-
-### Hardware
-- **Nvidia GPU with CUDA** - Required for efficient audio transcription (local mode)
-- **CUDA Toolkit** - Must be installed and configured
-
-### Software
-- **Python 3.14 or later**
-- **uv** - For dependency management
-- **Local LLM Endpoint** - Running OpenAI-compatible API (e.g., vLLM, Ollama)
-- **Optional**: Remote OpenAI-compatible transcription endpoint - Required only if using remote transcription mode (when `TRANSCRIPTION_ENDPOINT` is configured)
-- **Optional**: `ffprobe` - For extracting audio metadata (duration, creation_time, bit_rate). If not installed, falls back to file modification time.
-
-### Models
-- **Transcription**: `faster-whisper` models downloaded automatically on first run (~2-6 GB)
-- **Summarization**: Any OpenAI-compatible model with 128K+ context window recommended
-
-## Usage
-
-### Process All Files (Batch Mode)
-
-Process all files in your data directory at once:
-
+Process all files at once:
 ```bash
 uv run local-feed-generator process
 ```
 
-This will:
-- Scan all subfolders
-- Process new files (those without `.json` metadata)
-- Skip already-processed files
-- Generate feeds (podcast.xml and articles.xml) only where feed.json exists and applicable files are present
-- Generate index.html with all feed URLs
+### Incremental Mode
 
-### Watch for Changes (Incremental Mode)
-
-Continuously monitor your data directory for new or updated files:
-
+Watch for new/updated files:
 ```bash
 uv run local-feed-generator watch
 ```
 
-This will:
-- Watch for file system changes
-- Automatically process new files
-- Regenerate feeds and index.html after each processing
-- Warn about orphaned JSON files and special characters
-- Periodically rescan as fallback for unreliable file system events
+---
 
-### Generate Feeds Only
+## Granular Processing
 
-If you've added JSON metadata manually and just need to rebuild feeds:
+Target specific steps or files:
 
-```bash
-uv run local-feed-generator feeds
-```
+| Command | Description |
+|---------|-------------|
+| `transcribe` | Transcribe MP4 files to markdown |
+| `summarize` | Generate summaries from transcripts or document content |
+| `extract` | Extract metadata from PDF/HTML files |
+| `feeds` | Generate RSS feeds and index.html |
+| `validate` | Validate all metadata files |
+| `create-feed` | Create a template `feed.json` in a directory |
 
-### Validate Metadata
+### Common Flags
 
-Check all JSON metadata files for validity:
+| Flag | Description |
+|------|-------------|
+| `--data-dir <path>` | Path to data directory (default: `DATA_DIR`) |
+| `--file <path>` | Process only this specific file |
+| `--force` | Force re-processing even if complete |
+| `--dry-run` | Preview without making changes (transcribe, summarize, extract) |
+| `--config-file <path>` | Use custom `.env` file |
 
-```bash
-uv run local-feed-generator validate
-```
-
-### Granular Processing (Step-by-Step)
-
-For more control over the processing pipeline, you can run individual steps instead of using the all-in-one `process` command. This is useful when you want to run long-running steps (e.g. transcription) separately or inspect intermediate results.
-
-**For MP4 (audio) files:**
+### Examples
 
 ```bash
-# Step 1: Transcribe audio to markdown text
-uv run local-feed-generator transcribe
-
-# Step 2: Generate summaries from transcripts
-uv run local-feed-generator summarize
-
-# Step 3: Validate and finalize metadata (JSON finalization happens here)
-uv run local-feed-generator validate
-```
-
-**For PDF/HTML (document) files:**
-
-```bash
-# Step 1: Extract metadata (title, description, date, content)
-uv run local-feed-generator extract
-
-# Step 2: Optionally generate summaries from extracted content
-uv run local-feed-generator summarize
-
-# Step 3: Validate and finalize metadata (JSON finalization happens here)
-uv run local-feed-generator validate
-```
-
-**Then generate feeds (JSON finalization also happens here):**
-
-```bash
-uv run local-feed-generator feeds
-```
-
-#### Processing Pipeline
-
-The granular processing pipeline works as follows:
-
-1. **scan** \=> The scanner discovers MP4, PDF, and HTML files in your data directory
-2. **transcribe** \=> MP4 files are transcribed to markdown text using local AI
-3. **summarize** \=> Transcripts and extracted content are summarized by the LLM to produce key takeaways
-4. **extract** \=> PDF/HTML files have their metadata and content extracted
-5. **feeds** \=> All valid metadata is aggregated into `podcast.xml` and `articles.xml`
-6. **index** \=> `index.html` is generated with all feed URLs
-
-#### Using `--file` and `--force`
-
-All granular commands support the `--file` and `--force` flags for targeted processing:
-
-```bash
-# Transcribe a single file
-uv run local-feed-generator transcribe --file videos/lecture.mp4
-
-# Force re-transcription of a file
-uv run local-feed-generator transcribe --file videos/lecture.mp4 --force
-
-# Summarize a PDF/HTML file
-uv run local-feed-generator summarize --file documents/report.pdf
-
-# Preview which files would be processed (no changes made)
-uv run local-feed-generator transcribe --dry-run
-```
-
-- **`--file <path>`**: Process only the specified file instead of scanning the entire directory. The path can be relative to the data directory or absolute.
-- **`--force`**: Run the step even if it appears to already be complete. For example, `--force` on `transcribe` will re-transcribe files that already have `transcribe.status="complete"`.
-- **`--dry-run`**: Available on `transcribe`, `summarize`, and `extract`. Shows which files would be processed without making any changes.
-
-All subcommands also support `--config-file` to specify a custom `.env`-style configuration file.
-
-## CLI Command Reference
-
-The `local-feed-generator` CLI provides the following subcommands. All commands support `--data-dir` (optional, defaults to `DATA_DIR` from configuration), `--config-file`, `--file`, and `--force`. The `--dry-run` flag is available on granular commands (`transcribe`, `summarize`, `extract`).
-
-### `process`
-
-Process all files in the data directory (batch mode). Scans for content files (MP4, PDF, HTML), processes each through the appropriate pipeline, and generates feeds afterwards.
-
-**Flags:**
-- `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
-- `--config-file <path>` — Path to a `.env`-style configuration file
-- `--file <path>` — Process only the specified file instead of scanning the directory
-- `--force` — Re-process all files even if already feed-eligible
-
-**Examples:**
-```bash
-# Process all new files in the data directory
-uv run local-feed-generator process
-
 # Process a single file
 uv run local-feed-generator process --file videos/lecture.mp4
-
-# Force reprocessing of all files
-uv run local-feed-generator process --force
-```
-
-### `watch`
-
-Watch the data directory for changes (incremental mode). Starts a file-system watcher that processes new and modified files in real-time, regenerating feeds after each file is processed. Press `Ctrl+C` to stop.
-
-**Flags:**
-- `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
-- `--config-file <path>` — Path to a `.env`-style configuration file
-- `--file <path>` — Process only the specified file on startup, then watch it
-- `--force` — Process all files on startup even if already feed-eligible
-
-**Examples:**
-```bash
-# Watch for new files and changes
-uv run local-feed-generator watch
-
-# Watch a specific file
-uv run local-feed-generator watch --file videos/lecture.mp4
-```
-
-### `feeds`
-
-Generate RSS feeds from existing JSON metadata (no processing). Reads all existing JSON metadata files, **finalizes JSON metadata** by computing feed eligibility for all items, generates `podcast.xml` and `articles.xml` only where feed.json exists and applicable files are present, and generates `index.html` with all feed URLs.
-
-**Flags:**
-- `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
-- `--config-file <path>` — Path to a `.env`-style configuration file
-- `--file <path>` — Include only the specified file's metadata in the feeds
-- `--force` — Regenerate feeds regardless of current state
-
-**Examples:**
-```bash
-# Generate feeds from existing metadata
-uv run local-feed-generator feeds
-
-# Regenerate feeds for a single file
-uv run local-feed-generator feeds --file videos/lecture.mp4 --force
-```
-
-### `validate`
-
-Validate all metadata files and finalize incomplete ones. Scans for all JSON metadata files, validates each against the schema, checks for orphaned JSON files, checks for special characters in filenames, and **finalizes JSON metadata** by setting step completion statuses in the step maps and computing feed eligibility.
-
-**Flags:**
-- `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
-- `--config-file <path>` — Path to a `.env`-style configuration file
-- `--file <path>` — Validate only the specified file's JSON metadata
-- `--force` — Perform validation regardless of previous validation state
-
-**Examples:**
-```bash
-# Validate all metadata files
-uv run local-feed-generator validate
-
-# Validate a single file
-uv run local-feed-generator validate --file videos/lecture.mp4
-```
-
-### `transcribe`
-
-Transcribe MP4 files to markdown text. Scans for MP4 files that do not yet have `transcribe.status="complete"`, transcribes each using the faster-whisper model (or remote API when configured), and writes the transcript to the `content` field in the adjacent JSON metadata file.
-
-**Flags:**
-- `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
-- `--config-file <path>` — Path to a `.env`-style configuration file
-- `--file <path>` — Transcribe only the specified MP4 file
-- `--force` — Re-transcribe even if `transcribe.status` is already `"complete"`
-- `--dry-run` — Preview which files would be transcribed without making changes
-
-**Examples:**
-```bash
-# Transcribe all MP4 files that need it
-uv run local-feed-generator transcribe
-
-# Transcribe a single file
-uv run local-feed-generator transcribe --file videos/lecture.mp4
 
 # Force re-transcription
 uv run local-feed-generator transcribe --file videos/lecture.mp4 --force
 
-# Preview files that would be transcribed
+# Summarize a PDF
+uv run local-feed-generator summarize --file documents/report.pdf
+
+# See what would be transcribed
 uv run local-feed-generator transcribe --dry-run
 ```
 
-### `summarize`
+---
 
-Generate summaries from existing content. Scans for files that have content but no summary, generates key takeaways via the LLM, and writes the summary to the `summary` field in the adjacent JSON metadata file. Uses `SUMMARY_PROMPT` or `SUMMARY_REFLECTION_PROMPT` if reflection questions are available. Works with both MP4 (transcripts) and PDF/HTML (extracted content) files.
+## File Organization
 
-**Flags:**
-- `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
-- `--config-file <path>` — Path to a `.env`-style configuration file
-- `--file <path>` — Summarize only the specified file (MP4, PDF, or HTML)
-- `--force` — Re-summarize even if `summarize.status` is already `"complete"`
-- `--dry-run` — Preview which files would be summarized without making changes
-
-**Examples:**
-```bash
-# Summarize all files that need it
-uv run local-feed-generator summarize
-
-# Summarize a single MP4 file
-uv run local-feed-generator summarize --file videos/lecture.mp4
-
-# Summarize a PDF/HTML file
-uv run local-feed-generator summarize --file documents/report.pdf
-
-# Force re-summarization
-uv run local-feed-generator summarize --file videos/lecture.mp4 --force
-
-# Preview files that would be summarized
-uv run local-feed-generator summarize --dry-run
-```
-
-### `extract`
-
-Extract metadata from PDF/HTML files. Scans for PDF and HTML files that do not yet have complete metadata extraction, extracts title, description, date, size, and content using pypdf or BeautifulSoup, and writes the extracted data to the adjacent JSON metadata file.
-
-**Flags:**
-- `--data-dir <path>` — Path to the data directory (optional; defaults to `DATA_DIR`)
-- `--config-file <path>` — Path to a `.env`-style configuration file
-- `--file <path>` — Extract metadata from only the specified PDF/HTML file
-- `--force` — Re-extract even if `extract.status` is already `"complete"`
-- `--dry-run` — Preview which files would be processed without making changes
-
-**Examples:**
-```bash
-# Extract metadata from all PDF/HTML files that need it
-uv run local-feed-generator extract
-
-# Extract metadata from a single file
-uv run local-feed-generator extract --file documents/report.pdf
-
-# Force re-extraction
-uv run local-feed-generator extract --file documents/report.pdf --force
-
-# Preview files that would be processed
-uv run local-feed-generator extract --dry-run
-```
-
-### `create-feed`
-
-Create a template `feed.json` file in a specified directory. This is a convenience command for setting up per-folder or root-level feed configuration without manually creating the file.
-
-**Flags:**
-- `--dir <path>` — Target directory where `feed.json` will be created (required)
-- `--directory <path>` — Alias for `--dir`
-
-**Examples:**
-```bash
-# Create a feed.json in the root data directory
-uv run local-feed-generator create-feed --dir ./data
-
-# Create a feed.json in a subfolder for per-folder feeds
-uv run local-feed-generator create-feed --dir ./data/Course1
-```
-
-The generated `feed.json` template contains placeholder `title` and `description` values. The `link` field is intentionally omitted — feed links are derived from `BASE_URL` + relative path at generation time. You can manually add a `link` field to `feed.json` if you want to override the default channel link.
-
-### Shared Flags
-
-- **`--data-dir <path>`**: All commands. Optional path to the data directory. Overrides `DATA_DIR` from configuration if set.
-- **`--config-file <path>`**: All commands. Path to a `.env`-style configuration file.
-- **`--file <path>`**: All commands. Process only the specified file instead of scanning the directory. Takes precedence over `--data-dir` for file selection.
-- **`--force`**: All commands. Force execution even if the step appears already complete.
-- **`--dry-run`**: transcribe, summarize, extract. Show which files would be processed without making any changes.
-
-## Directory Structure
+### Directory Structure
 
 ```
 data/
-├── index.html                 # NEW: Auto-generated page with all feed URLs
-├── podcast.xml                # Audio content feed (MP4 files) - ONLY if feed.json exists and MP4 files present
-├── articles.xml               # Text content feed (PDF/HTML files) - ONLY if feed.json exists and PDF/HTML files present
-├── feed.json                  # REQUIRED for root feeds: Custom title/description
-├── Course1/
-│   ├── feed.json            # REQUIRED for per-folder feeds: Per-folder configuration
-│   ├── podcast.xml          # Generated if feed.json exists and MP4 files present
-│   ├── articles.xml         # Generated if feed.json exists and PDF/HTML files present
-│   ├── lecture.mp4
-│   ├── lecture.mp4.json     # Auto-generated metadata with title dict
-│   ├── reflection.md        # Optional: Reflection questions for summarization
-│   ├── notes.pdf
-│   └── notes.pdf.json       # Auto-generated metadata
-├── Course2/
-│   ├── feed.json
-│   ├── podcast.xml
-│   ├── articles.xml
-│   ├── document.html
-│   └── document.html.json   # Auto-generated metadata
-└── ...
+├── index.html                 # Auto-generated: lists all feeds
+├── feed.json                  # REQUIRED for root-level feeds
+├── podcast.xml                # Generated if MP4 files present
+├── articles.xml               # Generated if PDF/HTML files present
+└── Course1/
+    ├── feed.json              # REQUIRED for per-folder feeds
+    ├── podcast.xml            # Course1 audio feed
+    ├── articles.xml           # Course1 articles feed
+    ├── lecture.mp4
+    ├── lecture.mp4.json       # Auto-generated metadata
+    └── reflection.md          # Optional: reflection questions
 ```
 
-Each processed file gets a companion `.json` file containing:
-- **Title as dict**: With keys `filename`, `extracted`, `generated` for tracking title sources
-- **Extracted title**: Title from source metadata (PDF metadata, HTML `<title>` tag) stored separately
-- File metadata (type, size, date as UNIX epoch timestamps with **millisecond precision**)
-- For MP4 files: `description` is blank, `summary` contains LLM-generated key takeaways, `content` contains the full transcript
-- For PDF/HTML files: `description` contains extracted metadata, `content` contains extracted plaintext, `summary` is null (unless summarized)
-- Step maps (`transcribe`, `summarize`, `extract`) tracking processing progress with detailed timing and metrics
-- `duration` field for MP4 files (from audio metadata)
-- `creation_time` field in ISO8601 format (from audio media metadata)
-
-### Per-Folder Feeds with feed.json
-
-**Important:** Root-level feeds (`podcast.xml` and `articles.xml`) are **ONLY generated if a `feed.json` file exists in the root of the `data/` directory**. Per-folder feeds are generated when `feed.json` exists in a subfolder.
-
-Create a `feed.json` file in any subfolder to generate per-folder feeds with custom titles and descriptions:
+### feed.json Format
 
 ```json
 {
   "title": "Course 1: Introduction to AI",
-  "description": "All materials for Course 1 covering AI fundamentals"
+  "description": "All materials for Course 1",
+  "language": "en-us",
+  "author": "Course Author"
 }
 ```
 
-When a `feed.json` exists in a folder:
-- `podcast.xml` is generated in that folder **only if MP4 files are present**
-- `articles.xml` is generated in that folder **only if PDF/HTML files are present**
-- Only items within that folder's subtree are included (nested feeds are subsets of parent feeds)
-- Custom title and description from `feed.json` are used for the feeds
-- Root-level feeds are NOT generated by default (a feed.json is required in the root)
-- **Note:** `index.html` is maintained at the root level ONLY, listing all feeds from all folders
+**Required:** `title`
+**Optional:** `description`, `language`, `author`, `link`, `image`
 
-### Reflection Questions with reflection.md (Optional)
+### reflection.md (Optional)
 
-Place a `reflection.md` file in any folder alongside your content files. When processing MP4 files in that folder, the reflection questions will be prepended to the transcript and passed to the LLM with the `SUMMARY_REFLECTION_PROMPT` (or `SUMMARY_PROMPT` if not configured).
+Place a `reflection.md` file in any folder to focus summarization on specific questions:
 
-**Note:** `reflection.md` is **optional** and helpful but NOT a prerequisite for summarization. The `summarize` command works with MP4, PDF, and HTML files regardless of whether `reflection.md` is present.
-
-Example `reflection.md`:
 ```markdown
 # Reflection Questions
 
@@ -559,214 +200,97 @@ Example `reflection.md`:
 3. How does this content relate to systems thinking?
 ```
 
-### Index.html Generation
+**Note:** Works with both MP4 and PDF/HTML files. Completely optional.
 
-**NEW:** The system automatically generates a **root-level** `index.html` file when feed.json exists. This file contains:
-- A list of all feeds available from all folders with `feed.json`
-- Feed titles and descriptions from each `feed.json`
-- Links to both `podcast.xml` (if MP4 files present) and `articles.xml` (if PDF/HTML files present)
-- Simple, clean HTML that works with any browser
+---
 
-## Features
+## Feed Generation Rules
 
-### Smart Processing
-- **Idempotent**: Skips files with existing complete JSON metadata
-- **Incremental**: Only processes new or changed files
-- **Flexible**: Works with any folder structure under `data/`
-- **Resilient**: Handles errors gracefully, writes error state to JSON
+- **Podcast feed** (`podcast.xml`): Generated only if `feed.json` exists AND at least one MP4 file is processed
+- **Articles feed** (`articles.xml`): Generated only if `feed.json` exists AND at least one PDF/HTML file is processed
+- **Root-level feeds**: Require `feed.json` in the data directory root
+- **Per-folder feeds**: Require `feed.json` in the subfolder
+- **Index page** (`index.html`): Auto-generated at root, lists all feeds from all folders
 
-### Audio Processing
-- **GPU-accelerated**: Uses `faster-whisper` with CUDA for efficient transcription
-- **High quality**: Recommended model for best results
-- **Markdown output**: Clean transcripts without timestamps stored in `content` field
-- **Summaries**: LLM-generated key takeaways stored in `summary` field become podcast descriptions
-- **Reflection support**: Optional `reflection.md` files focus summarization on specific questions
+---
 
-### Document Processing (PDF/HTML)
-- **Metadata extraction**: Extracts title from PDF metadata or HTML `<title>` tag
-- **Content extraction**: Extracts plaintext content from PDF and HTML files
-- **Text normalization**: Removes control characters that are invalid in XML
-- **Flexible titles**: Uses filename-derived titles as the actual title, stores extracted titles separately
-  - **Module prefixing**: Automatically prepends folder name to the final title (after precedence resolution) when appropriate
-- **Optional summarization**: Can generate summaries for PDF/HTML content using the `summarize` command
+## Supported File Types
 
-### Feed Generation
-- **Conditional generation**: Feeds are only generated where `feed.json` exists
-- **Type-specific generation**: `podcast.xml` only if MP4 files present, `articles.xml` only if PDF/HTML files present
-- **Per-folder feeds**: Optional `feed.json` enables feeds in subfolders with custom branding
-- **No root feeds without feed.json**: Root-level feeds require explicit `feed.json` configuration
- - **Standards-compliant**: RSS format
-- **Sorted alphabetically**: By folder name, then filename
-- **Proper encoding**: XML special characters properly escaped
-- **Markdown to HTML**: Summaries and descriptions converted to HTML for feed readers
-- **Safe links**: Only allows safe URL schemes (http, https, mailto, relative paths)
- - **Index page**: Auto-generated root-level `index.html` for feed discovery, listing all feeds from all folders
+| File Type | Processing | Feed | Fields |
+|-----------|------------|------|--------|
+| MP4 (audio) | Transcribed + summarized | Podcast | `description=""`, `summary`=key takeaways, `content`=transcript |
+| PDF | Metadata + content extracted | Articles | `description`=metadata, `content`=text, `summary`=null (unless summarized) |
+| HTML | Metadata + content extracted | Articles | `description`=metadata, `content`=text, `summary`=null (unless summarized) |
 
-### Error Handling
-- **Persistent error state**: Failed files marked in JSON for review
-- **Warnings**: Special characters and orphaned JSON files flagged
-- **Recoverable**: Delete JSON file to retry processing
-- **Debounced watching**: Prevents rapid successive events from triggering multiple processes
-- **Periodic rescan**: Fallback for file systems that may not reliably trigger watchdog events
+---
 
-#### Error Logging
+## Requirements
 
-The system provides multi-channel error reporting when processing failures occur:
+### Hardware
+- **Nvidia GPU with CUDA** - Required for efficient local transcription
+- **CUDA Toolkit** - Must be installed
 
-- **error.log file**: A dedicated `error.log` file is created in the data directory (or the current working directory if configuration is unavailable). This file captures all `ERROR`-level messages with full details including timestamp, error type, message, file path, processing stage, retry info, and sanitized endpoint URL. The file is appended to on each run, preserving a persistent history of errors for review.
+### Software
+- **Python 3.14+**
+- **uv** - For dependency management
+- **Local LLM Endpoint** - Running OpenAI-compatible API (vLLM, Ollama, etc.)
+- **Optional**: `ffprobe` - For audio metadata extraction (falls back to file metadata)
 
-- **stderr**: All errors are logged to stderr via the module logger with a consistent format including timestamp, log level, and error details (exception class name, message, filepath, stage, and sanitized endpoint).
+### Models
+- **Transcription**: faster-whisper models (downloaded automatically, ~2-6 GB)
+- **Summarization**: Any OpenAI-compatible model with 128K+ context window recommended
 
-- **stdout (connection errors only)**: When LLM API connection or timeout errors occur (e.g., `APIConnectionError`, `APITimeoutError`), a detailed multi-line error summary is also printed to stdout. This includes the error type, message, retry information, endpoint URL, file path, processing stage, and model name. Non-connection errors (e.g., rate limiting, server errors, authentication failures) are not printed to stdout — they are only logged to stderr and `error.log`.
+---
 
-- **URL sanitization**: Endpoint URLs are sanitized before logging to prevent sensitive data exposure. Credentials (username/password) and query parameters (e.g., API keys in query strings) are stripped from URLs. For example, `https://key:secret@llm.example.com/v1?api_key=hidden` is logged as `https://llm.example.com/v1`. This sanitization applies to both stderr and `error.log` output.
+## Optional Dependencies
 
-#### Retry Behavior
-
-When LLM API requests fail with transient errors (`APIConnectionError`, `APITimeoutError`, `RateLimitError`, `InternalServerError`), the system automatically retries with exponential backoff and jitter. Up to 3 retries are attempted by default (4 total attempts). Non-retryable errors (authentication, bad request, permission denied, not found, unprocessable entity) fail immediately without retrying.
-
-## File Types Supported
-
-- **MP4 (audio)**: Transcribed + summarized (Feed: Podcast feed). Fields: `description=""`, `summary`=LLM key takeaways, `content`=full transcript, `duration`=audio length in seconds, `creation_time`=ISO8601 string
-- **PDF**: Metadata and content extracted (Feed: Articles feed). Fields: `title`=dict with filename-derived title, `extracted_title`=PDF metadata title, `description`=extracted metadata, `content`=extracted plaintext text, `summary`=null (unless summarized), `publication_date`=extracted from document metadata when available
-- **HTML**: Metadata and content extracted (Feed: Articles feed). Fields: `title`=dict with filename-derived title, `extracted_title`=HTML `<title>` tag, `description`=extracted metadata, `content`=extracted plaintext text, `summary`=null (unless summarized), `publication_date`=extracted from document metadata when available
-
-## How It Works
-
-1. **Scanning**: The scanner discovers MP4, PDF, and HTML files in your data directory
-2. **Processing**: 
-   - Audio files \=> transcribed to markdown \=> summarized by LLM \=> stored in `content` and `summary` fields
-   - Documents \=> metadata and content extracted \=> stored in `description` and `content` fields \=> optionally summarized
-3. **Metadata**: JSON file created alongside each source file with all extracted information including:
-   - Title as dict with sources (`filename`, `extracted`, `generated`)
-   - Step maps tracking processing progress
-   - Millisecond-precision timestamps
-   - Extracted content for PDF/HTML files
-4. **Feed Generation**: Valid JSON files aggregated into feeds based on feed.json configuration:
-   - Podcast feed uses `summary` field for descriptions (MP4 files only)
-    - Articles feed uses `summary` or `description` field for descriptions (PDF/HTML files only)
-   - Per-folder feeds generated if `feed.json` exists
-   - Feeds only generated if applicable file types exist
-5. **Index Generation**: Root-level `index.html` listing all available feeds from all folders
-6. **Serving**: Your existing web server serves the `data` directory, making feeds accessible
-
-## Tips
-
-### Choosing Transcription Model
-
-| Model | Size | Quality | GPU Memory |
-|-------|------|---------|------------|
-| `tiny` | 39M | Basic | ~1 GB |
-| `base` | 74M | Good | ~2 GB |
-| `small` | 244M | Very Good | ~4 GB |
-| `medium` | 769M | Excellent | ~8 GB |
-| `large-v3-turbo` | ~800M | **Best** | ~10 GB |
-| `large` | 1550M | Best (slower) | ~12 GB |
-
-Use the recommended model with `float16` for maximum quality if you have sufficient GPU memory. Use `small` or `base` with `int8` for lower memory usage.
-
-### LLM Recommendations
-
-- Use a model with **128K+ context window** for full transcript processing
-- Any **OpenAI-compatible** endpoint works (vLLM, Ollama, etc.)
-- **Mistral models** work well for summarization tasks
-- **Title generation** uses a separate prompt for concise, descriptive titles
-- **Reflection questions** can focus summarization on specific aspects
-- **PDF/HTML summarization** is optional and uses the same SUMMARY_PROMPT or SUMMARY_REFLECTION_PROMPT
-
-### Module Name Prefixing
-
-The system automatically prepends the parent folder name to the final title (after precedence resolution) when the final title doesn't already start with it (case-insensitive, underscores normalized to spaces). For example:
-
-- Folder: `Course1/`
-- Final Title: `lecture` => Title: `Course1: lecture`
-- Final Title: `Course1_lecture` => Title: `Course1_lecture` (no prefix, already contains module name)
-
-This helps organize content by module/course in feed readers.
-
-## Configuration for Different Environments
-
-### Development (Lower GPU Memory)
+### Local Transcription (GPU-accelerated)
 
 ```bash
-TRANSCRIPTION_MODEL=small
-TRANSCRIPTION_COMPUTE_TYPE=int8
+uv sync --optional-group local-transcription
 ```
 
-### Production (Best Quality)
+Installs `faster-whisper` and `av` for local GPU-accelerated transcription.
 
+### Markdown Conversion
+
+For enhanced markdown to HTML conversion:
 ```bash
-TRANSCRIPTION_MODEL=large-v3-turbo
-TRANSCRIPTION_DEVICE=cuda
-TRANSCRIPTION_COMPUTE_TYPE=float16
+uv pip install markdown
 ```
 
-### Local Transcription with GPU
-
-```bash
-# Enable local transcription (default)
-# Do not set TRANSCRIPTION_ENDPOINT
-TRANSCRIPTION_MODEL=large-v3-turbo
-TRANSCRIPTION_DEVICE=cuda
-TRANSCRIPTION_COMPUTE_TYPE=float16
-```
-
-### Remote Transcription with API
-
-```bash
-TRANSCRIPTION_ENDPOINT=https://your-transcription-api.example.com/v1
-TRANSCRIPTION_API_KEY=your-api-key-here
-# TRANSCRIPTION_REMOTE_MODEL=whisper-1  # Optional
-```
+---
 
 ## Troubleshooting
 
-### GPU Memory Errors
+### Transcription Issues
 
-If you encounter CUDA out-of-memory errors:
-1. Try a smaller model: `large-v3-turbo`, `medium`, `small`, `base`, `tiny`
-2. Use `int8` instead of `float16` compute type
-3. Ensure no other GPU-intensive processes are running
-4. Reduce batch size (each file is processed individually)
-
-### LLM API Connection Issues
-
-Verify your LLM endpoint is running and accessible:
-- Check `LLM_ENDPOINT` URL
-- Verify `LLM_API_KEY` is correct
-- Test the endpoint with curl:
-  ```bash
-  curl -X POST -H "Authorization: Bearer $LLM_API_KEY" \
-    -H "Content-Type: application/json" \
-    -d '{"model": "$LLM_MODEL", "messages": [{"role": "user", "content": "test"}]}' \
-    $LLM_ENDPOINT/chat/completions
-  ```
-
-### File Processing Issues
-
-- Ensure files are readable and not corrupted
-- Check for special characters in filenames (generated warnings)
-- Delete `.json` file to force re-processing
-- Check that `ffprobe` is installed for audio metadata extraction
+- **Large files take time**: No time constraints; acceptable for personal use
+- **CUDA out of memory**: Use smaller model (`medium`, `small`, `base`) or `int8` compute type
+- **Model not found**: Verify model name or installation
 
 ### Remote Transcription Issues
 
-- **Audio exceeds maximum allowed duration**: If you receive an error that audio exceeds the maximum allowed duration when using remote transcription with vLLM, ensure the vLLM server is configured with `VLLM_MAX_AUDIO_DECODE_DURATION_S` (see Server Configuration Notes section above). Restart the vLLM server after setting this variable.
+- **Audio exceeds maximum duration**: Configure vLLM server with `VLLM_MAX_AUDIO_DECODE_DURATION_S=3600` (or higher)
 - **Connection errors**: Verify `TRANSCRIPTION_ENDPOINT` and `TRANSCRIPTION_API_KEY`
-- **Model not found**: Ensure your endpoint supports the model or set `TRANSCRIPTION_REMOTE_MODEL`
 
-### XML/Feed Generation Issues
+### Feed Issues
 
-- **Invalid characters**: Control characters in PDF/HTML content are automatically removed
-- **Malformed XML**: All special XML characters are properly escaped
-- **Missing feeds**: Ensure JSON metadata is complete (all applicable steps have `status="complete"`). Ensure a `feed.json` file exists in the folder. Ensure files of the appropriate type exist (MP4 for podcast, PDF/HTML for articles).
-- **No root feeds**: Root-level feeds require a `feed.json` file in the data directory root
+- **Missing feeds**: Ensure `feed.json` exists and files are processed (check `.json` metadata)
+- **No root feeds**: Root-level `feed.json` is required
+- **Invalid characters**: Control characters in PDF/HTML are automatically removed
+
+### File Processing Issues
+
+- **Special characters**: Warnings are generated; filenames are preserved
+- **Orphaned JSON**: Delete `.json` file to re-process
+- **Force re-processing**: Use `--force` flag
+
+---
 
 ## Project Artifacts
 
-For implementation details and development information:
-
-- [Proposal](./artifacts/proposal.md) - Problem statement and success criteria
-- [Specifications](./artifacts/specs.md) - Complete functional/non-functional requirements
-- [Design Document](./artifacts/design.md) - Architecture, interfaces, and design decisions
-- [Tasks](./artifacts/tasks.md) - Detailed implementation plan
+- [Proposal](./artifacts/proposal.md) - Problem and scope
+- [Specifications](./artifacts/specs.md) - Detailed requirements
+- [Design Document](./artifacts/design.md) - Architecture
+- [Tasks](./artifacts/tasks.md) - Implementation plan
