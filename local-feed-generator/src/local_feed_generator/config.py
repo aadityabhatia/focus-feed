@@ -4,7 +4,10 @@ Uses pydantic-settings to load configuration from environment variables
 and optional .env file. Provides a singleton accessor for global config.
 """
 
-from pydantic import field_validator
+import os
+from typing import Any
+
+from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -28,20 +31,13 @@ class Settings(BaseSettings):
     llm_endpoint: str
     llm_api_key: str
     llm_model: str
-    llm_system_prompt: str
-    summary_prompt: str = (
-        "Summarize key takeaways from the given content. Output just the summary concisely."
-    )
-    title_prompt: str = (
-        "Generate a concise, descriptive title (5-10 words) for the given content. "
-        "Do not include any formatting, quotes, or extra text."
-    )
+    prompt_article: str
+    prompt_article_reflection: str | None = None
+    prompt_podcast: str
+    prompt_podcast_reflection: str | None = None
+    prompt_title: str
 
     # --- Optional fields with defaults ---
-
-    feed_format: str = "rss"
-
-    summary_reflection_prompt: str | None = None
 
     transcription_model: str = "large-v3-turbo"
     transcription_device: str = "cuda"
@@ -58,7 +54,9 @@ class Settings(BaseSettings):
         "llm_endpoint",
         "llm_api_key",
         "llm_model",
-        "llm_system_prompt",
+        "prompt_article",
+        "prompt_podcast",
+        "prompt_title",
     )
     @classmethod
     def validate_required_non_empty(cls, v: str) -> str:
@@ -66,6 +64,30 @@ class Settings(BaseSettings):
         if not v or not v.strip():
             raise ValueError("Field must not be empty")
         return v
+
+    @model_validator(mode="before")
+    @classmethod
+    def _fallback_old_env_vars(cls, data: Any) -> Any:
+        """Fall back to legacy environment variables if new ones are unset.
+
+        Maps old env var names to new field names so that existing
+        deployments continue to work after the rename.  New env vars
+        always take priority.
+        """
+        if isinstance(data, dict):
+            _fallback_map = {
+                "prompt_article": "SUMMARY_PROMPT",
+                "prompt_article_reflection": "SUMMARY_REFLECTION_PROMPT",
+                "prompt_podcast": "SUMMARY_PROMPT",
+                "prompt_podcast_reflection": "SUMMARY_REFLECTION_PROMPT",
+                "prompt_title": "TITLE_PROMPT",
+            }
+            for field_name, old_env_var in _fallback_map.items():
+                if not data.get(field_name):
+                    old_value = os.environ.get(old_env_var)
+                    if old_value:
+                        data[field_name] = old_value
+        return data
 
 
 # --- Singleton pattern ---

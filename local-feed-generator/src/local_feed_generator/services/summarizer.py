@@ -8,11 +8,13 @@ Configuration (from config.py / design doc section 3.2):
     LLM_ENDPOINT        - OpenAI-compatible API base URL
     LLM_API_KEY         - API key for authentication
     LLM_MODEL           - Model identifier (optional; falls back to endpoint default)
-    LLM_SYSTEM_PROMPT   - System prompt for summarization (default from design doc)
-    SUMMARY_PROMPT      - System prompt for regular summarization (required)
-    SUMMARY_REFLECTION_PROMPT - System prompt for summarization with reflection
-        questions (optional; falls back to SUMMARY_PROMPT)
-    TITLE_PROMPT        - System prompt for LLM title generation (required)
+    PROMPT_ARTICLE      - System prompt for article (PDF/HTML) summarization
+    PROMPT_ARTICLE_REFLECTION - System prompt for article summarization with
+        reflection questions (falls back to PROMPT_ARTICLE)
+    PROMPT_PODCAST      - System prompt for podcast (MP4) summarization
+    PROMPT_PODCAST_REFLECTION - System prompt for podcast summarization with
+        reflection questions (falls back to PROMPT_PODCAST)
+    PROMPT_TITLE        - System prompt for LLM title generation
 """
 
 import logging
@@ -147,22 +149,36 @@ class Summarizer:
         transcript: str,
         reflection_questions: str | None = None,
         filepath: str | None = None,
+        filetype: str | None = None,
     ) -> tuple[str, int, int]:
         """Generate key takeaways from a transcript.
 
         Sends the transcript to the configured LLM with a system prompt
-        from configuration.  When *reflection_questions* is provided,
-        ``config.summary_reflection_prompt`` is used as the system prompt
-        and the reflection questions are prepended to the transcript.
-        Otherwise, ``config.summary_prompt`` is used.
+        selected based on the file type.  When *reflection_questions* is
+        provided, the corresponding reflection prompt is used and the
+        questions are prepended to the transcript.
+
+        Prompt selection:
+            - ``filetype == "mp4"``: ``config.prompt_podcast`` (or
+              ``config.prompt_podcast_reflection`` when reflection_questions
+              is provided)
+            - ``filetype == "pdf"`` or ``"html"``: ``config.prompt_article``
+              (or ``config.prompt_article_reflection`` when
+              reflection_questions is provided)
+
+        If reflection prompts are not available, the regular prompts are
+        used as a fallback.
 
         Args:
             transcript: The transcript text to summarize.
             reflection_questions: Optional reflection questions to focus the
-                summary.  When provided, the summary_reflection_prompt is used
-                and the questions are prepended to the user content.
+                summary.  When provided, the corresponding reflection prompt
+                is used and the questions are prepended to the user content.
             filepath: Optional path of the file being processed, included in
                 error logging for debugging context.
+            filetype: The type of file being summarized (``"mp4"``, ``"pdf"``,
+                or ``"html"``).  Determines which prompt is used.  Defaults to
+                ``"mp4"`` if not specified.
 
         Returns:
             A tuple of ``(summary, prompt_tokens, completion_tokens)``.
@@ -174,14 +190,23 @@ class Summarizer:
         if not transcript or not transcript.strip():
             raise SummarizationError("Transcript text must not be empty")
 
+        # Determine which prompt set to use based on filetype.
+        if filetype == "mp4":
+            regular_prompt = self._config.prompt_podcast
+            reflection_prompt = self._config.prompt_podcast_reflection
+        else:
+            # "pdf" and "html" (and any other value) use article prompts.
+            regular_prompt = self._config.prompt_article
+            reflection_prompt = self._config.prompt_article_reflection
+
         if reflection_questions:
-            system_prompt = self._config.summary_reflection_prompt or self._config.summary_prompt
+            system_prompt = reflection_prompt or regular_prompt
             user_content = (
                 "Consider the following reflection questions while summarizing:\n\n"
                 f"{reflection_questions}\n\n{transcript}"
             )
         else:
-            system_prompt = self._config.summary_prompt
+            system_prompt = regular_prompt
             user_content = transcript
 
         result = self._chat_completion(
@@ -202,10 +227,10 @@ class Summarizer:
         """Generate a concise title from content.
 
         Uses the title-generation system prompt from configuration
-        (``TITLE_PROMPT``) to produce a short, descriptive title.  When
+        (``PROMPT_TITLE``) to produce a short, descriptive title.  When
         *filename* and/or *extracted_title* are provided, they are included
         in the user prompt **before** the content so the LLM can produce a
-        more accurate title.  The ``TITLE_PROMPT`` system prompt already
+        more accurate title.  The ``PROMPT_TITLE`` system prompt already
         contains instructions to use the extracted or filename titles while
         generating, so providing them as context improves results.
 
@@ -246,12 +271,10 @@ class Summarizer:
             parts.append(f"Filename: {filename}")
         if extracted_title and extracted_title.strip():
             parts.append(f"Extracted Title: {extracted_title}")
-        user_content = (
-            "\n".join(parts) + "\n\n" + content[:4000] if parts else content[:4000]
-        )
+        user_content = "\n".join(parts) + "\n\n" + content[:4000] if parts else content[:4000]
 
         result = self._chat_completion(
-            system_prompt=self._config.title_prompt,
+            system_prompt=self._config.prompt_title,
             user_content=user_content,
             stage="title_generation",
             filepath=filepath,
@@ -328,9 +351,7 @@ class Summarizer:
 
             except _NON_RETRYABLE_ERRORS as exc:
                 # Permanent failures — do not retry.
-                is_connection_error = isinstance(
-                    exc, (APIConnectionError, APITimeoutError)
-                )
+                is_connection_error = isinstance(exc, (APIConnectionError, APITimeoutError))
                 log_error(
                     exc,
                     filepath=filepath,
@@ -339,17 +360,13 @@ class Summarizer:
                     model=model,
                     print_stdout=is_connection_error,
                 )
-                raise SummarizationError(
-                    f"LLM request failed (non-retryable): {exc}"
-                ) from exc
+                raise SummarizationError(f"LLM request failed (non-retryable): {exc}") from exc
 
             except _RETRYABLE_ERRORS as exc:
                 last_exc = exc
                 if attempt < self._max_retries:
                     delay = self._calculate_backoff(attempt)
-                    is_connection_error = isinstance(
-                        exc, (APIConnectionError, APITimeoutError)
-                    )
+                    is_connection_error = isinstance(exc, (APIConnectionError, APITimeoutError))
                     retry_info = f"attempt={attempt + 1}/{self._max_retries + 1}"
                     if is_connection_error:
                         log_error(
@@ -371,9 +388,7 @@ class Summarizer:
                     time.sleep(delay)
                 else:
                     # Final failure — all retries exhausted.
-                    is_connection_error = isinstance(
-                        exc, (APIConnectionError, APITimeoutError)
-                    )
+                    is_connection_error = isinstance(exc, (APIConnectionError, APITimeoutError))
                     retry_info = f"attempt={attempt + 1}/{self._max_retries + 1}"
                     log_error(
                         exc,
@@ -392,9 +407,7 @@ class Summarizer:
 
             except Exception as exc:
                 # Unexpected errors — do not retry.
-                is_connection_error = isinstance(
-                    exc, (APIConnectionError, APITimeoutError)
-                )
+                is_connection_error = isinstance(exc, (APIConnectionError, APITimeoutError))
                 log_error(
                     exc,
                     filepath=filepath,
@@ -403,9 +416,7 @@ class Summarizer:
                     model=model,
                     print_stdout=is_connection_error,
                 )
-                raise SummarizationError(
-                    f"Unexpected error during LLM request: {exc}"
-                ) from exc
+                raise SummarizationError(f"Unexpected error during LLM request: {exc}") from exc
 
         # All retries exhausted.
         raise SummarizationError(

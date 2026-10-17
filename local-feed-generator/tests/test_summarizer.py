@@ -33,9 +33,11 @@ def mock_config():
         llm_endpoint="https://llm.example.com/v1",
         llm_api_key="test-key",
         llm_model="test-model",
-        llm_system_prompt="Summarize key takeaways from this document.",
-        summary_prompt="Summarize key takeaways from this document.",
-        title_prompt="Generate a title for the given content.",
+        prompt_article="Summarize key takeaways from this document.",
+        prompt_article_reflection="Summarize key takeaways from this document with reflection.",
+        prompt_podcast="Summarize key takeaways from this podcast.",
+        prompt_podcast_reflection="Summarize key takeaways from this podcast with reflection.",
+        prompt_title="Generate a title for the given content.",
     )
 
 
@@ -90,9 +92,11 @@ class TestSummarizerInit:
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
-            "LLM_SYSTEM_PROMPT": "Test prompt",
-            "SUMMARY_PROMPT": "Test summary prompt",
-            "TITLE_PROMPT": "Test title prompt",
+            "PROMPT_ARTICLE": "Test article prompt",
+            "PROMPT_ARTICLE_REFLECTION": "Test article reflection prompt",
+            "PROMPT_PODCAST": "Test podcast prompt",
+            "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
+            "PROMPT_TITLE": "Test title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             # Reset the singleton
@@ -155,6 +159,80 @@ class TestSummarize:
         user_msg = messages[1]
         assert user_msg["role"] == "user"
         assert user_msg["content"] == transcript
+
+    def test_filetype_mp4_uses_podcast_prompt(self, summarizer, mock_response):
+        """summarize() with filetype='mp4' should use prompt_podcast as system prompt."""
+        summarizer._client.chat.completions.create.return_value = mock_response
+        summarizer.summarize("Test transcript", filetype="mp4")
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs["messages"]
+        system_msg = messages[0]
+        assert system_msg["content"] == "Summarize key takeaways from this podcast."
+
+    def test_filetype_pdf_uses_article_prompt(self, summarizer, mock_response):
+        """summarize() with filetype='pdf' should use prompt_article as system prompt."""
+        summarizer._client.chat.completions.create.return_value = mock_response
+        summarizer.summarize("Test transcript", filetype="pdf")
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs["messages"]
+        system_msg = messages[0]
+        assert system_msg["content"] == "Summarize key takeaways from this document."
+
+    def test_filetype_html_uses_article_prompt(self, summarizer, mock_response):
+        """summarize() with filetype='html' should use prompt_article as system prompt."""
+        summarizer._client.chat.completions.create.return_value = mock_response
+        summarizer.summarize("Test transcript", filetype="html")
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs["messages"]
+        system_msg = messages[0]
+        assert system_msg["content"] == "Summarize key takeaways from this document."
+
+    def test_filetype_none_uses_article_prompt(self, summarizer, mock_response):
+        """summarize() with filetype=None (default) should use prompt_article as system prompt."""
+        summarizer._client.chat.completions.create.return_value = mock_response
+        summarizer.summarize("Test transcript")
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs["messages"]
+        system_msg = messages[0]
+        assert system_msg["content"] == "Summarize key takeaways from this document."
+
+    def test_filetype_mp4_with_reflection_uses_podcast_reflection_prompt(
+        self, summarizer, mock_response
+    ):
+        """summarize() with filetype='mp4' and reflection_questions should use prompt_podcast_reflection."""
+        summarizer._client.chat.completions.create.return_value = mock_response
+        summarizer.summarize(
+            "Test transcript",
+            reflection_questions="What are the key points?",
+            filetype="mp4",
+        )
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs["messages"]
+        system_msg = messages[0]
+        assert system_msg["content"] == "Summarize key takeaways from this podcast with reflection."
+
+    def test_filetype_pdf_with_reflection_uses_article_reflection_prompt(
+        self, summarizer, mock_response
+    ):
+        """summarize() with filetype='pdf' and reflection_questions should use prompt_article_reflection."""
+        summarizer._client.chat.completions.create.return_value = mock_response
+        summarizer.summarize(
+            "Test transcript",
+            reflection_questions="What are the key points?",
+            filetype="pdf",
+        )
+
+        call_kwargs = summarizer._client.chat.completions.create.call_args
+        messages = call_kwargs.kwargs["messages"]
+        system_msg = messages[0]
+        assert (
+            system_msg["content"] == "Summarize key takeaways from this document with reflection."
+        )
 
     def test_strips_whitespace_from_response(self, summarizer):
         """summarize() should strip leading/trailing whitespace from response."""
@@ -223,17 +301,22 @@ class TestGenerateTitle:
         assert "x" * 4000 in user_msg["content"]
         assert "x" * 4001 not in user_msg["content"]
 
-    @pytest.mark.parametrize("filename,extracted_title,should_include", [
-        ("lecture notes", "Lecture 1", True),
-        ("notes", None, False),
-        ("notes", "", False),
-    ])
+    @pytest.mark.parametrize(
+        "filename,extracted_title,should_include",
+        [
+            ("lecture notes", "Lecture 1", True),
+            ("notes", None, False),
+            ("notes", "", False),
+        ],
+    )
     def test_filename_and_extracted_title_in_content(
         self, summarizer, mock_title_response, filename, extracted_title, should_include
     ):
         """generate_title() should include filename and extracted_title when provided."""
         summarizer._client.chat.completions.create.return_value = mock_title_response
-        summarizer.generate_title("Some content", filename=filename, extracted_title=extracted_title)
+        summarizer.generate_title(
+            "Some content", filename=filename, extracted_title=extracted_title
+        )
 
         call_kwargs = summarizer._client.chat.completions.create.call_args
         user_msg = call_kwargs.kwargs["messages"][1]
@@ -291,12 +374,19 @@ class TestGenerateTitle:
 class TestRetryLogic:
     """Tests for exponential backoff retry logic."""
 
-    @pytest.mark.parametrize("error_factory", [
-        lambda: APIConnectionError(message="Connection failed", request=mock.MagicMock()),
-        lambda: APITimeoutError(request=mock.MagicMock()),
-        lambda: RateLimitError(message="Rate limited", response=mock.MagicMock(status_code=429), body=None),
-        lambda: InternalServerError(message="Server error", response=mock.MagicMock(status_code=500), body=None),
-    ])
+    @pytest.mark.parametrize(
+        "error_factory",
+        [
+            lambda: APIConnectionError(message="Connection failed", request=mock.MagicMock()),
+            lambda: APITimeoutError(request=mock.MagicMock()),
+            lambda: RateLimitError(
+                message="Rate limited", response=mock.MagicMock(status_code=429), body=None
+            ),
+            lambda: InternalServerError(
+                message="Server error", response=mock.MagicMock(status_code=500), body=None
+            ),
+        ],
+    )
     def test_retries_on_retryable_error(self, summarizer, mock_response, error_factory):
         """summarize() should retry on retryable errors and eventually succeed."""
         summarizer._client.chat.completions.create.side_effect = [error_factory(), mock_response]
@@ -304,12 +394,23 @@ class TestRetryLogic:
         assert result == ("Key takeaways: This is a test summary.", 100, 50)
         assert summarizer._client.chat.completions.create.call_count == 2
 
-    @pytest.mark.parametrize("error_factory", [
-        lambda: AuthenticationError(message="Invalid API key", response=mock.MagicMock(status_code=401), body=None),
-        lambda: BadRequestError(message="Bad request", response=mock.MagicMock(status_code=400), body=None),
-        lambda: PermissionDeniedError(message="Forbidden", response=mock.MagicMock(status_code=403), body=None),
-        lambda: NotFoundError(message="Not found", response=mock.MagicMock(status_code=404), body=None),
-    ])
+    @pytest.mark.parametrize(
+        "error_factory",
+        [
+            lambda: AuthenticationError(
+                message="Invalid API key", response=mock.MagicMock(status_code=401), body=None
+            ),
+            lambda: BadRequestError(
+                message="Bad request", response=mock.MagicMock(status_code=400), body=None
+            ),
+            lambda: PermissionDeniedError(
+                message="Forbidden", response=mock.MagicMock(status_code=403), body=None
+            ),
+            lambda: NotFoundError(
+                message="Not found", response=mock.MagicMock(status_code=404), body=None
+            ),
+        ],
+    )
     def test_does_not_retry_on_non_retryable_error(self, summarizer, error_factory):
         """summarize() should not retry on non-retryable errors."""
         summarizer._client.chat.completions.create.side_effect = error_factory()
@@ -502,11 +603,16 @@ class TestModelParameter:
 class TestTokenTracking:
     """Tests for LLM token usage tracking."""
 
-    @pytest.mark.parametrize("method,response_fixture,expected_tokens", [
-        ("summarize", "mock_response", (100, 50)),
-        ("generate_title", "mock_title_response", (30, 5)),
-    ])
-    def test_returns_token_counts(self, request, summarizer, method, response_fixture, expected_tokens):
+    @pytest.mark.parametrize(
+        "method,response_fixture,expected_tokens",
+        [
+            ("summarize", "mock_response", (100, 50)),
+            ("generate_title", "mock_title_response", (30, 5)),
+        ],
+    )
+    def test_returns_token_counts(
+        self, request, summarizer, method, response_fixture, expected_tokens
+    ):
         """Methods should return (text, prompt_tokens, completion_tokens) tuples."""
         response = request.getfixturevalue(response_fixture)
         summarizer._client.chat.completions.create.return_value = response
@@ -677,9 +783,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_on_non_retryable_error(self, summarizer):
         """log_error should be called for non-retryable errors."""
-        with mock.patch(
-            "local_feed_generator.services.summarizer.log_error"
-        ) as mock_log_error:
+        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = AuthenticationError(
                 message="Invalid API key",
                 response=mock.MagicMock(status_code=401),
@@ -697,9 +801,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_on_final_failure(self, summarizer):
         """log_error should be called when all retries are exhausted."""
-        with mock.patch(
-            "local_feed_generator.services.summarizer.log_error"
-        ) as mock_log_error:
+        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = APIConnectionError(
                 message="Connection refused", request=mock.MagicMock()
             )
@@ -718,9 +820,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_for_retryable_error_during_retry(self, summarizer):
         """log_error should be called for connection errors during retries."""
-        with mock.patch(
-            "local_feed_generator.services.summarizer.log_error"
-        ) as mock_log_error:
+        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
             # Set up the mock response for successful retry
             response = mock.MagicMock()
             response.choices[0].message.content = "Summary"
@@ -742,9 +842,7 @@ class TestSummarizerLogError:
 
     def test_log_error_not_called_for_rate_limit_during_retry(self, summarizer):
         """log_error should NOT be called for rate limit errors during retries."""
-        with mock.patch(
-            "local_feed_generator.services.summarizer.log_error"
-        ) as mock_log_error:
+        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
             # Set up the mock response for successful retry
             response = mock.MagicMock()
             response.choices[0].message.content = "Summary"
@@ -766,9 +864,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_for_unexpected_error(self, summarizer):
         """log_error should be called for unexpected errors."""
-        with mock.patch(
-            "local_feed_generator.services.summarizer.log_error"
-        ) as mock_log_error:
+        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = ValueError("Unexpected")
             with pytest.raises(SummarizationError):
                 summarizer.summarize("Test transcript")
@@ -782,9 +878,7 @@ class TestSummarizerLogError:
 
     def test_log_error_stage_is_title_generation(self, summarizer):
         """log_error should use stage='title_generation' for generate_title."""
-        with mock.patch(
-            "local_feed_generator.services.summarizer.log_error"
-        ) as mock_log_error:
+        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = AuthenticationError(
                 message="Invalid API key",
                 response=mock.MagicMock(status_code=401),
@@ -799,9 +893,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_with_filepath(self, summarizer):
         """log_error should include filepath when passed to summarize()."""
-        with mock.patch(
-            "local_feed_generator.services.summarizer.log_error"
-        ) as mock_log_error:
+        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = AuthenticationError(
                 message="Invalid API key",
                 response=mock.MagicMock(status_code=401),
@@ -816,9 +908,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_with_filepath_for_generate_title(self, summarizer):
         """log_error should include filepath when passed to generate_title()."""
-        with mock.patch(
-            "local_feed_generator.services.summarizer.log_error"
-        ) as mock_log_error:
+        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = AuthenticationError(
                 message="Invalid API key",
                 response=mock.MagicMock(status_code=401),
@@ -850,6 +940,7 @@ class TestFinalFailureErrorTypes:
         """APITimeoutError on final failure should print to stdout."""
         # Configure error.log to write to a temp directory
         from local_feed_generator.errors import _configure_error_log
+
         _configure_error_log(data_dir=tmp_path, force=True)
 
         summarizer._client.chat.completions.create.side_effect = APITimeoutError(
@@ -867,6 +958,7 @@ class TestFinalFailureErrorTypes:
     def test_timeout_error_final_failure_logged_to_error_log(self, summarizer, tmp_path):
         """APITimeoutError on final failure should be logged to error.log."""
         from local_feed_generator.errors import _configure_error_log
+
         _configure_error_log(data_dir=tmp_path, force=True)
 
         summarizer._client.chat.completions.create.side_effect = APITimeoutError(
@@ -885,6 +977,7 @@ class TestFinalFailureErrorTypes:
     def test_rate_limit_error_final_failure_no_stdout(self, summarizer, capsys, tmp_path):
         """RateLimitError on final failure should NOT print to stdout."""
         from local_feed_generator.errors import _configure_error_log
+
         _configure_error_log(data_dir=tmp_path, force=True)
 
         summarizer._client.chat.completions.create.side_effect = RateLimitError(
@@ -903,6 +996,7 @@ class TestFinalFailureErrorTypes:
     def test_rate_limit_error_final_failure_logged_to_error_log(self, summarizer, tmp_path):
         """RateLimitError on final failure should be logged to error.log."""
         from local_feed_generator.errors import _configure_error_log
+
         _configure_error_log(data_dir=tmp_path, force=True)
 
         summarizer._client.chat.completions.create.side_effect = RateLimitError(
@@ -924,6 +1018,7 @@ class TestFinalFailureErrorTypes:
     def test_internal_server_error_final_failure_no_stdout(self, summarizer, capsys, tmp_path):
         """InternalServerError on final failure should NOT print to stdout."""
         from local_feed_generator.errors import _configure_error_log
+
         _configure_error_log(data_dir=tmp_path, force=True)
 
         summarizer._client.chat.completions.create.side_effect = InternalServerError(
@@ -942,6 +1037,7 @@ class TestFinalFailureErrorTypes:
     def test_internal_server_error_final_failure_logged_to_error_log(self, summarizer, tmp_path):
         """InternalServerError on final failure should be logged to error.log."""
         from local_feed_generator.errors import _configure_error_log
+
         _configure_error_log(data_dir=tmp_path, force=True)
 
         summarizer._client.chat.completions.create.side_effect = InternalServerError(
@@ -962,9 +1058,7 @@ class TestFinalFailureErrorTypes:
 
     def test_rate_limit_error_print_stdout_is_false(self, summarizer):
         """RateLimitError on final failure should call log_error with print_stdout=False."""
-        with mock.patch(
-            "local_feed_generator.services.summarizer.log_error"
-        ) as mock_log_error:
+        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = RateLimitError(
                 message="Rate limited",
                 response=mock.MagicMock(status_code=429),
@@ -984,9 +1078,7 @@ class TestFinalFailureErrorTypes:
 
     def test_internal_server_error_print_stdout_is_false(self, summarizer):
         """InternalServerError on final failure should call log_error with print_stdout=False."""
-        with mock.patch(
-            "local_feed_generator.services.summarizer.log_error"
-        ) as mock_log_error:
+        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = InternalServerError(
                 message="Internal server error",
                 response=mock.MagicMock(status_code=500),
