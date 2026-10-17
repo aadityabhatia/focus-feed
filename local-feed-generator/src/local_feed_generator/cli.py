@@ -405,10 +405,7 @@ def _find_files_needing_title(data_dir: Path, force: bool = False) -> list[Path]
         if isinstance(title, str):
             title = {"filename": title, "extracted": None, "generated": None}
         # A file needs a title if 'generated' is not set or empty.
-        has_generated = (
-            isinstance(title, dict)
-            and bool((title.get("generated") or "").strip())
-        )
+        has_generated = isinstance(title, dict) and bool((title.get("generated") or "").strip())
         if force or not has_generated:
             needs.append(source_file)
     return needs
@@ -1478,7 +1475,9 @@ def summarize(
             metadata["summarize"] = summarize_step
             _write_json_metadata(metadata, source_file)
 
-            summary, prompt_tokens, completion_tokens = summarizer.summarize(content)
+            summary, prompt_tokens, completion_tokens = summarizer.summarize(
+                content, filetype=metadata.get("filetype")
+            )
 
             # Update summarize step to complete after successful summarization.
             summarize_step["status"] = "complete"
@@ -1720,10 +1719,7 @@ def title(
             # Normalize string title to dict for backward compatibility.
             if isinstance(title, str):
                 title = {"filename": title, "extracted": None, "generated": None}
-            has_generated = (
-                isinstance(title, dict)
-                and bool((title.get("generated") or "").strip())
-            )
+            has_generated = isinstance(title, dict) and bool((title.get("generated") or "").strip())
             if has_generated and not force:
                 click.echo("  Already has a proper title; skipping.")
                 continue

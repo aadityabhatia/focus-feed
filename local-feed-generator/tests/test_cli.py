@@ -35,9 +35,11 @@ def _set_valid_env(monkeypatch):
     monkeypatch.setenv("LLM_ENDPOINT", "https://llm.example.com/v1")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "test-model")
-    monkeypatch.setenv("LLM_SYSTEM_PROMPT", "Test system prompt")
-    monkeypatch.setenv("SUMMARY_PROMPT", "Test summary prompt")
-    monkeypatch.setenv("TITLE_PROMPT", "Test title prompt")
+    monkeypatch.setenv("PROMPT_ARTICLE", "Test article prompt")
+    monkeypatch.setenv("PROMPT_ARTICLE_REFLECTION", "Test article reflection prompt")
+    monkeypatch.setenv("PROMPT_PODCAST", "Test podcast prompt")
+    monkeypatch.setenv("PROMPT_PODCAST_REFLECTION", "Test podcast reflection prompt")
+    monkeypatch.setenv("PROMPT_TITLE", "Test title prompt")
     # Clear transcription endpoint to force local mode (not remote).
     # Using setenv with empty string overrides the .env file value (env vars
     # take precedence over .env in pydantic-settings).
@@ -262,7 +264,11 @@ class TestCliFramework:
             "LLM_ENDPOINT",
             "LLM_API_KEY",
             "LLM_MODEL",
-            "LLM_SYSTEM_PROMPT",
+            "PROMPT_ARTICLE",
+            "PROMPT_ARTICLE_REFLECTION",
+            "PROMPT_PODCAST",
+            "PROMPT_PODCAST_REFLECTION",
+            "PROMPT_TITLE",
         ]
         for key in required_keys:
             monkeypatch.delenv(key, raising=False)
@@ -447,7 +453,11 @@ class TestProcessCommand:
             "LLM_ENDPOINT=https://llm.example.com/v1\n"
             "LLM_API_KEY=test-key\n"
             "LLM_MODEL=test-model\n"
-            "LLM_SYSTEM_PROMPT=Test prompt\n"
+            "PROMPT_ARTICLE=Test article prompt\n"
+            "PROMPT_ARTICLE_REFLECTION=Test article reflection prompt\n"
+            "PROMPT_PODCAST=Test podcast prompt\n"
+            "PROMPT_PODCAST_REFLECTION=Test podcast reflection prompt\n"
+            "PROMPT_TITLE=Test title prompt\n"
         )
 
         with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
@@ -1309,7 +1319,11 @@ class TestFeedsCommand:
             "LLM_ENDPOINT=https://llm.example.com/v1\n"
             "LLM_API_KEY=test-key\n"
             "LLM_MODEL=test-model\n"
-            "LLM_SYSTEM_PROMPT=Test prompt\n"
+            "PROMPT_ARTICLE=Test article prompt\n"
+            "PROMPT_ARTICLE_REFLECTION=Test article reflection prompt\n"
+            "PROMPT_PODCAST=Test podcast prompt\n"
+            "PROMPT_PODCAST_REFLECTION=Test podcast reflection prompt\n"
+            "PROMPT_TITLE=Test title prompt\n"
         )
 
         with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
@@ -1524,7 +1538,11 @@ class TestValidateCommand:
             "LLM_ENDPOINT=https://llm.example.com/v1\n"
             "LLM_API_KEY=test-key\n"
             "LLM_MODEL=test-model\n"
-            "LLM_SYSTEM_PROMPT=Test prompt\n"
+            "PROMPT_ARTICLE=Test article prompt\n"
+            "PROMPT_ARTICLE_REFLECTION=Test article reflection prompt\n"
+            "PROMPT_PODCAST=Test podcast prompt\n"
+            "PROMPT_PODCAST_REFLECTION=Test podcast reflection prompt\n"
+            "PROMPT_TITLE=Test title prompt\n"
         )
 
         result = runner.invoke(
@@ -1867,7 +1885,11 @@ class TestTranscribeCommand:
             "LLM_ENDPOINT=https://llm.example.com/v1\n"
             "LLM_API_KEY=test-key\n"
             "LLM_MODEL=test-model\n"
-            "LLM_SYSTEM_PROMPT=Test prompt\n"
+            "PROMPT_ARTICLE=Test article prompt\n"
+            "PROMPT_ARTICLE_REFLECTION=Test article reflection prompt\n"
+            "PROMPT_PODCAST=Test podcast prompt\n"
+            "PROMPT_PODCAST_REFLECTION=Test podcast reflection prompt\n"
+            "PROMPT_TITLE=Test title prompt\n"
         )
 
         result = runner.invoke(
@@ -2761,6 +2783,7 @@ class TestFindFilesNeedingSummary:
         assert "video.mp4" in names
         assert "doc.pdf" in names
         assert "page.html" not in names
+
     """Tests for the extract command (T5.9)."""
 
     def test_extract_help(self, runner):
