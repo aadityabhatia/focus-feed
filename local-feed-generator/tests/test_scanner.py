@@ -28,7 +28,11 @@ class TestScannerConstruction:
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
-            "LLM_SYSTEM_PROMPT": "Test prompt",
+            "PROMPT_ARTICLE": "Test article prompt",
+            "PROMPT_ARTICLE_REFLECTION": "Test article reflection prompt",
+            "PROMPT_PODCAST": "Test podcast prompt",
+            "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
+            "PROMPT_TITLE": "Test title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             from local_feed_generator.config import reload_config
@@ -94,10 +98,13 @@ class TestScanDirectory:
 
         assert result == []
 
-    @pytest.mark.parametrize("json_newer,should_return", [
-        (False, True),   # Source newer than JSON → needs processing
-        (True, False),   # JSON newer than source → skip
-    ])
+    @pytest.mark.parametrize(
+        "json_newer,should_return",
+        [
+            (False, True),  # Source newer than JSON → needs processing
+            (True, False),  # JSON newer than source → skip
+        ],
+    )
     def test_json_freshness_check(self, tmp_path, json_newer, should_return):
         """Source newer than JSON should trigger reprocessing; JSON newer should skip."""
         source = tmp_path / "lecture.mp4"
@@ -154,14 +161,17 @@ class TestScanDirectory:
         assert entry.absolute_path == str(source.resolve())
         assert entry.filepath == "lecture.mp4"
 
-    @pytest.mark.parametrize("filename,should_ignore", [
-        ("index.html", True),
-        ("INDEX.HTML", True),
-        ("podcast.xml", True),
-        ("articles.xml", True),
-        ("feed.json", True),
-        ("lecture.mp4", False),
-    ])
+    @pytest.mark.parametrize(
+        "filename,should_ignore",
+        [
+            ("index.html", True),
+            ("INDEX.HTML", True),
+            ("podcast.xml", True),
+            ("articles.xml", True),
+            ("feed.json", True),
+            ("lecture.mp4", False),
+        ],
+    )
     def test_ignores_generated_and_config_files(self, tmp_path, filename, should_ignore):
         """Generated feed files and config files should be ignored."""
         (tmp_path / filename).write_bytes(b"data")
@@ -192,14 +202,17 @@ class TestScanDirectory:
 class TestSpecialCharacterWarnings:
     """Tests for filename special character validation."""
 
-    @pytest.mark.parametrize("filename", [
-        "file<test>.mp4",
-        "file&name.mp4",
-        'file"name.mp4',
-        "file'name.mp4",
-        " leading.mp4",
-        "trailing.mp4 ",
-    ])
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "file<test>.mp4",
+            "file&name.mp4",
+            'file"name.mp4',
+            "file'name.mp4",
+            " leading.mp4",
+            "trailing.mp4 ",
+        ],
+    )
     def test_warns_on_special_characters(self, tmp_path, caplog, filename):
         """Filenames with special characters should log a warning."""
         (tmp_path / filename).write_bytes(b"video")
@@ -238,11 +251,14 @@ class TestSpecialCharacterWarnings:
 class TestOrphanedJsonDetection:
     """Tests for orphaned JSON file detection."""
 
-    @pytest.mark.parametrize("json_filename,json_content,should_warn", [
-        ("orphan.mp4.json", '{"transcribe": {"status": "complete"}}', True),
-        ("config.json", '{"extract": {"status": "complete"}}', True),
-        ("feed.json", '{"title": "My Feed"}', False),
-    ])
+    @pytest.mark.parametrize(
+        "json_filename,json_content,should_warn",
+        [
+            ("orphan.mp4.json", '{"transcribe": {"status": "complete"}}', True),
+            ("config.json", '{"extract": {"status": "complete"}}', True),
+            ("feed.json", '{"title": "My Feed"}', False),
+        ],
+    )
     def test_orphaned_json_detection(
         self, tmp_path, caplog, json_filename, json_content, should_warn
     ):
@@ -294,9 +310,7 @@ class TestOrphanedJsonDetection:
     def test_orphaned_json_in_subdirectory(self, tmp_path, caplog):
         """Orphaned JSON in subdirectories should be detected."""
         (tmp_path / "Course1").mkdir()
-        (tmp_path / "Course1" / "orphan.pdf.json").write_text(
-            '{"extract": {"status": "complete"}}'
-        )
+        (tmp_path / "Course1" / "orphan.pdf.json").write_text('{"extract": {"status": "complete"}}')
 
         scanner = Scanner(data_dir=tmp_path)
         with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
@@ -313,10 +327,13 @@ class TestOrphanedJsonDetection:
 class TestScanDirectoryErrorHandling:
     """Tests for error handling during directory scanning."""
 
-    @pytest.mark.parametrize("exception_cls", [
-        PermissionError,
-        OSError,
-    ])
+    @pytest.mark.parametrize(
+        "exception_cls",
+        [
+            PermissionError,
+            OSError,
+        ],
+    )
     def test_handles_filesystem_error_gracefully(self, tmp_path, caplog, exception_cls):
         """Scanner should not crash on filesystem errors for individual files."""
         source = tmp_path / "lecture.mp4"
@@ -345,10 +362,13 @@ class TestScanDirectoryErrorHandling:
 class TestScannedFileDataclass:
     """Tests for the ScannedFile dataclass."""
 
-    @pytest.mark.parametrize("with_optional,expected_stage,expected_json_exists", [
-        (False, None, False),
-        (True, "transcribing", True),
-    ])
+    @pytest.mark.parametrize(
+        "with_optional,expected_stage,expected_json_exists",
+        [
+            (False, None, False),
+            (True, "transcribing", True),
+        ],
+    )
     def test_scanned_file_fields(self, with_optional, expected_stage, expected_json_exists):
         """ScannedFile should be immutable and have all required fields."""
         kwargs = dict(
@@ -398,20 +418,23 @@ class TestIntegrationScenarios:
         filenames = {f.filename for f in result}
         assert filenames == {"unprocessed.pdf", "nested.html"}
 
-    @pytest.mark.parametrize("json_content,should_return,expected_filename", [
-        (
-            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}',
-            False,
-            None,
-        ),
-        (
-            '{"transcribe": {"status": "in_progress"}, "summarize": {"status": null}}',
-            True,
-            "lecture.mp4",
-        ),
-        ('{"title": "Some Title"}', True, "lecture.mp4"),
-        ('{invalid json content', False, None),
-    ])
+    @pytest.mark.parametrize(
+        "json_content,should_return,expected_filename",
+        [
+            (
+                '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}',
+                False,
+                None,
+            ),
+            (
+                '{"transcribe": {"status": "in_progress"}, "summarize": {"status": null}}',
+                True,
+                "lecture.mp4",
+            ),
+            ('{"title": "Some Title"}', True, "lecture.mp4"),
+            ("{invalid json content", False, None),
+        ],
+    )
     def test_json_status_and_freshness(
         self, tmp_path, json_content, should_return, expected_filename
     ):
@@ -430,10 +453,13 @@ class TestIntegrationScenarios:
         else:
             assert result == []
 
-    @pytest.mark.parametrize("source_newer,should_return", [
-        (True, True),   # Source newer than JSON → needs processing
-        (False, False),  # JSON newer than or equal to source → skip
-    ])
+    @pytest.mark.parametrize(
+        "source_newer,should_return",
+        [
+            (True, True),  # Source newer than JSON → needs processing
+            (False, False),  # JSON newer than or equal to source → skip
+        ],
+    )
     def test_freshness_check(self, tmp_path, source_newer, should_return):
         """Source newer than JSON should trigger reprocessing; JSON newer should skip."""
         source = tmp_path / "lecture.mp4"
@@ -464,19 +490,22 @@ class TestIntegrationScenarios:
 class TestStepStatusBasedScanning:
     """Tests for step status-based scanning logic."""
 
-    @pytest.mark.parametrize("step_field,step_status,json_content", [
-        (
-            "transcribe",
-            "in_progress",
-            '{"transcribe": {"status": "in_progress"}, "summarize": {"status": null}}',
-        ),
-        (
-            "summarize",
-            "in_progress",
-            '{"transcribe": {"status": "complete"}, "summarize": {"status": "in_progress"}}',
-        ),
-        ("extract", "in_progress", '{"extract": {"status": "in_progress"}}'),
-    ])
+    @pytest.mark.parametrize(
+        "step_field,step_status,json_content",
+        [
+            (
+                "transcribe",
+                "in_progress",
+                '{"transcribe": {"status": "in_progress"}, "summarize": {"status": null}}',
+            ),
+            (
+                "summarize",
+                "in_progress",
+                '{"transcribe": {"status": "complete"}, "summarize": {"status": "in_progress"}}',
+            ),
+            ("extract", "in_progress", '{"extract": {"status": "in_progress"}}'),
+        ],
+    )
     def test_in_progress_status_returned(self, tmp_path, step_field, step_status, json_content):
         """Files with in_progress step status should be returned for resuming."""
         ext = "mp4" if step_field != "extract" else "pdf"
@@ -491,10 +520,13 @@ class TestStepStatusBasedScanning:
         assert len(result) == 1
         assert result[0].filename == f"lecture.{ext}"
 
-    @pytest.mark.parametrize("filetype,json_content", [
-        ("mp4", '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'),
-        ("pdf", '{"extract": {"status": "complete"}}'),
-    ])
+    @pytest.mark.parametrize(
+        "filetype,json_content",
+        [
+            ("mp4", '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'),
+            ("pdf", '{"extract": {"status": "complete"}}'),
+        ],
+    )
     def test_complete_files_skipped(self, tmp_path, filetype, json_content):
         """Files with all steps complete should be skipped."""
         source = tmp_path / f"lecture.{filetype}"
@@ -619,10 +651,13 @@ class TestStepStatusBasedScanning:
 class TestJsonExistsField:
     """Tests for the json_exists field on ScannedFile."""
 
-    @pytest.mark.parametrize("json_content,should_exist", [
-        ('{"transcribe": {"status": "in_progress"}}', True),
-        (None, False),
-    ])
+    @pytest.mark.parametrize(
+        "json_content,should_exist",
+        [
+            ('{"transcribe": {"status": "in_progress"}}', True),
+            (None, False),
+        ],
+    )
     def test_json_exists_field(self, tmp_path, json_content, should_exist):
         """json_exists should correctly reflect whether JSON metadata exists."""
         source = tmp_path / "lecture.mp4"
@@ -659,28 +694,31 @@ class TestJsonExistsField:
 class TestStageTracking:
     """Tests for stage tracking via current_stage field."""
 
-    @pytest.mark.parametrize("json_content,expected_stage", [
-        (
-            '{"transcribe": {"status": "in_progress"}, '
-            '"summarize": {"status": null}, "stage": "transcribing"}',
-            "transcribing",
-        ),
-        (
-            '{"extract": {"status": "in_progress"}, "stage": "extracting_metadata"}',
-            "extracting_metadata",
-        ),
-        ('{"status": {"transcribe": "in_progress"}, "stage": null}', None),
-        ('{"transcribe": {"status": "in_progress"}, "stage": 123}', None),
-        (
-            '{"status": {"transcribe": "in_progress"}, "current_stage": "legacy_stage_value"}',
-            "legacy_stage_value",
-        ),
-        (
-            '{"status": {"transcribe": "in_progress"}, '
-            '"stage": "new_field", "current_stage": "old_field"}',
-            "new_field",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        "json_content,expected_stage",
+        [
+            (
+                '{"transcribe": {"status": "in_progress"}, '
+                '"summarize": {"status": null}, "stage": "transcribing"}',
+                "transcribing",
+            ),
+            (
+                '{"extract": {"status": "in_progress"}, "stage": "extracting_metadata"}',
+                "extracting_metadata",
+            ),
+            ('{"status": {"transcribe": "in_progress"}, "stage": null}', None),
+            ('{"transcribe": {"status": "in_progress"}, "stage": 123}', None),
+            (
+                '{"status": {"transcribe": "in_progress"}, "current_stage": "legacy_stage_value"}',
+                "legacy_stage_value",
+            ),
+            (
+                '{"status": {"transcribe": "in_progress"}, '
+                '"stage": "new_field", "current_stage": "old_field"}',
+                "new_field",
+            ),
+        ],
+    )
     def test_stage_tracking(self, tmp_path, json_content, expected_stage):
         """current_stage should be correctly extracted from JSON metadata."""
         source = tmp_path / "lecture.mp4"
@@ -732,11 +770,14 @@ class TestStageTracking:
         assert len(result) == 1
         assert result[0].current_stage == "summarizing"
 
-    @pytest.mark.parametrize("json_content,should_skip", [
-        ('{"transcribe_status": "in_progress", "summarize_status": null}', False),
-        ('{"transcribe_status": "complete", "summarize_status": "complete"}', True),
-        ('{"extract_status": "complete"}', True),
-    ])
+    @pytest.mark.parametrize(
+        "json_content,should_skip",
+        [
+            ('{"transcribe_status": "in_progress", "summarize_status": null}', False),
+            ('{"transcribe_status": "complete", "summarize_status": "complete"}', True),
+            ('{"extract_status": "complete"}', True),
+        ],
+    )
     def test_legacy_status_fields(self, tmp_path, json_content, should_skip):
         """Scanner should handle old JSON files with individual status fields."""
         filetype = "pdf" if "extract_status" in json_content else "mp4"

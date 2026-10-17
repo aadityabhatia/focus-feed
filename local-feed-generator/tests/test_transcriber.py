@@ -31,9 +31,11 @@ def _set_valid_env(monkeypatch):
     monkeypatch.setenv("LLM_ENDPOINT", "https://llm.example.com/v1")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "test-model")
-    monkeypatch.setenv("LLM_SYSTEM_PROMPT", "Test system prompt")
-    monkeypatch.setenv("SUMMARY_PROMPT", "Test summary prompt")
-    monkeypatch.setenv("TITLE_PROMPT", "Test title prompt")
+    monkeypatch.setenv("PROMPT_ARTICLE", "Test article prompt")
+    monkeypatch.setenv("PROMPT_ARTICLE_REFLECTION", "Test article reflection prompt")
+    monkeypatch.setenv("PROMPT_PODCAST", "Test podcast prompt")
+    monkeypatch.setenv("PROMPT_PODCAST_REFLECTION", "Test podcast reflection prompt")
+    monkeypatch.setenv("PROMPT_TITLE", "Test title prompt")
     # Clear transcription endpoint to force local mode (not remote).
     # Using setenv with empty string overrides the .env file value (env vars
     # take precedence over .env in pydantic-settings).
@@ -286,17 +288,20 @@ class TestTranscribeOutput:
         assert "[" not in result
         assert "->" not in result
 
-    @pytest.mark.parametrize("segments_data,expected_lines", [
-        (
-            ["First sentence.", "Second sentence.", "Third sentence."],
-            ["First sentence.", "Second sentence.", "Third sentence."],
-        ),
-        (["Real text", "", "   ", "More text"], ["Real text", "More text"]),
-        (["Only one segment."], ["Only one segment."]),
-        ([], []),
-        (["", "   ", ""], []),
-        (["  Padded text  ", "  More text  "], ["Padded text", "More text"]),
-    ])
+    @pytest.mark.parametrize(
+        "segments_data,expected_lines",
+        [
+            (
+                ["First sentence.", "Second sentence.", "Third sentence."],
+                ["First sentence.", "Second sentence.", "Third sentence."],
+            ),
+            (["Real text", "", "   ", "More text"], ["Real text", "More text"]),
+            (["Only one segment."], ["Only one segment."]),
+            ([], []),
+            (["", "   ", ""], []),
+            (["  Padded text  ", "  More text  "], ["Padded text", "More text"]),
+        ],
+    )
     def test_transcribe_output_formatting(self, valid_env, segments_data, expected_lines):
         """transcribe() should join segments with newlines, strip whitespace.
 
@@ -328,23 +333,26 @@ class TestTranscribeSkipAlreadyComplete:
 
     _MPATH = "local_feed_generator.services.transcriber"
 
-    @pytest.mark.parametrize("json_content,should_skip,expected_result", [
-        (
-            '{"status": {"transcribe": "in_progress", "summarize": null}, "transcript": ""}',
-            False,
-            "New transcript",
-        ),
-        (
-            '{"status": {"transcribe": "complete", "summarize": null}, "transcript": "Existing"}',
-            True,
-            "Existing",
-        ),
-        (
-            '{"status": {"transcribe": "complete", "summarize": null}, "transcript": ""}',
-            False,
-            "New transcript",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        "json_content,should_skip,expected_result",
+        [
+            (
+                '{"status": {"transcribe": "in_progress", "summarize": null}, "transcript": ""}',
+                False,
+                "New transcript",
+            ),
+            (
+                '{"status": {"transcribe": "complete", "summarize": null}, "transcript": "Existing"}',
+                True,
+                "Existing",
+            ),
+            (
+                '{"status": {"transcribe": "complete", "summarize": null}, "transcript": ""}',
+                False,
+                "New transcript",
+            ),
+        ],
+    )
     def test_transcribe_skip_or_proceed(
         self, valid_env, tmp_path, json_content, should_skip, expected_result
     ):
@@ -374,16 +382,19 @@ class TestTranscribeSkipAlreadyComplete:
 class TestGetAudioDuration:
     """Tests for the _get_audio_duration helper method."""
 
-    @pytest.mark.parametrize("setup_mock,expected", [
-        # Duration from av container
-        (lambda: _make_av_mock_with_streams([{"duration_seconds": 42.5}]), 42.5),
-        # No audio streams
-        (lambda: _make_av_mock_with_streams([]), None),
-        # av.open raises
-        (lambda: _make_av_mock_with_error(RuntimeError("av error")), None),
-        # av not available
-        (lambda: None, None),
-    ])
+    @pytest.mark.parametrize(
+        "setup_mock,expected",
+        [
+            # Duration from av container
+            (lambda: _make_av_mock_with_streams([{"duration_seconds": 42.5}]), 42.5),
+            # No audio streams
+            (lambda: _make_av_mock_with_streams([]), None),
+            # av.open raises
+            (lambda: _make_av_mock_with_error(RuntimeError("av error")), None),
+            # av not available
+            (lambda: None, None),
+        ],
+    )
     def test_get_audio_duration_scenarios(self, valid_env, tmp_path, setup_mock, expected):
         """_get_audio_duration should handle various scenarios."""
         audio_file = tmp_path / "test.mp4"
@@ -403,10 +414,13 @@ class TestGetAudioDuration:
 class TestGetFileSize:
     """Tests for the _get_file_size helper method."""
 
-    @pytest.mark.parametrize("file_exists,expected", [
-        (True, 1024),
-        (False, None),  # Nonexistent file returns None
-    ])
+    @pytest.mark.parametrize(
+        "file_exists,expected",
+        [
+            (True, 1024),
+            (False, None),  # Nonexistent file returns None
+        ],
+    )
     def test_get_file_size(self, valid_env, tmp_path, file_exists, expected):
         """_get_file_size should return the file size in bytes, or None on error."""
         audio_file = tmp_path / "test.mp4"
@@ -558,26 +572,27 @@ class TestCheckCudaAvailable:
 class TestCudaCheckInLoadModel:
     """Tests for the CUDA availability check integrated into _load_model()."""
 
-    @pytest.mark.parametrize("cuda_available,whisper_side_effect,expected_error", [
-        (False, None, "CUDA libraries not found"),
-        (
-            True,
-            RuntimeError(
-                "Error loading libcublas.so.12: cannot open shared object file"
+    @pytest.mark.parametrize(
+        "cuda_available,whisper_side_effect,expected_error",
+        [
+            (False, None, "CUDA libraries not found"),
+            (
+                True,
+                RuntimeError("Error loading libcublas.so.12: cannot open shared object file"),
+                "CUDA libraries not found",
             ),
-            "CUDA libraries not found",
-        ),
-        (
-            True,
-            RuntimeError("CUDA error: cuBLAS initialization failed"),
-            "CUDA libraries not found",
-        ),
-        (
-            True,
-            RuntimeError("Invalid model name"),
-            "Failed to load transcription model",
-        ),
-    ])
+            (
+                True,
+                RuntimeError("CUDA error: cuBLAS initialization failed"),
+                "CUDA libraries not found",
+            ),
+            (
+                True,
+                RuntimeError("Invalid model name"),
+                "Failed to load transcription model",
+            ),
+        ],
+    )
     def test_cuda_error_scenarios(
         self, valid_env, cuda_available, whisper_side_effect, expected_error
     ):
@@ -604,10 +619,13 @@ class TestCudaCheckInLoadModel:
             if "Invalid model name" in str(whisper_side_effect or ""):
                 assert "Invalid model name" in str(exc_info.value)
 
-    @pytest.mark.parametrize("device,cuda_check_called,should_succeed", [
-        ("cuda", True, True),   # CUDA device: check is called, should succeed
-        ("cpu", False, True),   # CPU device: check is skipped, should succeed
-    ])
+    @pytest.mark.parametrize(
+        "device,cuda_check_called,should_succeed",
+        [
+            ("cuda", True, True),  # CUDA device: check is called, should succeed
+            ("cpu", False, True),  # CPU device: check is skipped, should succeed
+        ],
+    )
     def test_device_handling(self, valid_env, device, cuda_check_called, should_succeed):
         """_load_model should check CUDA only when device is 'cuda'."""
         import local_feed_generator.config as config_module

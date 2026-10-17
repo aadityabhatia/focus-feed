@@ -48,12 +48,12 @@ class MockSummarizer:
         self.call_count = 0
         self.called_with = []
 
-    def summarize(self, transcript):
+    def summarize(self, transcript, **kwargs):
         self.call_count += 1
         self.called_with.append(transcript)
         return (self.summary, 100, 50)
 
-    def generate_title(self, content, filename=None, extracted_title=None):
+    def generate_title(self, content, filename=None, extracted_title=None, **kwargs):
         self.call_count += 1
         self.called_with.append(content)
         return ("Mock Generated Title", 30, 5)
@@ -69,7 +69,7 @@ class FailingTranscriber:
 class FailingSummarizer:
     """Mock summarizer that always fails."""
 
-    def summarize(self, transcript):
+    def summarize(self, transcript, **kwargs):
         raise SummarizationError("Mock summarization failure")
 
 
@@ -88,9 +88,11 @@ class TestConfigMetadataIntegration:
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
-            "LLM_SYSTEM_PROMPT": "Test prompt",
-            "SUMMARY_PROMPT": "Test summary prompt",
-            "TITLE_PROMPT": "Test title prompt",
+            "PROMPT_ARTICLE": "Test article prompt",
+            "PROMPT_ARTICLE_REFLECTION": "Test article reflection prompt",
+            "PROMPT_PODCAST": "Test podcast prompt",
+            "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
+            "PROMPT_TITLE": "Test title prompt",
         }
 
     def test_config_loads_and_metadata_created_with_config_values(self):

@@ -43,9 +43,11 @@ def mock_config():
         llm_endpoint="https://llm.example.com/v1",
         llm_api_key="test-key",
         llm_model="test-model",
-        llm_system_prompt="Test system prompt",
-        summary_prompt="Summarize key takeaways.",
-        title_prompt="Generate a concise title.",
+        prompt_article="Summarize key takeaways.",
+        prompt_article_reflection="Summarize key takeaways with reflection.",
+        prompt_podcast="Summarize key takeaways from podcast.",
+        prompt_podcast_reflection="Summarize key takeaways from podcast with reflection.",
+        prompt_title="Generate a concise title.",
         transcription_endpoint="https://transcribe.example.com/v1",
         transcription_api_key="transcribe-key",
         transcription_model="whisper-1",
@@ -84,10 +86,13 @@ class TestRemoteTranscriberInit:
                 api_key="transcribe-key",
             )
 
-    @pytest.mark.parametrize("unset_attr,error_msg", [
-        ("transcription_endpoint", "TRANSCRIPTION_ENDPOINT is not configured"),
-        ("transcription_api_key", "TRANSCRIPTION_API_KEY is not configured"),
-    ])
+    @pytest.mark.parametrize(
+        "unset_attr,error_msg",
+        [
+            ("transcription_endpoint", "TRANSCRIPTION_ENDPOINT is not configured"),
+            ("transcription_api_key", "TRANSCRIPTION_API_KEY is not configured"),
+        ],
+    )
     def test_missing_config_raises_error(self, mock_config, unset_attr, error_msg):
         """Should raise TranscriptionError when required config is missing."""
         setattr(mock_config, unset_attr, None)
@@ -128,24 +133,31 @@ class TestTranscribeFileExistence:
 class TestTranscribeOutput:
     """Tests for transcript output and API call parameters in transcribe()."""
 
-    @pytest.mark.parametrize("api_response,expected_result", [
-        ("This is the transcript text.", "This is the transcript text."),
-        ("  This is the transcript text.  ", "This is the transcript text."),
-        (
-            json.dumps({
-                "text": "This is the transcript text.",
-                "usage": {"type": "duration", "seconds": 100},
-            }),
-            "This is the transcript text.",
-        ),
-        (
-            json.dumps({
-                "text": "  This is the transcript text.  ",
-                "usage": {"type": "duration", "seconds": 100},
-            }),
-            "This is the transcript text.",
-        ),
-    ])
+    @pytest.mark.parametrize(
+        "api_response,expected_result",
+        [
+            ("This is the transcript text.", "This is the transcript text."),
+            ("  This is the transcript text.  ", "This is the transcript text."),
+            (
+                json.dumps(
+                    {
+                        "text": "This is the transcript text.",
+                        "usage": {"type": "duration", "seconds": 100},
+                    }
+                ),
+                "This is the transcript text.",
+            ),
+            (
+                json.dumps(
+                    {
+                        "text": "  This is the transcript text.  ",
+                        "usage": {"type": "duration", "seconds": 100},
+                    }
+                ),
+                "This is the transcript text.",
+            ),
+        ],
+    )
     def test_transcribe_output_handling(self, remote_transcriber, api_response, expected_result):
         """transcribe() should handle various API response formats and strip whitespace."""
         remote_transcriber._client.audio.transcriptions.create.return_value = api_response
@@ -155,10 +167,13 @@ class TestTranscribeOutput:
 
         assert result == expected_result
 
-    @pytest.mark.parametrize("remote_model,transcription_model,expected_model", [
-        (None, "whisper-1", "whisper-1"),  # Falls back to transcription_model
-        ("whisper-1", "large-v3-turbo", "whisper-1"),  # Remote model takes precedence
-    ])
+    @pytest.mark.parametrize(
+        "remote_model,transcription_model,expected_model",
+        [
+            (None, "whisper-1", "whisper-1"),  # Falls back to transcription_model
+            ("whisper-1", "large-v3-turbo", "whisper-1"),  # Remote model takes precedence
+        ],
+    )
     def test_transcribe_model_selection(
         self, mock_config, remote_model, transcription_model, expected_model
     ):
@@ -278,6 +293,7 @@ class TestTranscribeErrorHandling:
 
             assert "Unexpected error" in str(exc_info.value)
             assert exc_info.value.filepath == "fake.mp4"
+
 
 # ---------------------------------------------------------------------------
 # Retry logic and backoff calculation tests

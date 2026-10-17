@@ -1058,10 +1058,13 @@ class TestGetAudioMetadata:
         assert result["creation_time"] == "2024-01-15T10:30:00.000000Z"
         assert result["bit_rate"] == 128000
 
-    @pytest.mark.parametrize("side_effect,expected", [
-        (subprocess.CalledProcessError(1, "ffprobe"), None),
-        (OSError("command not found"), None),
-    ])
+    @pytest.mark.parametrize(
+        "side_effect,expected",
+        [
+            (subprocess.CalledProcessError(1, "ffprobe"), None),
+            (OSError("command not found"), None),
+        ],
+    )
     def test_returns_none_on_subprocess_error(self, mock_probe, side_effect, expected):
         """Should return None when ffprobe command fails."""
         with (
@@ -1207,11 +1210,14 @@ class TestGetAudioMetadata:
         call_args = mock_run.call_args
         assert str(mock_probe) in call_args[0][0]
 
-    @pytest.mark.parametrize("duration_str,expected_duration", [
-        ("180.5", 180.5),
-        ("100.0", 100.0),
-        ("0.0", 0.0),
-    ])
+    @pytest.mark.parametrize(
+        "duration_str,expected_duration",
+        [
+            ("180.5", 180.5),
+            ("100.0", 100.0),
+            ("0.0", 0.0),
+        ],
+    )
     def test_duration_is_float(self, mock_probe, duration_str, expected_duration):
         """Duration should be a float."""
         mock_probe_output = {
@@ -1238,10 +1244,13 @@ class TestGetAudioMetadata:
         assert isinstance(result["duration"], float)
         assert result["duration"] == expected_duration
 
-    @pytest.mark.parametrize("bit_rate_str,expected_bit_rate", [
-        ("320000", 320000),
-        ("128000", 128000),
-    ])
+    @pytest.mark.parametrize(
+        "bit_rate_str,expected_bit_rate",
+        [
+            ("320000", 320000),
+            ("128000", 128000),
+        ],
+    )
     def test_bit_rate_is_int(self, mock_probe, bit_rate_str, expected_bit_rate):
         """Bit rate should be an int."""
         mock_probe_output = {
