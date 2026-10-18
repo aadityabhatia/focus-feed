@@ -12,7 +12,7 @@ Command: `uv run local-feed-generator <command>` from project root.
 ## Key Commands
 - `process` / `watch`: Process files batch/incrementally.
 - `transcribe`, `summarize`, `extract`, `feeds`, `validate`, `create-feed`.
-- Flags: `--data-dir`, `--file`, `--force`, `--dry-run`.
+- Flags: `--force`, `--dry-run`.
 
 ## Metadata Schema
 Each file gets a `[filename].json` with:
@@ -34,7 +34,7 @@ Feed Eligibility: MP4 = transcribe & summarize complete. PDF/HTML = extract comp
 Title Rules: `generated` > `extracted` > `filename`. Parent folder name prepended.
 
 ## Config (Env Vars)
-Required: `BASE_URL`, `DATA_DIR`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`, `PROMPT_ARTICLE`, `PROMPT_PODCAST`, `PROMPT_TITLE`.
+Required: `BASE_URL`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`, `PROMPT_ARTICLE`, `PROMPT_PODCAST`, `PROMPT_TITLE`.
 
 Optional: `PROMPT_ARTICLE_REFLECTION`, `PROMPT_PODCAST_REFLECTION`, `TRANSCRIPTION_ENDPOINT` (remote overrides local), `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_DEVICE`, `TRANSCRIPTION_COMPUTE_TYPE`.
 

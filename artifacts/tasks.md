@@ -3,7 +3,7 @@
 **Project:** `local-feed-generator`  
 **Date:** 2026-10-16  
 **Python:** 3.14+  
-**Dependency Manager:** uv  
+**Dependency Manager:** uv
 
 ---
 
@@ -89,7 +89,7 @@ Establish the project foundation with dependency management, directory structure
   - Create a basic `README.md` stub
 - **Completion Criteria:**
   - `.env.example` contains all required environment variables with example values
-  - `.env.example` includes: `BASE_URL`, `DATA_DIR`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`, `PROMPT_TITLE`, `PROMPT_ARTICLE`, `PROMPT_PODCAST`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_DEVICE`, `TRANSCRIPTION_COMPUTE_TYPE`, `PROMPT_ARTICLE_REFLECTION`, `PROMPT_PODCAST_REFLECTION`
+  - `.env.example` includes: `BASE_URL`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`, `PROMPT_TITLE`, `PROMPT_ARTICLE`, `PROMPT_PODCAST`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_DEVICE`, `TRANSCRIPTION_COMPUTE_TYPE`, `PROMPT_ARTICLE_REFLECTION`, `PROMPT_PODCAST_REFLECTION`
 
 - [x] T1.4: Verify Dependency Installation
 - **Description:** Ensure all dependencies can be installed
@@ -118,7 +118,7 @@ Implement the foundational modules for configuration, file scanning, and metadat
 - **Actions:**
   - Create `Settings` class extending `pydantic_settings.BaseSettings`
   - Define all environment variables with types and defaults
-  - Add validation for required fields (`BASE_URL`, `DATA_DIR`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`)
+  - Add validation for required fields (`BASE_URL`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`)
   - Add new required fields: `PROMPT_TITLE`, `PROMPT_ARTICLE`, `PROMPT_PODCAST`
   - Add new optional fields: `PROMPT_ARTICLE_REFLECTION`, `PROMPT_PODCAST_REFLECTION` (default to None)
   - Implement singleton pattern for config access
@@ -163,7 +163,7 @@ Implement the foundational modules for configuration, file scanning, and metadat
 - **File:** `src/local_feed_generator/scanner.py`
 - **Actions:**
   - Implement `Scanner` class with `scan_directory()` method
-  - Recursively walk `DATA_DIR` for files with extensions: `.mp4`, `.pdf`, `.html` (case-insensitive)
+  - Recursively walk base directory or provided paths for files with extensions: `.mp4`, `.pdf`, `.html` (case-insensitive)
   - For each file, check if corresponding `.json` file exists in same directory
   - Return list of files that need processing (no JSON or JSON is outdated or incomplete)
   - Implement filename validation for special characters (log warnings only)
@@ -174,7 +174,7 @@ Implement the foundational modules for configuration, file scanning, and metadat
 - **Completion Criteria:**
   - Scanner correctly identifies files without JSON metadata
   - Scanner correctly identifies files with JSON metadata
-  - Scanner returns absolute file paths and relative paths from DATA_DIR
+  - Scanner returns absolute file paths and relative paths from base directory
   - Special character warnings are logged
   - Orphaned JSON files are detected and logged as warnings
   - Feed.json files are detected and skipped
@@ -393,7 +393,7 @@ Implement the file processing pipeline including transcription, summarization, a
   - T2.4 (Error handling)
 - **Completion Criteria:**
   - RemoteTranscriber class can transcribe audio files via API
-  - Both text and JSON responses are parsed correctly
+  - Both text and JSON responses handled
   - API errors handled gracefully
   - Millisecond precision timestamps in step maps
   - Retry logic works with exponential backoff
@@ -412,8 +412,8 @@ Implement RSS feed generation for podcast and articles feeds with new features.
 - **File:** `src/local_feed_generator/feeds.py`
 - **Actions:**
   - Implement `FeedGenerator` class
-  - Accept `DATA_DIR` and `BASE_URL` from configuration
-  - Scan `DATA_DIR` recursively for all `*.json` files
+  - Accept `BASE_URL` from configuration
+  - Scan base directory or provided paths recursively for all `*.json` files
   - Filter entries by `feed_eligible` computed property (which checks step map statuses: MP4 needs transcribe.status="complete" AND summarize.status="complete", PDF/HTML needs extract.status="complete")
   - Implement sorting: folder name (ascending), then filename (ascending)
   - Calculate absolute URLs: `BASE_URL` + `filepath`
@@ -446,11 +446,11 @@ Implement RSS feed generation for podcast and articles feeds with new features.
      - Title from metadata title dict's final title computation
      - Description from `summary` field (LLM-generated key takeaways)
     - **NEW:** Convert markdown in summary to HTML
-    - Link: absolute URL to source file
-    - Enclosure with URL, type="audio/mp4", length (file size from `size` field)
-    - Publication date from metadata `date` field (UNIX epoch to datetime)
-    - GUID based on filepath
-  - Write feed to `DATA_DIR/podcast.xml` (or custom output_dir)
+     - Link: absolute URL to source file
+     - Enclosure with URL, type="audio/mp4", length (file size from `size` field)
+     - Publication date from metadata `date` field (UNIX epoch to datetime)
+     - GUID based on filepath
+  - Write feed to `base_dir/podcast.xml` (or custom output_dir)
   - **NEW:** Support per-folder feed generation when output_dir is subfolder
   - **NEW:** Accept custom title and description from feed.json
   - **NEW:** Only generate if MP4 files present in the folder
@@ -476,10 +476,10 @@ Implement RSS feed generation for podcast and articles feeds with new features.
      - Title from metadata title dict's final title computation
      - **NEW:** Description from `content` field (if available), otherwise `description` field
     - **NEW:** Convert markdown in content/description to HTML
-    - Link: absolute URL to source file
-    - Publication date from metadata `date` field (UNIX epoch to datetime)
-    - GUID based on filepath
-  - Write feed to `DATA_DIR/articles.xml` (or custom output_dir)
+     - Link: absolute URL to source file
+     - Publication date from metadata `date` field (UNIX epoch to datetime)
+     - GUID based on filepath
+  - Write feed to `base_dir/articles.xml` (or custom output_dir)
   - **NEW:** Support per-folder feed generation when output_dir is subfolder
   - **NEW:** Accept custom title and description from feed.json
   - **NEW:** Only generate if PDF/HTML files present in the folder
@@ -574,7 +574,6 @@ Implement RSS feed generation for podcast and articles feeds with new features.
   - Simple HTML that works with any browser
 
 ---
-
 ## Phase 5: CLI Integration
 
 ### Objective
@@ -587,7 +586,7 @@ Implement command-line interface for all processing modes.
 - **File:** `src/local_feed_generator/cli.py`
 - **Actions:**
   - Create Click command group `local-feed-generator`
-  - Implement shared options: `--data-dir`, `--config-file`
+  - Implement shared options: `--config-file`
   - Validate options and load configuration
   - Handle errors and exit codes appropriately
   - **NEW:** Update help text to mention conditional feed generation and index.html
@@ -602,8 +601,8 @@ Implement command-line interface for all processing modes.
 - **Description:** Create `process` command for batch mode
 - **File:** `src/local_feed_generator/cli.py`
 - **Actions:**
-  - Implement `process` command with required `--data-dir` option
-   - Orchestrate: Scanner \=> Producer \=> Feed Generator
+  - Implement `process` command with positional directory argument
+    - Orchestrate: Scanner => Producer => Feed Generator
   - Process all files without JSON metadata or with incomplete step maps
   - Generate both feeds (root-level and per-folder) after all files are processed, based on feed.json configuration
   - Generate root-level index.html after feed generation
@@ -625,13 +624,13 @@ Implement command-line interface for all processing modes.
 - **Description:** Create `watch` command for incremental mode
 - **File:** `src/local_feed_generator/cli.py`
 - **Actions:**
-  - Implement `watch` command with required `--data-dir` option
-  - Start watchdog Observer on DATA_DIR
+  - Implement `watch` command with positional directory argument
+  - Start watchdog Observer on the specified directory
   - Register event handlers for:
     - File created (for .mp4, .pdf, .html)
     - File modified (for .mp4, .pdf, .html)
     - JSON file created/modified (check for orphaned)
-  - On file event: Process file \=> Regenerate feeds \=> Regenerate index.html
+  - On file event: Process file => Regenerate feeds => Regenerate index.html
   - On JSON event without source: Log warning
   - On other events: Ignore
   - **NEW:** Implement debouncing per file (1 second interval)
@@ -657,7 +656,7 @@ Implement command-line interface for all processing modes.
 - **Description:** Create `feeds` command for feed-only generation
 - **File:** `src/local_feed_generator/cli.py`
 - **Actions:**
-  - Implement `feeds` command with required `--data-dir` option
+  - Implement `feeds` command with positional directory argument
   - Skip file processing
   - Read all existing JSON metadata files
   - Generate both root-level and per-folder feeds (only where feed.json exists and applicable files present)
@@ -678,7 +677,7 @@ Implement command-line interface for all processing modes.
 - **Description:** Create `validate` command for metadata validation
 - **File:** `src/local_feed_generator/cli.py`
 - **Actions:**
-  - Implement `validate` command with required `--data-dir` option
+  - Implement `validate` command with positional directory argument
   - Scan for all JSON metadata files
   - Validate each against the schema (including new fields: title dict, duration, creation_time, content, step maps)
   - Check for deprecated field usage (warn on transcript, status dict, transcribe_status, etc.)
@@ -716,7 +715,7 @@ Implement command-line interface for all processing modes.
 - **Description:** Create `create-feed` command to generate template feed.json files
 - **File:** `src/local_feed_generator/cli.py`
 - **Actions:**
-  - Implement `create-feed` command with required `--dir` or `--directory` option (directory path)
+  - Implement `create-feed` command with positional directory argument
   - Generate template feed.json with placeholder title and description fields
   - Do NOT include hardcoded link field (link derived from BASE_URL + relative path)
   - Create target directory if it doesn't exist
@@ -730,10 +729,8 @@ Implement command-line interface for all processing modes.
   - No link field in template (derived from BASE_URL)
   - Target directory created if missing
   - Success message includes generated file path
-  - Works with --dir and --directory flag aliases
 
 ---
-
 ## Phase 6: Incremental Mode (Watch)
 
 ### Objective
@@ -811,7 +808,6 @@ Enhance and test the incremental processing mode with robust file watching.
   - Rate limiting prevents log flooding
 
 ---
-
 ## Phase 7: Validation and Error Handling
 
 ### Objective
@@ -927,7 +923,6 @@ Implement comprehensive validation and robust error handling throughout the syst
   - Scripts test index.html generation
 
 ---
-
 ## Phase 8: Remote Transcription Support
 
 ### Objective
@@ -1024,7 +1019,6 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
   - No automatic fallback between modes
 
 ---
-
 ## Phase 9: New Features Implementation
 
 ### Objective
@@ -1231,7 +1225,7 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
   - Update Producer to support summarization for PDF/HTML files
   - Add check for extracted content in PDF/HTML files
   - Pass content to summarizer for summary generation
-  - Update CLI to allow --file with PDF/HTML files
+  - Update CLI to work with PDF/HTML file paths
 - **Completion Criteria:**
   - summarize command works with MP4 files
   - summarize command works with PDF/HTML files
@@ -1239,47 +1233,46 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
   - Summary stored in summary field for PDF/HTML files
 
 ---
-
 ## Dependencies Summary
 
 ### Phase Dependencies
 
 ```
 Phase 1: Project Setup and Dependencies
-  \u251c\u2500 No dependencies (foundation)
-  
+  ━━ No dependencies (foundation)
+
 Phase 2: Core Modules (Config, Scanner, Metadata)
-  \u251c\u2500 Depends on Phase 1
-  
+  ━━ Depends on Phase 1
+
 Phase 3: File Processing (Producer, Transcriber, Summarizer, Extractors)
-  \u251c\u2500 Depends on Phase 1 (dependencies)
-  \u251c\u2500 Depends on Phase 2 (config, metadata, scanner)
-  
+  ━━ Depends on Phase 1 (dependencies)
+  ━━ Depends on Phase 2 (config, metadata, scanner)
+
 Phase 4: Feed Generation
-  \u251c\u2500 Depends on Phase 2 (metadata model)
-  \u251c\u2500 Depends on Phase 3 (producer for JSON files)
-  
+  ━━ Depends on Phase 2 (metadata model)
+  ━━ Depends on Phase 3 (producer for JSON files)
+
 Phase 5: CLI Integration
-  \u251c\u2500 Depends on Phase 2 (config)
-  \u251c\u2500 Depends on Phase 3 (producer)
-  \u251c\u2500 Depends on Phase 4 (feed generation)
-  
+  ━━ Depends on Phase 2 (config)
+  ━━ Depends on Phase 3 (producer)
+  ━━ Depends on Phase 4 (feed generation)
+
 Phase 6: Incremental Mode (Watch)
-  \u251c\u2500 Depends on Phase 2 (scanner)
-  \u251c\u2500 Depends on Phase 3 (producer)
-  \u251c\u2500 Depends on Phase 5 (CLI)
-  
+  ━━ Depends on Phase 2 (scanner)
+  ━━ Depends on Phase 3 (producer)
+  ━━ Depends on Phase 5 (CLI)
+
 Phase 7: Validation and Error Handling
-  \u251c\u2500 Depends on all previous phases
-  
+  ━━ Depends on all previous phases
+
 Phase 8: Remote Transcription Support
-  \u251c\u2500 Depends on Phase 2 (config)
-  \u251c\u2500 Depends on Phase 3 (transcriber)
-  
+  ━━ Depends on Phase 2 (config)
+  ━━ Depends on Phase 3 (transcriber)
+
 Phase 9: New Features Implementation
-  \u251c\u2500 Depends on Phase 2 (metadata model)
-  \u251c\u2500 Depends on Phase 3 (all processing modules)
-  \u251c\u2500 Depends on Phase 4 (feed generation)
+  ━━ Depends on Phase 2 (metadata model)
+  ━━ Depends on Phase 3 (all processing modules)
+  ━━ Depends on Phase 4 (feed generation)
 ```
 
 ### Task Dependencies
@@ -1309,7 +1302,6 @@ The following tasks can be worked on concurrently:
 **Phase 9:** T9.1-T9.13 can be worked on in parallel as they touch different files
 
 ---
-
 ## Execution Guidelines
 
 ### Prerequisites Discovery
@@ -1337,7 +1329,6 @@ The following tasks can be worked on concurrently:
 - Test conditional feed generation and index.html in Phase 9
 
 ---
-
 ## Key Constraints Reminders
 
 ### Schema Requirements (Version 2.0)
@@ -1381,7 +1372,6 @@ The following tasks can be worked on concurrently:
 12. **Directory Structure:** Follow design doc section 5.1
 
 ---
-
 ## Phase 10: Implementation Review Tasks
 
 ### Objective
@@ -1473,7 +1463,6 @@ Add review tasks to ensure all clarifications and updates are properly implement
   - T10.1, T10.2, T10.3, T10.4
 
 ---
-
 ## Success Checklist
 
 - [x] All phases completed
@@ -1504,7 +1493,6 @@ Add review tasks to ensure all clarifications and updates are properly implement
 - [x] Conditional feed generation (podcast only with MP4, articles only with PDF/HTML)
 
 ---
-
 ## Completion Report
 
 ### Artifacts Updated
@@ -1515,35 +1503,35 @@ Add review tasks to ensure all clarifications and updates are properly implement
 5. **tasks.md** - Updated with new tasks for conditional feed generation, index.html, summarize for PDF/HTML, create-feed command, all marked complete
 
 ### New Features Implemented
-1. \u2705 Title field as dict with source tracking
-2. \u2705 New config variables (PROMPT_TITLE, PROMPT_ARTICLE, PROMPT_PODCAST, PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION)
-3. \u2705 Reflection.md support
-4. \u2705 Per-folder feed generation with feed.json
-5. \u2705 Markdown to HTML conversion
-6. \u2705 Millisecond precision timestamps
-7. \u2705 Module name prefixing for titles
-8. \u2705 Whitespace/control character normalization
-9. \u2705 Content extraction for PDF/HTML files
-10. \u2705 Audio metadata extraction via ffprobe
-11. \u2705 Optional dependencies: faster-whisper (local transcription), Required dependencies: av (audio metadata), markdown (markdown to HTML conversion)
-12. \u2705 Conditional feed generation (feeds only where feed.json exists AND applicable files present)
-13. \u2705 Root-level index.html generation for feed discovery
-14. \u2705 NO root feeds without feed.json
-15. \u2705 podcast.xml only if MP4 files present
-16. \u2705 articles.xml only if PDF/HTML files present
-17. \u2705 summarize command processes PDF/HTML files
-18. ✓ create-feed CLI subcommand for template feed.json generation
-19. ✓ feed.json supports optional metadata fields: title, description, language, author, link, image
-20. ✓ Feed links derived from BASE_URL + relative path (not hardcoded)
+1. ✅ Title field as dict with source tracking
+2. ✅ New config variables (PROMPT_TITLE, PROMPT_ARTICLE, PROMPT_PODCAST, PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION)
+3. ✅ Reflection.md support
+4. ✅ Per-folder feed generation with feed.json
+5. ✅ Markdown to HTML conversion
+6. ✅ Millisecond precision timestamps
+7. ✅ Module name prefixing for titles
+8. ✅ Whitespace/control character normalization
+9. ✅ Content extraction for PDF/HTML files
+10. ✅ Audio metadata extraction via ffprobe
+11. ✅ Optional dependencies: faster-whisper (local transcription), Required dependencies: av (audio metadata), markdown (markdown to HTML conversion)
+12. ✅ Conditional feed generation (feeds only where feed.json exists AND applicable files present)
+13. ✅ Root-level index.html generation for feed discovery
+14. ✅ NO root feeds without feed.json
+15. ✅ podcast.xml only if MP4 files present
+16. ✅ articles.xml only if PDF/HTML files present
+17. ✅ summarize command processes PDF/HTML files
+18. ⚔ create-feed CLI subcommand for template feed.json generation
+19. ⚔ feed.json supports optional metadata fields: title, description, language, author, link, image
+20. ⚔ Feed links derived from BASE_URL + relative path (not hardcoded)
 
 ### Implementation Status
-- **All required features:** \u2705 COMPLETED
-- **All documentation:** \u2705 UPDATED
-- **All tests:** \u2705 PASSED (as per integration tests)
-- **Backward compatibility:** \u2705 MAINTAINED
-- **Error handling:** \u2705 COMPREHENSIVE
-- **Event logging:** \u2705 IMPLEMENTED throughout pipeline
-- **Markdown library:** \u2705 Now required dependency with XSS protection
+- **All required features:** ✅ COMPLETED
+- **All documentation:** ✅ UPDATED
+- **All tests:** ✅ PASSED (as per integration tests)
+- **Backward compatibility:** ✅ MAINTAINED
+- **Error handling:** ✅ COMPREHENSIVE
+- **Event logging:** ✅ IMPLEMENTED throughout pipeline
+- **Markdown library:** ✅ Now required dependency with XSS protection
 
 ### Notes
 - Remote transcription is fully implemented and tested
@@ -1571,28 +1559,28 @@ Add review tasks to ensure all clarifications and updates are properly implement
 ### Code Changes Implemented
 
 1. **Summarizer reflection.md check (FIXED)**
-   - `summarizer.py`: Removed extraneous "Consider the following reflection questions while summarizing:\n\n" from user_content (lines 202-204)
-   - `cli.py summarize command`: Added `_check_reflection_md` import, initialized `reflection_questions=None`, called it for each file, and passed it to `summarizer.summarize()`
-   - **Result:** `process` command path now matches individual step execution for reflection.md handling
+    - `summarizer.py`: Removed extraneous "Consider the following reflection questions while summarizing:\n\n" from user_content (lines 202-204)
+    - `cli.py summarize command`: Added `_check_reflection_md` import, initialized `reflection_questions=None`, called it for each file, and passed it to `summarizer.summarize()`
+    - **Result:** `process` command path now matches individual step execution for reflection.md handling
 
 2. **feed.json warning**
-   - **Findings:** feed.json was already being properly ignored throughout the codebase. No changes needed.
+    - **Findings:** feed.json was already being properly ignored throughout the codebase. No changes needed.
 
 3. **Feed item URL path**
-   - **Findings:** URL path calculation was already correct. `metadata.filepath` is always relative to data_dir root, and `_absolute_url` correctly constructs URLs as `{base_url}/{data_dir_basename}/{filepath}`. No changes needed.
+    - **Findings:** URL path calculation was already correct. `metadata.filepath` is always relative to base directory root, and `_absolute_url` correctly constructs URLs as `{base_url}/{basename}/{filepath}`. No changes needed.
 
 4. **Markdown library usage (CHANGED)**
-   - `pyproject.toml`: Added `"markdown>=3.5.0"` as required dependency
-   - `feeds.py`: Removed try/except ImportError fallback, removed `_simple_markdown_to_html`, `_convert_inline_markdown`, `_strip_outer_p_wrapper` functions
-   - Added XSS protection via markdown library (deregister html_block and html inline patterns) + URL sanitization
+    - `pyproject.toml`: Added `"markdown>=3.5.0"` as required dependency
+    - `feeds.py`: Removed try/except ImportError fallback, removed `_simple_markdown_to_html`, `_convert_inline_markdown`, `_strip_outer_p_wrapper` functions
+    - Added XSS protection via markdown library (deregister html_block and html inline patterns) + URL sanitization
 
 5. **Event logging (ADDED)**
-   - `transcriber.py`: Added logging for transcription start/complete/skip
-   - `summarizer.py`: Added logging for summarization start/complete and title generation start/complete
-   - `extractors.py`: Added logging for PDF/HTML/audio extraction start/complete and mtime fallback
-   - `producer.py`: Added step-level logging for all processing steps
-   - `feeds.py`: Added logging for feed generation, metadata discovery, per-folder generation
-   - Fixed logger names in summarizer.py and extractors.py to use `"local_feed_generator"` instead of `__name__`
+    - `transcriber.py`: Added logging for transcription start/complete/skip
+    - `summarizer.py`: Added logging for summarization start/complete and title generation start/complete
+    - `extractors.py`: Added logging for PDF/HTML/audio extraction start/complete and mtime fallback
+    - `producer.py`: Added step-level logging for all processing steps
+    - `feeds.py`: Added logging for feed generation, metadata discovery, per-folder generation
+    - Fixed logger names in summarizer.py and extractors.py to use `"local_feed_generator"` instead of `__name__`
 
 ### Artifacts Updated
 - **tasks.md**: Added T9.0 for event logging, marked T10.1-T10.5 complete, updated T1.2 to include markdown, updated T4.5 to reflect required markdown, added notes about fixes

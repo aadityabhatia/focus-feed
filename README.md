@@ -22,16 +22,21 @@ All processing uses your configured endpoints. Optional local transcription avai
 
 ## Quick Start
 
-1. **Place your files** in the `data/` directory (supports subfolders)
+1. **Configure** via environment variables or `.env` file
 
-2. **Configure** via environment variables or `.env` file
-
-3. **Process your content:**
+2. **Process your content** (targeting specific files or directories):
    ```bash
-   uv run local-feed-generator process
+   uv run local-feed-generator process ./videos/lecture.mp4
+   uv run local-feed-generator process ./documents/ ./videos/
    ```
 
-4. **Access your feeds** at `{BASE_URL}/index.html`
+3. **Access your feeds** at `{BASE_URL}/index.html`
+
+---
+To process all files, pass your data directory:
+   ```bash
+   uv run local-feed-generator process ./data
+   ```
 
 ---
 
@@ -40,7 +45,6 @@ All processing uses your configured endpoints. Optional local transcription avai
 ### Required Environment Variables
 
 - `BASE_URL` - Root URL where data directory is served (e.g., `https://example.com`)
-- `DATA_DIR` - Path to your content directory (e.g., `./data`)
 - `LLM_ENDPOINT` - OpenAI-compatible API endpoint for summarization (can be remote or local)
 - `LLM_API_KEY` - API key for LLM endpoint
 - `LLM_MODEL` - Model identifier for summarization
@@ -64,7 +68,6 @@ All processing uses your configured endpoints. Optional local transcription avai
 ```bash
 # Required
 BASE_URL=https://example.com
-DATA_DIR=./data
 LLM_ENDPOINT=https://llm.example.com/v1
 LLM_API_KEY=your-api-key
 LLM_MODEL=mistralai/Mistral-7B-Instruct
@@ -98,21 +101,21 @@ TRANSCRIPTION_COMPUTE_TYPE=float16
 
 Process all files at once:
 ```bash
-uv run local-feed-generator process
+uv run local-feed-generator process ./data
 ```
 
 ### Incremental Mode
 
 Watch for new/updated files:
 ```bash
-uv run local-feed-generator watch
+uv run local-feed-generator watch ./data
 ```
 
 ---
 
 ## Granular Processing
 
-Target specific steps or files:
+Target specific steps or files by passing files and directories as positional arguments:
 
 - `transcribe` - Transcribe MP4 files to markdown
 - `summarize` - Generate summaries from transcripts or document content
@@ -123,8 +126,6 @@ Target specific steps or files:
 
 ### Common Flags
 
-- `--data-dir <path>` - Path to data directory (default: `DATA_DIR`)
-- `--file <path>` - Process only this specific file
 - `--force` - Force re-processing even if complete
 - `--dry-run` - Preview without making changes (transcribe, summarize, extract)
 - `--config-file <path>` - Use custom `.env` file
@@ -133,20 +134,25 @@ Target specific steps or files:
 
 ```bash
 # Process a single file
-uv run local-feed-generator process --file videos/lecture.mp4
+uv run local-feed-generator process ./videos/lecture.mp4
 
-# Force re-transcription
-uv run local-feed-generator transcribe --file videos/lecture.mp4 --force
+# Force re-transcription of a specific file
+uv run local-feed-generator transcribe ./videos/lecture.mp4 --force
 
 # Summarize a PDF
-uv run local-feed-generator summarize --file documents/report.pdf
+uv run local-feed-generator summarize ./documents/report.pdf
+
+# Process all files in a directory
+uv run local-feed-generator process ./documents/
+
+# Process multiple files and directories at once
+uv run local-feed-generator process ./videos/lecture.mp4 ./documents/report.pdf ./course1/
 
 # See what would be transcribed
 uv run local-feed-generator transcribe --dry-run
 ```
 
 ---
-
 ## File Organization
 
 ### Directory Structure
@@ -205,7 +211,6 @@ Place a `reflection.md` file in any folder to focus summarization on specific qu
 - **Index page** (`index.html`): Auto-generated at root, lists all feeds from all folders
 
 ---
-
 ## Supported File Types
 
 - **MP4 (audio)** - Transcribed + summarized, Podcast feed, `description=""`, `summary`=key takeaways, `content`=transcript

@@ -5,7 +5,9 @@ See proposal.md for problem, intent and scope.
 ## Functional Requirements
 
 ### Input & Processing
-- Process files from `DATA_DIR` recursively. Batch `process` or incremental `watch`.
+- Accept one or more files or directories as positional arguments for each subcommand
+- Files must be actual file paths (absolute or relative to current directory)
+- For each directory provided, process all relevant files within that directory recursively
 - Skip files with JSON where all applicable steps complete. Treat missing JSON as new.
 - Warn on orphaned JSON and special characters in filenames. Preserve filenames.
 - Supported types: PDF, HTML, MP4
@@ -49,7 +51,8 @@ See proposal.md for problem, intent and scope.
 
 ### CLI
 Commands: `process`, `watch`, `transcribe`, `summarize`, `extract`, `feeds`, `validate`, `create-feed`
-Flags: `--data-dir`, `--config-file`, `--file`, `--force`, `--dry-run` for transcribe/summarize/extract.
+Accept one or more files or directories as positional arguments.
+Flags: `--config-file`, `--force`, `--dry-run` for transcribe/summarize/extract.
 `--force` re-runs step.
 
 ## Non-Functional
@@ -92,5 +95,5 @@ Flags: `--data-dir`, `--config-file`, `--file`, `--force`, `--dry-run` for trans
 ```
 
 ## Environment
-Required: BASE_URL, DATA_DIR, LLM_ENDPOINT, LLM_API_KEY, LLM_MODEL, PROMPT_ARTICLE, PROMPT_PODCAST, PROMPT_TITLE
+Required: BASE_URL, LLM_ENDPOINT, LLM_API_KEY, LLM_MODEL, PROMPT_ARTICLE, PROMPT_PODCAST, PROMPT_TITLE
 Optional: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION, TRANSCRIPTION_ENDPOINT, TRANSCRIPTION_API_KEY, TRANSCRIPTION_MODEL, TRANSCRIPTION_DEVICE, TRANSCRIPTION_COMPUTE_TYPE, TRANSCRIPTION_REMOTE_MODEL

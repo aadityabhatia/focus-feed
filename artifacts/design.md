@@ -3,7 +3,7 @@
 **Runner:** All commands run via `uv run local-feed-generator <command>` from project root.
 
 ## 1. Overview
-Standalone app that processes MP4, PDF, HTML files in `data/` and generates private RSS feeds for personal consumption. Local-first by default; remote transcription optional.
+Standalone app that processes MP4, PDF, HTML files and generates private RSS feeds for personal consumption. Local-first by default; remote transcription optional.
 
 **Goals**
 - Privacy-first, local processing
@@ -25,7 +25,7 @@ Standalone app that processes MP4, PDF, HTML files in `data/` and generates priv
 - **CLI (`click`) + Config (`pydantic-settings` + `.env`)**
 
 **Data Flow**
-1. Scanner discovers file in data/ recursively
+1. Scanner discovers file recursively
 2. If JSON exists, check step statuses. Skip if all applicable steps complete; otherwise resume incomplete steps
 3. Dispatch by type:
    - MP4: load reflection.md if present → transcribe to markdown → store in content → summarize with reflection prompt → extract audio metadata via av → build title dict → apply parent folder prefix
@@ -38,10 +38,10 @@ Standalone app that processes MP4, PDF, HTML files in `data/` and generates priv
 
 **CLI**
 `uv run local-feed-generator <process|watch|feeds|validate|transcribe|summarize|extract|create-feed>`
-Flags: `--data-dir`, `--config-file`, `--file`, `--force`, `--dry-run`
+Flags: `--config-file`, `--force`, `--dry-run`
 
 **Environment**
-Required: BASE_URL, DATA_DIR, LLM_ENDPOINT, LLM_API_KEY, LLM_MODEL, PROMPT_ARTICLE, PROMPT_PODCAST, PROMPT_TITLE
+Required: BASE_URL, LLM_ENDPOINT, LLM_API_KEY, LLM_MODEL, PROMPT_ARTICLE, PROMPT_PODCAST, PROMPT_TITLE
 Optional: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION, TRANSCRIPTION_ENDPOINT, TRANSCRIPTION_API_KEY, TRANSCRIPTION_MODEL, TRANSCRIPTION_DEVICE, TRANSCRIPTION_COMPUTE_TYPE, TRANSCRIPTION_REMOTE_MODEL
 
 **JSON Metadata**
