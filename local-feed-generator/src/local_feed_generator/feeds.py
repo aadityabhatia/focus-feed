@@ -117,6 +117,51 @@ def _markdown_to_html(text: str | None) -> str:
     return result
 
 
+def _get_summarization_attribution(metadata: Metadata) -> str:
+    """Generate attribution string for feed item descriptions.
+
+    Returns a string like "Summarized by {model} at {datetime}" in local timezone,
+    or empty string if attribution cannot be determined.
+
+    Since all feed-eligible files now require ``summarize`` to be complete,
+    this always uses ``summarize.model`` and ``summarize.end_time``.
+    """
+    # Get config for llm_model fallback; return empty string if config unavailable.
+    try:
+        config = get_config()
+        llm_model = config.llm_model
+    except Exception:
+        llm_model = None
+
+    # All feed-eligible files have summarize complete, so always use it.
+    step = metadata.summarize
+    model = step.model if step else None
+
+    # Fall back to config llm_model if model is still None.
+    if not model:
+        model = llm_model
+
+    # If no model could be determined, return empty string.
+    if not model:
+        return ""
+
+    # Extract timestamp: prefer step.end_time, then metadata.date, then publication_date.
+    if step is not None and step.end_time is not None:
+        timestamp = step.end_time
+    elif metadata.date is not None:
+        timestamp = metadata.date
+    elif metadata.publication_date is not None:
+        timestamp = metadata.publication_date
+    else:
+        return ""
+
+    # Convert timestamp to local timezone and format.
+    dt = datetime.fromtimestamp(timestamp, tz=UTC).astimezone()
+    formatted_dt = dt.strftime("%Y-%m-%d %H:%M:%S %Z")
+
+    return f"Summarized by {model} at {formatted_dt}"
+
+
 @dataclass
 class FeedValidationResult:
     """Structured result of validating an RSS feed.
@@ -745,6 +790,10 @@ class FeedGenerator:
             # falling back to description for backward compatibility.
             # Convert markdown to HTML for safe rendering in feed readers.
             desc_text = metadata.summary or metadata.description or ""
+            # Append summarization attribution before HTML conversion.
+            attribution = _get_summarization_attribution(metadata)
+            if attribution:
+                desc_text = f"{desc_text}\n\n{attribution}" if desc_text else attribution
             entry.description(_markdown_to_html(desc_text))
 
             # Link to the source file.
@@ -867,6 +916,10 @@ class FeedGenerator:
             # description field, then empty string.
             # Convert markdown to HTML for safe rendering in feed readers.
             desc_text = metadata.summary or metadata.description or ""
+            # Append summarization attribution before HTML conversion.
+            attribution = _get_summarization_attribution(metadata)
+            if attribution:
+                desc_text = f"{desc_text}\n\n{attribution}" if desc_text else attribution
             entry.description(_markdown_to_html(desc_text))
 
             # Link to the source file.

@@ -562,9 +562,8 @@ def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
 
     - **MP4**: ``transcribe`` step map exists with ``status == "complete"``
       and ``summarize`` step map exists with ``status == "complete"``.
-    - **PDF/HTML**: ``extract`` step map exists with ``status == "complete"``.
-      If ``content`` exists, the ``summarize`` step map must also exist with
-      ``status == "complete"``.
+    - **PDF/HTML**: ``extract`` step map exists with ``status == "complete"``
+      and ``summarize`` step map exists with ``status == "complete"``.
     """
     if metadata.get("error"):
         return False
@@ -579,15 +578,13 @@ def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
         )
     if filetype in ("pdf", "html"):
         extract = metadata.get("extract")
-        if not (isinstance(extract, dict) and extract.get("status") == "complete"):
-            return False
-        # If content exists, summarize step must also be complete.
-        content = metadata.get("content")
-        if content:
-            summarize = metadata.get("summarize")
-            if not (isinstance(summarize, dict) and summarize.get("status") == "complete"):
-                return False
-        return True
+        summarize = metadata.get("summarize")
+        return (
+            isinstance(extract, dict)
+            and extract.get("status") == "complete"
+            and isinstance(summarize, dict)
+            and summarize.get("status") == "complete"
+        )
     return False
 
 
@@ -1775,9 +1772,12 @@ def _finalize_incomplete_json(
     assembles the final metadata by:
 
     - Filling in all required fields, using existing values from intermediate
-      JSON, file system statistics, or LLM-generated titles as fallbacks.
+      JSON, file system statistics, or LLM-generated titles and summaries as
+      fallbacks.
     - Setting all applicable step maps to ``"complete"`` status.
-    - Preserving existing ``content`` (transcript for MP4) fields.
+    - Preserving existing ``content`` (transcript for MP4, extracted text for
+      PDF/HTML) fields.
+    - Generating LLM summaries for PDF/HTML files when not already present.
 
     This makes files feed-eligible so they appear in generated feeds.
 
@@ -1883,6 +1883,24 @@ def _finalize_incomplete_json(
             description = metadata.get("description")
             summary = metadata.get("summary")
 
+            # Generate summary via LLM for PDF/HTML if not already present.
+            if filetype in ("pdf", "html") and not summary:
+                try:
+                    content = _get_content_for_title(source_file, metadata)
+                    if content and content.strip():
+                        summary, _, _ = summarizer.summarize(
+                            content,
+                            filepath=str(source_file),
+                            filetype=filetype,
+                        )
+                except Exception as sum_exc:
+                    _logger.warning(
+                        "Failed to generate summary for %s: %s",
+                        source_file,
+                        sum_exc,
+                    )
+                    summary = ""
+
             # Build the final metadata dict.
             final_metadata: dict[str, Any] = {
                 "title": title,
@@ -1929,6 +1947,16 @@ def _finalize_incomplete_json(
                     "output_size": len((metadata.get("content") or "").encode("utf-8")),
                     "words": len((metadata.get("content") or "").split()),
                 }
+                final_metadata["summarize"] = {
+                    "status": "complete",
+                    "start_time": now_ts,
+                    "end_time": now_ts,
+                    "input_size": len((metadata.get("content") or "").encode("utf-8")),
+                    "output_size": len((summary or "").encode("utf-8")),
+                    "words": len((summary or "").split()),
+                    "model": config.llm_model,
+                }
+                final_metadata["summary"] = summary or ""
                 final_metadata["content"] = metadata.get("content")
 
             _write_json_metadata(final_metadata, source_file)

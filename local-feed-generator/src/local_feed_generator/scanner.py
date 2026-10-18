@@ -8,14 +8,14 @@ Scanning logic (design doc section 5.2, tasks.md T2.3):
   ``.pdf``, ``.html`` (case-insensitive).
 - For each source file, check whether a corresponding ``.json`` metadata file
   exists in the same directory (named ``<source_filename>.json``).
-- A source file needs processing when:
-    * No matching ``.json`` file exists, **or**
-    * The ``.json`` file exists but is older than the source file
-      (source was modified after metadata was written), **or**
-    * The ``.json`` file has step maps that indicate incomplete
-      processing (e.g. ``transcribe.status`` is not ``"complete"`` for
-      MP4 files, or ``extract.status`` is not ``"complete"`` for
-      PDF/HTML).
+    - A source file needs processing when:
+      * No matching ``.json`` file exists, **or**
+      * The ``.json`` file exists but is older than the source file
+        (source was modified after metadata was written), **or**
+      * The ``.json`` file has step maps that indicate incomplete
+        processing (e.g. ``transcribe.status`` is not ``"complete"`` for
+        MP4 files, or ``extract.status`` or ``summarize.status`` is not
+        ``"complete"`` for PDF/HTML).
 - A source file is **skipped** (not returned) when:
     * The ``.json`` file exists, is newer than or equal to the source file,
       **and** all applicable step maps are ``"complete"`` (i.e. the file
@@ -169,8 +169,8 @@ class Scanner:
           (source was modified after metadata was written), **or**
         - The ``.json`` file has step maps indicating incomplete
           processing (e.g. ``transcribe.status`` is not ``"complete"`` for
-          MP4 files, or ``extract.status`` is not ``"complete"`` for
-          PDF/HTML files).
+          MP4 files, or ``extract.status`` or ``summarize.status`` is not
+          ``"complete"`` for PDF/HTML files).
 
         Files with all applicable step maps set to ``"complete"`` and a
         fresh JSON file are skipped. Files with an ``error`` field are
@@ -445,20 +445,19 @@ class Scanner:
         - **MP4**: ``transcribe`` step map exists and
           ``transcribe.status == "complete"`` and ``summarize`` step map
           exists and ``summarize.status == "complete"``.
-         - **PDF/HTML**: ``extract`` step map exists and
-           ``extract.status == "complete"``.  If ``content`` exists, the
-           ``summarize`` step map must also exist with
-           ``summarize.status == "complete"``.
+        - **PDF/HTML**: ``extract`` step map exists and
+          ``extract.status == "complete"`` and ``summarize`` step map
+          exists and ``summarize.status == "complete"``.
 
-         Legacy fields (``transcribe_status``, ``summarize_status``,
-         ``extract_status``) are also supported for backward compatibility.
+        Legacy fields (``transcribe_status``, ``summarize_status``,
+        ``extract_status``) are also supported for backward compatibility.
 
-         Args:
-             metadata: The parsed JSON metadata dictionary.
-             filetype: The source file type (``"mp4"``, ``"pdf"``, ``"html"``).
+        Args:
+            metadata: The parsed JSON metadata dictionary.
+            filetype: The source file type (``"mp4"``, ``"pdf"``, ``"html"``).
 
-         Returns:
-             ``True`` if the file is feed-eligible, ``False`` otherwise.
+        Returns:
+            ``True`` if the file is feed-eligible, ``False`` otherwise.
         """
         if metadata.get(_ERROR_FIELD):
             return False
@@ -489,18 +488,14 @@ class Scanner:
                 extract_complete = metadata.get("extract_status") == _COMPLETED_STEP_STATUS
             if not extract_complete:
                 return False
-            # If content exists, summarize step must also be complete.
-            content = metadata.get("content")
-            if content:
-                summarize = metadata.get("summarize")
-                summarize_complete = isinstance(summarize, dict) and (
-                    summarize.get("status") == _COMPLETED_STEP_STATUS
-                )
-                if not summarize_complete:
-                    summarize_complete = metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
-                if not summarize_complete:
-                    return False
-            return True
+            # summarize step must also be complete.
+            summarize = metadata.get("summarize")
+            summarize_complete = isinstance(summarize, dict) and (
+                summarize.get("status") == _COMPLETED_STEP_STATUS
+            )
+            if not summarize_complete:
+                summarize_complete = metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
+            return summarize_complete
         return False
 
     def _evaluate_json_status(self, source_path: Path) -> tuple[bool, str | None, bool]:

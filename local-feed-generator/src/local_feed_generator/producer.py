@@ -2,11 +2,12 @@
 
 Orchestrates file processing based on file type. For MP4 files, it
 transcribes audio to markdown, then generates key-takeaways summary via
-LLM. For PDF/HTML files, it extracts metadata from the source file and
-uses the filename (without extension, underscores→spaces) as the
-``title.filename``. For all file types, it generates a descriptive title
-via LLM using the filename, extracted title (if available), and content
-as context, stored as ``title.generated``.
+LLM. For PDF/HTML files, it extracts metadata from the source file,
+summarizes the extracted content via LLM, and uses the filename
+(without extension, underscores→spaces) as the ``title.filename``. For
+all file types, it generates a descriptive title via LLM using the
+filename, extracted title (if available), and content as context,
+stored as ``title.generated``.
 
 The Producer writes a JSON metadata file adjacent to each source file,
 following the schema defined in design doc section 3.3. On errors, it
@@ -14,7 +15,7 @@ writes an error-state metadata file and logs the error to stderr.
 
 Processing progress is tracked through separate step maps:
 - ``transcribe``: StepMap for transcription (MP4 only).
-- ``summarize``: StepMap for summarization (MP4 only).
+- ``summarize``: StepMap for summarization (all file types).
 - ``extract``: StepMap for metadata extraction (PDF/HTML only).
 
 Date fields (``date``) are stored as UNIX epoch floats with millisecond
@@ -211,10 +212,10 @@ class Producer:
 
         - **MP4**: transcribe -> summarize -> generate title -> generate
           metadata with content (transcript) and description (summary).
-        - **PDF**: extract metadata -> generate title -> generate metadata
-          with content (extracted text).
-        - **HTML**: extract metadata -> generate title -> generate metadata
-          with content (extracted text).
+        - **PDF**: extract metadata -> summarize -> generate title -> generate
+          metadata with content (extracted text) and summary.
+        - **HTML**: extract metadata -> summarize -> generate title -> generate
+          metadata with content (extracted text) and summary.
 
         For all file types, title generation uses the LLM with the
         filename, extracted title (if available), and content as context.
@@ -324,6 +325,16 @@ class Producer:
                 "output_size": 0,
                 "words": 0,
             }
+            partial_metadata["summarize"] = {
+                "status": "in_progress",
+                "start_time": now_ts,
+                "input_size": 0,
+                "output_size": 0,
+                "words": 0,
+                "model": None,
+                "input_tokens": 0,
+                "output_tokens": 0,
+            }
 
         # Preserve existing step maps that are complete (only when not forcing).
         if not force:
@@ -335,6 +346,8 @@ class Producer:
             elif filetype in ("pdf", "html"):
                 if existing_extract and existing_extract.get("status") == "complete":
                     partial_metadata["extract"] = existing_extract
+                if existing_summarize and existing_summarize.get("status") == "complete":
+                    partial_metadata["summarize"] = existing_summarize
 
         # Preserve existing content (transcript for MP4, only when not forcing).
         if existing_content and not force:
@@ -723,19 +736,20 @@ class Producer:
         json_path: str,
         force: bool = False,
     ) -> Metadata:
-        """Process a PDF file: extract metadata -> generate title -> build metadata.
+        """Process a PDF file: extract metadata -> summarize -> generate title -> build metadata.
 
         Writes intermediate JSON states at each processing stage. Uses
         :meth:`_write_metadata_partial` to bypass :class:`Metadata`
         validation for in-progress states.
 
         Uses :class:`PDFExtractor` to obtain title, description, date, and
-        size. The title is built using the filename-derived title and
-        extracted title (from PDF metadata) as context for LLM title
-        generation. The ``title.generated`` field holds the LLM-generated
-        title (module prefix is applied in ``Metadata.final_title``).
-        The ``title.extracted`` field stores the title from PDF metadata
-        but is NOT used as the final title.
+        size. The extracted content is then summarized via the LLM to
+        produce key takeaways stored in the ``summary`` field. The title is
+        built using the filename-derived title and extracted title (from PDF
+        metadata) as context for LLM title generation. The ``title.generated``
+        field holds the LLM-generated title (module prefix is applied in
+        ``Metadata.final_title``). The ``title.extracted`` field stores the
+        title from PDF metadata but is NOT used as the final title.
 
         Args:
             filepath: Relative path from the data directory root.
@@ -743,15 +757,16 @@ class Producer:
             absolute_path: Absolute path to the source file.
             json_path: Absolute path to the JSON metadata file (written
                 by :meth:`process_file` as the initial in-progress state).
-            force: When ``True``, re-run extraction even if existing step
-                maps show ``"complete"`` status.
+            force: When ``True``, re-run extraction and summarization even
+                if existing step maps show ``"complete"`` status.
 
         Returns:
-            A :class:`Metadata` instance without transcript/summary.
+            A :class:`Metadata` instance with extract and summarize steps
+            complete.
 
         Raises:
-            Exception: Any exception from extraction or metadata
-                construction is propagated to the caller.
+            Exception: Any exception from extraction, summarization, or
+                metadata construction is propagated to the caller.
         """
         # Read the initial metadata dict written by process_file.
         json_path_obj = Path(json_path)
@@ -766,6 +781,16 @@ class Producer:
                     "input_size": 0,
                     "output_size": 0,
                     "words": 0,
+                },
+                "summarize": {
+                    "status": "in_progress",
+                    "start_time": now_ts,
+                    "input_size": 0,
+                    "output_size": 0,
+                    "words": 0,
+                    "model": None,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
                 },
                 "filename": filename,
                 "filepath": filepath,
@@ -786,7 +811,7 @@ class Producer:
         metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
-        _logger.info("Starting extraction for %s (step 1/2)", filepath)
+        _logger.info("Starting extraction for %s (step 1/3)", filepath)
         # Step 1: Extract metadata from the PDF.
         extracted = self.pdf_extractor.extract(absolute_path)
 
@@ -816,9 +841,57 @@ class Producer:
             len(file_content) if file_content else 0,
         )
 
-        # Step 2: Generate title via LLM using filename, extracted title,
+        # Get config for LLM model used in summarization.
+        config = get_config()
+
+        # Step 2: Summarize the extracted content via LLM.
+        # Check for reflection.md in the source file's directory.
+        reflection_questions = _check_reflection_md(absolute_path)
+        summarize_step = metadata_dict.get("summarize") or {}
+        if summarize_step.get("status") == "complete" and not force:
+            # Summarization already complete; reuse existing summary.
+            summary = metadata_dict.get("summary", "")
+        else:
+            summarize_step["status"] = "in_progress"
+            summarize_step["start_time"] = _now_timestamp()
+            summarize_step["input_size"] = len(file_content.encode("utf-8")) if file_content else 0
+            summarize_step["output_size"] = 0
+            summarize_step["words"] = 0
+            summarize_step["model"] = config.llm_model
+            summarize_step["input_tokens"] = 0
+            summarize_step["output_tokens"] = 0
+            metadata_dict["summarize"] = summarize_step
+            self._write_metadata_partial(metadata_dict, absolute_path)
+
+            _logger.info("Starting summarization for %s (step 2/3)", filepath)
+            if file_content and file_content.strip():
+                summary, prompt_tokens, completion_tokens = self.summarizer.summarize(
+                    file_content,
+                    reflection_questions=reflection_questions,
+                    filepath=filepath,
+                    filetype="pdf",
+                )
+            else:
+                # No content to summarize; use empty summary.
+                summary = ""
+                prompt_tokens = 0
+                completion_tokens = 0
+
+            summarize_step["status"] = "complete"
+            summarize_step["end_time"] = _now_timestamp()
+            summarize_step["output_size"] = len(summary.encode("utf-8")) if summary else 0
+            summarize_step["words"] = len(summary.split()) if summary else 0
+            summarize_step["model"] = config.llm_model
+            summarize_step["input_tokens"] = prompt_tokens
+            summarize_step["output_tokens"] = completion_tokens
+            metadata_dict["summarize"] = summarize_step
+            metadata_dict["summary"] = summary
+            self._write_metadata_partial(metadata_dict, absolute_path)
+            _logger.info("Summarization completed for %s", filepath)
+
+        # Step 3: Generate title via LLM using filename, extracted title,
         # and the extracted content (summarizer truncates to ~4000 chars).
-        _logger.info("Starting title generation for %s (step 2/2)", filepath)
+        _logger.info("Starting title generation for %s (step 3/3)", filepath)
         if file_content and file_content.strip():
             generated_title, _, _ = self.summarizer.generate_title(
                 file_content,
@@ -861,6 +934,7 @@ class Producer:
             title=title_dict,
             extracted_title=extracted_title,
             description=description,
+            summary=summary,
             filename=filename,
             filepath=filepath,
             filetype="pdf",
@@ -870,6 +944,7 @@ class Producer:
             content=file_content,
             hash=metadata_dict.get("hash"),
             extract=StepMap(**extract_step),
+            summarize=StepMap(**summarize_step),
         )
         return metadata
 
@@ -881,20 +956,21 @@ class Producer:
         json_path: str,
         force: bool = False,
     ) -> Metadata:
-        """Process an HTML file: extract metadata -> generate title -> build metadata.
+        """Process an HTML file: extract metadata -> summarize -> generate title -> build metadata.
 
         Writes intermediate JSON states at each processing stage. Uses
         :meth:`_write_metadata_partial` to bypass :class:`Metadata`
         validation for in-progress states.
 
         Uses :class:`HTMLExtractor` to obtain title, description, date, and
-        size. The title is built using the filename-derived title and
-        extracted title (from the HTML ``<title>`` tag) as context for
-        LLM title generation. The ``title.generated`` field holds the
-        LLM-generated title (module prefix is applied in
-        ``Metadata.final_title``). The ``title.extracted`` field stores
-        the title from the HTML ``<title>`` tag but is NOT used as the
-        final title.
+        size. The extracted content is then summarized via the LLM to
+        produce key takeaways stored in the ``summary`` field. The title is
+        built using the filename-derived title and extracted title (from the
+        HTML ``<title>`` tag) as context for LLM title generation. The
+        ``title.generated`` field holds the LLM-generated title (module
+        prefix is applied in ``Metadata.final_title``). The ``title.extracted``
+        field stores the title from the HTML ``<title>`` tag but is NOT used
+        as the final title.
 
         Args:
             filepath: Relative path from the data directory root.
@@ -902,15 +978,16 @@ class Producer:
             absolute_path: Absolute path to the source file.
             json_path: Absolute path to the JSON metadata file (written
                 by :meth:`process_file` as the initial in-progress state).
-            force: When ``True``, re-run extraction even if existing step
-                maps show ``"complete"`` status.
+            force: When ``True``, re-run extraction and summarization even
+                if existing step maps show ``"complete"`` status.
 
         Returns:
-            A :class:`Metadata` instance without transcript/summary.
+            A :class:`Metadata` instance with extract and summarize steps
+            complete.
 
         Raises:
-            Exception: Any exception from extraction or metadata
-                construction is propagated to the caller.
+            Exception: Any exception from extraction, summarization, or
+                metadata construction is propagated to the caller.
         """
         # Read the initial metadata dict written by process_file.
         json_path_obj = Path(json_path)
@@ -925,6 +1002,16 @@ class Producer:
                     "input_size": 0,
                     "output_size": 0,
                     "words": 0,
+                },
+                "summarize": {
+                    "status": "in_progress",
+                    "start_time": now_ts,
+                    "input_size": 0,
+                    "output_size": 0,
+                    "words": 0,
+                    "model": None,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
                 },
                 "filename": filename,
                 "filepath": filepath,
@@ -945,7 +1032,7 @@ class Producer:
         metadata_dict["extract"] = extract_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
-        _logger.info("Starting extraction for %s (step 1/2)", filepath)
+        _logger.info("Starting extraction for %s (step 1/3)", filepath)
         # Step 1: Extract metadata from the HTML.
         extracted = self.html_extractor.extract(absolute_path)
 
@@ -975,9 +1062,57 @@ class Producer:
             len(file_content) if file_content else 0,
         )
 
-        # Step 2: Generate title via LLM using filename, extracted title,
+        # Get config for LLM model used in summarization.
+        config = get_config()
+
+        # Step 2: Summarize the extracted content via LLM.
+        # Check for reflection.md in the source file's directory.
+        reflection_questions = _check_reflection_md(absolute_path)
+        summarize_step = metadata_dict.get("summarize") or {}
+        if summarize_step.get("status") == "complete" and not force:
+            # Summarization already complete; reuse existing summary.
+            summary = metadata_dict.get("summary", "")
+        else:
+            summarize_step["status"] = "in_progress"
+            summarize_step["start_time"] = _now_timestamp()
+            summarize_step["input_size"] = len(file_content.encode("utf-8")) if file_content else 0
+            summarize_step["output_size"] = 0
+            summarize_step["words"] = 0
+            summarize_step["model"] = config.llm_model
+            summarize_step["input_tokens"] = 0
+            summarize_step["output_tokens"] = 0
+            metadata_dict["summarize"] = summarize_step
+            self._write_metadata_partial(metadata_dict, absolute_path)
+
+            _logger.info("Starting summarization for %s (step 2/3)", filepath)
+            if file_content and file_content.strip():
+                summary, prompt_tokens, completion_tokens = self.summarizer.summarize(
+                    file_content,
+                    reflection_questions=reflection_questions,
+                    filepath=filepath,
+                    filetype="html",
+                )
+            else:
+                # No content to summarize; use empty summary.
+                summary = ""
+                prompt_tokens = 0
+                completion_tokens = 0
+
+            summarize_step["status"] = "complete"
+            summarize_step["end_time"] = _now_timestamp()
+            summarize_step["output_size"] = len(summary.encode("utf-8")) if summary else 0
+            summarize_step["words"] = len(summary.split()) if summary else 0
+            summarize_step["model"] = config.llm_model
+            summarize_step["input_tokens"] = prompt_tokens
+            summarize_step["output_tokens"] = completion_tokens
+            metadata_dict["summarize"] = summarize_step
+            metadata_dict["summary"] = summary
+            self._write_metadata_partial(metadata_dict, absolute_path)
+            _logger.info("Summarization completed for %s", filepath)
+
+        # Step 3: Generate title via LLM using filename, extracted title,
         # and the extracted content (summarizer truncates to ~4000 chars).
-        _logger.info("Starting title generation for %s (step 2/2)", filepath)
+        _logger.info("Starting title generation for %s (step 3/3)", filepath)
         if file_content and file_content.strip():
             generated_title, _, _ = self.summarizer.generate_title(
                 file_content,
@@ -1020,6 +1155,7 @@ class Producer:
             title=title_dict,
             extracted_title=extracted_title,
             description=description,
+            summary=summary,
             filename=filename,
             filepath=filepath,
             filetype="html",
@@ -1029,6 +1165,7 @@ class Producer:
             content=file_content,
             hash=metadata_dict.get("hash"),
             extract=StepMap(**extract_step),
+            summarize=StepMap(**summarize_step),
         )
         return metadata
 

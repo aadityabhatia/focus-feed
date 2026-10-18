@@ -9,13 +9,15 @@ Processing progress is tracked through separate step maps for each processing
 step:
 
 - ``transcribe``: Step map for transcription progress (MP4 files only).
-- ``summarize``: Step map for summarization progress (MP4 files only).
+- ``summarize``: Step map for summarization progress (all file types).
 - ``extract``: Step map for metadata extraction progress (PDF/HTML only).
 
-Each step map contains a ``status`` field that can be ``None`` (not started),
-``"in_progress"``, or ``"complete"``.  The :attr:`feed_eligible` computed
-property returns ``True`` only when all applicable steps are ``"complete"``
-and there is no error.
+    Each step map contains a ``status`` field that can be ``None`` (not started),
+    ``"in_progress"``, or ``"complete"``.  The :attr:`feed_eligible` computed
+    property returns ``True`` only when all applicable steps are ``"complete"``
+    and there is no error.  For PDF/HTML files, both ``extract`` and
+    ``summarize`` must be complete; for MP4 files, both ``transcribe`` and
+    ``summarize`` must be complete.
 
 Date fields (``date``) are stored as UNIX epoch floats with millisecond
 precision.  Per-step timing is tracked within each step map's
@@ -31,7 +33,7 @@ millisecond precision.
             },
             "extracted_title": "Lecture 1",  # extracted title stored separately (optional)
             "description": "string (optional, extracted from source for PDF/HTML, empty for MP4)",
-            "summary": "string (optional, LLM-generated key takeaways for MP4)",
+            "summary": "string (optional, LLM-generated key takeaways for all file types)",
             "filename": "lecture.mp4",
             "filepath": "videos/lecture.mp4",
             "filetype": "mp4|pdf|html",
@@ -222,12 +224,15 @@ class Metadata(BaseModel):
     Step progress is tracked through separate step maps:
 
     - ``transcribe``: :class:`StepMap` for transcription (MP4 only).
-    - ``summarize``: :class:`StepMap` for summarization (MP4 only).
+    - ``summarize``: :class:`StepMap` for summarization (all file types).
     - ``extract``: :class:`StepMap` for metadata extraction (PDF/HTML only).
 
     The :attr:`feed_eligible` computed property returns ``True`` only when all
     applicable steps are ``"complete"``.  Files with ``feed_eligible == False``
     are excluded from generated feeds.
+
+    For PDF/HTML files, both ``extract`` and ``summarize`` must be complete.
+    For MP4 files, both ``transcribe`` and ``summarize`` must be complete.
 
     Field Descriptions:
         title: Human-readable title as a dict with keys 'filename', 'extracted',
@@ -244,7 +249,7 @@ class Metadata(BaseModel):
             PDF/HTML files; the filename-derived title is used instead.
         description: Description for feed item (optional; extracted from source
             for PDF/HTML files, empty for MP4 files where summary is used instead)
-        summary: LLM-generated key takeaways summary (MP4 files only, optional)
+        summary: LLM-generated key takeaways summary (all file types, optional)
         filename: Original filename with extension
         filepath: Relative path from data directory root
         filetype: Source file type: "mp4", "pdf", or "html"
@@ -261,7 +266,7 @@ class Metadata(BaseModel):
             feeds). When present, the last 12 characters are used as the feed item
             guid. Falls back to filepath when not present.
         transcribe: Step map for transcription (MP4 only)
-        summarize: Step map for summarization (MP4 only)
+        summarize: Step map for summarization (all file types)
         extract: Step map for metadata extraction (PDF/HTML only)
         error: Error message (only present when processing failed)
     """
@@ -293,7 +298,7 @@ class Metadata(BaseModel):
     )
     summary: str | None = Field(
         default=None,
-        description="LLM-generated key takeaways summary (MP4 files only)",
+        description="LLM-generated key takeaways summary (all file types, optional)",
     )
     filename: str = Field(
         ...,
@@ -343,7 +348,7 @@ class Metadata(BaseModel):
     )
     summarize: StepMap | None = Field(
         default=None,
-        description="Step map for summarization (MP4 files only)",
+        description="Step map for summarization (all file types)",
     )
     extract: StepMap | None = Field(
         default=None,
@@ -414,7 +419,8 @@ class Metadata(BaseModel):
           ``transcribe.status == "complete"`` and ``summarize`` is not
           ``None`` and ``summarize.status == "complete"``.
         - **PDF/HTML files**: ``extract`` is not ``None`` and
-          ``extract.status == "complete"``.
+          ``extract.status == "complete"`` and ``summarize`` is not
+          ``None`` and ``summarize.status == "complete"``.
 
         If the ``error`` field is set, the file is never eligible.
         """
@@ -428,7 +434,12 @@ class Metadata(BaseModel):
                 and self.summarize.status == _STEP_STATUS_COMPLETE
             )
         if self.filetype in ("pdf", "html"):
-            return self.extract is not None and self.extract.status == _STEP_STATUS_COMPLETE
+            return (
+                self.extract is not None
+                and self.extract.status == _STEP_STATUS_COMPLETE
+                and self.summarize is not None
+                and self.summarize.status == _STEP_STATUS_COMPLETE
+            )
         return False
 
     @computed_field  # type: ignore[prop-decorator]
