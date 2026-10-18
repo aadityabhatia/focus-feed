@@ -3,8 +3,8 @@
 Provides a Click-based command-line interface with granular subcommands for
 each step of the processing pipeline:
 
-- ``process``          — Batch process all files in the data directory.
-- ``watch``            — Watch the data directory for changes (incremental mode).
+- ``process``          — Batch process all files in the given paths.
+- ``watch``            — Watch directories for changes (incremental mode).
 - ``feeds``            — Generate RSS feeds from existing JSON metadata.
 - ``validate``         — Validate all JSON metadata files.
 - ``transcribe``       — Transcribe MP4 files to markdown text.
@@ -13,12 +13,11 @@ each step of the processing pipeline:
 - ``title``            — Generate titles for files that lack proper titles.
 - ``create-feed``      — Create a template ``feed.json`` file in a target directory.
 
-Shared options (``--data-dir``, ``--config-file``, ``--file``, ``--force``,
-and ``--dry-run``) are available on every subcommand via decorators so that
-the CLI usage matches the design-doc examples, e.g.::
+Files and directories are passed as positional arguments, e.g.::
 
-    uv run local-feed-generator process --data-dir ./data
-    uv run local-feed-generator transcribe --data-dir ./data --file videos/lecture.mp4 --force
+    uv run local-feed-generator process ./data
+    uv run local-feed-generator transcribe videos/lecture.mp4 --force
+    uv run local-feed-generator watch ./data
 """
 
 from __future__ import annotations
@@ -66,23 +65,18 @@ _IGNORE_FILENAMES = frozenset(
 # ---------------------------------------------------------------------------
 
 
-def _load_config(config_file: str | None, data_dir: str | None) -> None:
+def _load_config(config_file: str | None) -> None:
     """Load configuration and reload the config singleton.
 
-    If *data_dir* is provided it is set as the ``DATA_DIR`` environment
-    variable so that the config singleton picks it up.  If *config_file*
-    is provided its values are loaded into the environment (without
-    overriding values already set in the shell).
+    If *config_file* is provided its values are loaded into the environment
+    (without overriding values already set in the shell).
 
     Args:
         config_file: Path to a ``.env``-style configuration file, or ``None``.
-        data_dir: Data directory path from the CLI, or ``None``.
 
     Raises:
         click.ClickException: If the configuration cannot be loaded.
     """
-    if data_dir:
-        os.environ["DATA_DIR"] = data_dir
     if config_file:
         try:
             from dotenv import load_dotenv
@@ -99,30 +93,106 @@ def _load_config(config_file: str | None, data_dir: str | None) -> None:
         raise click.ClickException(f"Configuration error: {exc}") from exc
 
 
-def _resolve_data_dir(data_dir: str | None, file_path: str | None) -> Path:
-    """Resolve the data directory from CLI args or config.
-
-    When *file_path* is an absolute path, the data directory is derived
-    from the file's parent directory.  When *file_path* is relative and
-    *data_dir* is provided, *data_dir* is used as the base for resolving
-    the file.  Otherwise *data_dir* (or the config default) is used.
+def _resolve_paths(paths: tuple[str, ...]) -> list[Path]:
+    """Resolve relative paths and validate they exist.
 
     Args:
-        data_dir: The ``--data-dir`` CLI value, or ``None``.
-        file_path: The ``--file`` CLI value, or ``None``.
+        paths: Tuple of path strings (may be relative or absolute).
+
+    Returns:
+        A list of resolved :class:`~pathlib.Path` objects.
+
+    Raises:
+        click.ClickException: If any path does not exist.
+    """
+    resolved: list[Path] = []
+    for p in paths:
+        path = Path(p).resolve()
+        if not path.exists():
+            raise click.ClickException(f"Path does not exist: {p}")
+        resolved.append(path)
+    return resolved
+
+
+def _resolve_data_dir_from_paths(paths: list[Path]) -> Path:
+    """Determine the data directory from a list of resolved paths.
+
+    Computes the common parent directory of all paths.  If a single path
+    is a file, its parent directory is used.  If no paths are provided,
+    the current working directory is used.
+
+    Args:
+        paths: List of resolved :class:`~pathlib.Path` objects.
 
     Returns:
         An absolute :class:`~pathlib.Path` to the data directory.
     """
-    if file_path is not None:
-        file_p = Path(file_path)
-        if file_p.is_absolute():
-            return file_p.parent
-    if data_dir is not None:
-        return Path(data_dir).resolve()
-    from local_feed_generator.config import get_config
+    if not paths:
+        return Path.cwd()
+    if len(paths) == 1:
+        if paths[0].is_dir():
+            return paths[0]
+        return paths[0].parent
+    # Multiple paths: use the common parent directory.
+    common = Path(os.path.commonpath([str(p) for p in paths]))
+    if common.is_file():
+        common = common.parent
+    return common
 
-    return Path(get_config().data_dir).resolve()
+
+def _expand_paths_to_files(paths: list[Path]) -> list[ScannedFile]:
+    """Expand file and directory paths into a list of ScannedFile objects.
+
+    For each path that's a file: check if it's a supported source file
+    (``.mp4``, ``.pdf``, ``.html``) and create a :class:`ScannedFile`.
+
+    For each path that's a directory: scan it recursively for source files
+    and create :class:`ScannedFile` objects for each one found.
+
+    All ``filepath`` values in the returned :class:`ScannedFile` objects are
+    relative to the current working directory (not a data directory).
+
+    Args:
+        paths: List of resolved :class:`~pathlib.Path` objects (files or dirs).
+
+    Returns:
+        A sorted list of :class:`ScannedFile` instances.
+    """
+    cwd = Path.cwd()
+    files: list[ScannedFile] = []
+
+    for path in paths:
+        if path.is_file():
+            if path.suffix.lower() in SOURCE_EXTENSIONS:
+                relative = os.path.relpath(path, cwd)
+                files.append(
+                    ScannedFile(
+                        filepath=relative,
+                        absolute_path=str(path),
+                        filename=path.name,
+                        filetype=path.suffix.lower().lstrip("."),
+                    )
+                )
+        elif path.is_dir():
+            for root, _dirs, filenames in os.walk(path):
+                root_path = Path(root)
+                for filename in filenames:
+                    if filename.lower() in _IGNORE_FILENAMES:
+                        continue
+                    source_path = root_path / filename
+                    if source_path.suffix.lower() in SOURCE_EXTENSIONS:
+                        relative = os.path.relpath(source_path, cwd)
+                        files.append(
+                            ScannedFile(
+                                filepath=relative,
+                                absolute_path=str(source_path),
+                                filename=filename,
+                                filetype=source_path.suffix.lower().lstrip("."),
+                            )
+                        )
+
+    files.sort(key=lambda f: f.filepath)
+    return files
 
 
 def _find_json_files(data_dir: Path) -> list[Path]:
@@ -220,6 +290,23 @@ def _print_feed_summary(counts: dict[str, int]) -> None:
 # ---------------------------------------------------------------------------
 
 
+def _is_path_within(source_file: Path, paths: list[Path]) -> bool:
+    """Check if *source_file* matches or is within one of the *paths*.
+
+    A file is considered to be within *paths* if its resolved path equals
+    one of the specified paths, or if it resides inside one of the specified
+    directories.
+    """
+    source_resolved = source_file.resolve()
+    for p in paths:
+        p_resolved = p.resolve()
+        if source_resolved == p_resolved:
+            return True
+        if str(source_resolved).startswith(str(p_resolved) + os.sep):
+            return True
+    return False
+
+
 def _find_source_files(data_dir: Path, filetypes: tuple[str, ...]) -> list[Path]:
     """Find all source files of the given types in *data_dir*.
 
@@ -269,7 +356,9 @@ def _write_json_metadata(data: dict[str, Any], source_path: Path) -> None:
     tmp_path.replace(json_path)
 
 
-def _find_files_needing_transcription(data_dir: Path, force: bool = False) -> list[Path]:
+def _find_files_needing_transcription(
+    data_dir: Path, force: bool = False, paths: list[Path] | None = None
+) -> list[Path]:
     """Find MP4 files that need transcription.
 
     A file needs transcription when:
@@ -279,10 +368,15 @@ def _find_files_needing_transcription(data_dir: Path, force: bool = False) -> li
 
     When *force* is ``True``, all MP4 files are returned regardless of
     their current transcription status.
+
+    When *paths* is provided, only files that match one of the specified
+    paths (or are within one of the specified directories) are returned.
     """
     mp4_files = _find_source_files(data_dir, ("mp4",))
     needs: list[Path] = []
     for mp4_file in mp4_files:
+        if paths is not None and not _is_path_within(mp4_file, paths):
+            continue
         json_path = mp4_file.with_name(mp4_file.name + ".json")
         metadata = _get_json_metadata(json_path)
         if force or metadata is None or not _is_step_complete(metadata, "transcribe"):
@@ -290,7 +384,9 @@ def _find_files_needing_transcription(data_dir: Path, force: bool = False) -> li
     return needs
 
 
-def _find_files_needing_summary(data_dir: Path, force: bool = False) -> list[Path]:
+def _find_files_needing_summary(
+    data_dir: Path, force: bool = False, paths: list[Path] | None = None
+) -> list[Path]:
     """Find MP4, PDF, and HTML files that have content but need a summary.
 
     A file needs summarization when:
@@ -301,10 +397,15 @@ def _find_files_needing_summary(data_dir: Path, force: bool = False) -> list[Pat
 
     When *force* is ``True``, all files with content are returned regardless
     of their current summarization status.
+
+    When *paths* is provided, only files that match one of the specified
+    paths (or are within one of the specified directories) are returned.
     """
     source_files = _find_source_files(data_dir, ("mp4", "pdf", "html"))
     needs: list[Path] = []
     for source_file in source_files:
+        if paths is not None and not _is_path_within(source_file, paths):
+            continue
         json_path = source_file.with_name(source_file.name + ".json")
         metadata = _get_json_metadata(json_path)
         if metadata is None:
@@ -317,7 +418,9 @@ def _find_files_needing_summary(data_dir: Path, force: bool = False) -> list[Pat
     return needs
 
 
-def _find_files_needing_metadata_extraction(data_dir: Path, force: bool = False) -> list[Path]:
+def _find_files_needing_metadata_extraction(
+    data_dir: Path, force: bool = False, paths: list[Path] | None = None
+) -> list[Path]:
     """Find PDF/HTML files that need metadata extraction.
 
     A file needs metadata extraction when:
@@ -327,10 +430,15 @@ def _find_files_needing_metadata_extraction(data_dir: Path, force: bool = False)
 
     When *force* is ``True``, all PDF/HTML files are returned regardless
     of their current extraction status.
+
+    When *paths* is provided, only files that match one of the specified
+    paths (or are within one of the specified directories) are returned.
     """
     doc_files = _find_source_files(data_dir, ("pdf", "html"))
     needs: list[Path] = []
     for doc_file in doc_files:
+        if paths is not None and not _is_path_within(doc_file, paths):
+            continue
         json_path = doc_file.with_name(doc_file.name + ".json")
         metadata = _get_json_metadata(json_path)
         if (
@@ -368,7 +476,9 @@ def _find_files_needing_json_generation(data_dir: Path, force: bool = False) -> 
     return needs
 
 
-def _find_files_needing_title(data_dir: Path, force: bool = False) -> list[Path]:
+def _find_files_needing_title(
+    data_dir: Path, force: bool = False, paths: list[Path] | None = None
+) -> list[Path]:
     """Find source files that need title generation.
 
     A file needs a title when:
@@ -380,9 +490,13 @@ def _find_files_needing_title(data_dir: Path, force: bool = False) -> list[Path]
     When *force* is ``True``, all source files with JSON metadata are returned
     regardless of their current title.
 
+    When *paths* is provided, only files that match one of the specified
+    paths (or are within one of the specified directories) are returned.
+
     Args:
         data_dir: Absolute path to the data directory.
         force: When ``True``, include files that already have a generated title.
+        paths: Optional list of resolved paths to filter results by.
 
     Returns:
         A sorted list of absolute paths to source files needing title
@@ -400,6 +514,8 @@ def _find_files_needing_title(data_dir: Path, force: bool = False) -> list[Path]
         if not source_file.exists():
             continue
         if source_file.suffix.lower() not in SOURCE_EXTENSIONS:
+            continue
+        if paths is not None and not _is_path_within(source_file, paths):
             continue
         title = metadata_dict.get("title", "")
         # Normalize string title to dict for backward compatibility.
@@ -493,48 +609,9 @@ def _is_step_complete(metadata: dict[str, Any], step: str) -> bool:
     return isinstance(step_map, dict) and step_map.get("status") == "complete"
 
 
-def _resolve_file_path(data_dir: Path, file_arg: str | None) -> Path | None:
-    """Resolve a ``--file`` argument to an absolute path.
-
-    If *file_arg* is an absolute path, it is used directly.  Otherwise it
-    is resolved relative to *data_dir*.
-    """
-    if file_arg is None:
-        return None
-    file_path = Path(file_arg)
-    if file_path.is_absolute():
-        return file_path
-    return data_dir / file_path
-
-
 # ---------------------------------------------------------------------------
 # Shared option decorators
 # ---------------------------------------------------------------------------
-
-
-def _data_dir_option(func: Any) -> Any:
-    """Add the ``--data-dir`` required option to a Click command."""
-    return click.option(
-        "--data-dir",
-        required=True,
-        type=click.Path(exists=True, file_okay=False, dir_okay=True),
-        help="Path to the data directory.",
-    )(func)
-
-
-def _data_dir_option_optional(func: Any) -> Any:
-    """Add the ``--data-dir`` optional option to a Click command.
-
-    When omitted, the data directory is read from the application
-    configuration (``DATA_DIR`` environment variable).
-    """
-    return click.option(
-        "--data-dir",
-        required=False,
-        type=click.Path(exists=True, file_okay=False, dir_okay=True),
-        default=None,
-        help="Path to the data directory. Defaults to DATA_DIR from configuration.",
-    )(func)
 
 
 def _config_file_option(func: Any) -> Any:
@@ -544,22 +621,6 @@ def _config_file_option(func: Any) -> Any:
         type=click.Path(exists=True, dir_okay=False),
         default=None,
         help="Path to a .env-style configuration file.",
-    )(func)
-
-
-def _file_option(func: Any) -> Any:
-    """Add the ``--file`` optional flag to a Click command.
-
-    When specified, only the given file is processed.  The path may be
-    relative to the data directory or absolute.
-    """
-    return click.option(
-        "--file",
-        "file_path",
-        required=False,
-        default=None,
-        type=click.Path(),
-        help="Process only the specified file. Takes precedence over --data-dir.",
     )(func)
 
 
@@ -608,67 +669,55 @@ def app() -> None:
 
 
 @app.command()
-@_data_dir_option_optional
 @_config_file_option
-@_file_option
 @_force_option
+@click.argument("paths", nargs=-1)
 def process(
-    data_dir: str | None,
     config_file: str | None,
-    file_path: str | None,
     force: bool,
+    paths: tuple[str, ...],
 ) -> None:
-    """Process all files in the data directory (batch mode).
+    """Process all files in the given paths (batch mode).
 
-    Scans the data directory for content files (MP4, PDF, HTML) without
+    Scans the given paths for content files (MP4, PDF, HTML) without
     JSON metadata, processes each file through the Producer pipeline,
     and generates both RSS feeds afterwards.
 
-    When ``--file`` is specified, only that file is processed.
     When ``--force`` is specified, all files are processed even if
     already feed-eligible.
-    """
-    _load_config(config_file, data_dir)
 
-    data_dir_path = _resolve_data_dir(data_dir, file_path)
+    At least one path (file or directory) is required.  If no paths are
+    provided, the current directory (``.``) is used.
+    """
+    _load_config(config_file)
+
+    # Default to current directory if no paths provided.
+    if not paths:
+        paths = (".",)
+
+    resolved_paths = _resolve_paths(paths)
+    data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
 
     # --- Scan -----------------------------------------------------------
-    scanner = Scanner(data_dir=data_dir_path)
-
-    if file_path is not None:
-        # Process only the specified file.
-        resolved_file = _resolve_file_path(data_dir_path, file_path)
-        if resolved_file is None or not resolved_file.exists():
-            click.echo(f"Error: File not found: {file_path}", err=True)
-            sys.exit(1)
-        relative_path = resolved_file.relative_to(data_dir_path)
-        filetype = resolved_file.suffix.lower().lstrip(".")
+    if force:
+        # Force processing: expand all source files regardless of status.
+        files = _expand_paths_to_files(resolved_paths)
+    else:
+        scanner = Scanner(data_dir=data_dir_path)
+        scanned = scanner.scan_directory()
+        # Adjust filepath to be relative to CWD instead of data_dir.
+        cwd = Path.cwd()
         files = [
             ScannedFile(
-                filepath=str(relative_path),
-                absolute_path=str(resolved_file),
-                filename=resolved_file.name,
-                filetype=filetype,
+                filepath=os.path.relpath(Path(f.absolute_path), cwd),
+                absolute_path=f.absolute_path,
+                filename=f.filename,
+                filetype=f.filetype,
+                current_stage=f.current_stage,
+                json_exists=f.json_exists,
             )
+            for f in scanned
         ]
-    else:
-        if force:
-            # Force processing: scan all source files regardless of status.
-            all_sources = _find_source_files(data_dir_path, ("mp4", "pdf", "html"))
-            files = []
-            for source in all_sources:
-                relative_path = source.relative_to(data_dir_path)
-                filetype = source.suffix.lower().lstrip(".")
-                files.append(
-                    ScannedFile(
-                        filepath=str(relative_path),
-                        absolute_path=str(source),
-                        filename=source.name,
-                        filetype=filetype,
-                    )
-                )
-        else:
-            files = scanner.scan_directory()
 
     if not files:
         click.echo("No files to process.")
@@ -681,7 +730,7 @@ def process(
     # --- Process --------------------------------------------------------
     from local_feed_generator.producer import Producer
 
-    producer = Producer(data_dir=str(data_dir_path))
+    producer = Producer(force=force)
 
     success_count = 0
     error_count = 0
@@ -844,9 +893,9 @@ class _WatchHandler(FileSystemEventHandler):
             return
 
         try:
-            relative_path = source_path.relative_to(self.data_dir)
+            relative_path = os.path.relpath(source_path, Path.cwd())
             scanned = ScannedFile(
-                filepath=str(relative_path),
+                filepath=relative_path,
                 absolute_path=str(source_path),
                 filename=source_path.name,
                 filetype=source_path.suffix.lower().lstrip("."),
@@ -939,30 +988,34 @@ class _WatchHandler(FileSystemEventHandler):
 
 
 @app.command()
-@_data_dir_option_optional
 @_config_file_option
-@_file_option
 @_force_option
+@click.argument("paths", nargs=-1)
 def watch(
-    data_dir: str | None,
     config_file: str | None,
-    file_path: str | None,
     force: bool,
+    paths: tuple[str, ...],
 ) -> None:
-    """Watch the data directory for changes (incremental mode).
+    """Watch directories for changes (incremental mode).
 
     Starts a file-system watcher that processes new and modified files
     in real-time, regenerating feeds after each file is processed.
     Press ``Ctrl+C`` to stop.
 
-    When ``--file`` is specified, only that file is processed on startup
-    and watched thereafter.
     When ``--force`` is specified, all files are processed on startup
     even if already feed-eligible.
-    """
-    _load_config(config_file, data_dir)
 
-    data_dir_path = _resolve_data_dir(data_dir, file_path)
+    At least one directory path is required.  If no paths are provided,
+    the current directory (``.``) is used.
+    """
+    _load_config(config_file)
+
+    # Default to current directory if no paths provided.
+    if not paths:
+        paths = (".",)
+
+    resolved_paths = _resolve_paths(paths)
+    data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
 
     if not data_dir_path.exists():
         click.echo(
@@ -972,47 +1025,31 @@ def watch(
         sys.exit(1)
 
     # --- Initial scan --------------------------------------------------
-    scanner = Scanner(data_dir=data_dir_path)
-
-    if file_path is not None:
-        # Process only the specified file.
-        resolved_file = _resolve_file_path(data_dir_path, file_path)
-        if resolved_file is None or not resolved_file.exists():
-            click.echo(f"Error: File not found: {file_path}", err=True)
-            sys.exit(1)
-        relative_path = resolved_file.relative_to(data_dir_path)
-        filetype = resolved_file.suffix.lower().lstrip(".")
+    if force:
+        # Force processing: expand all source files regardless of status.
+        files = _expand_paths_to_files(resolved_paths)
+    else:
+        scanner = Scanner(data_dir=data_dir_path)
+        scanned = scanner.scan_directory()
+        # Adjust filepath to be relative to CWD instead of data_dir.
+        cwd = Path.cwd()
         files = [
             ScannedFile(
-                filepath=str(relative_path),
-                absolute_path=str(resolved_file),
-                filename=resolved_file.name,
-                filetype=filetype,
+                filepath=os.path.relpath(Path(f.absolute_path), cwd),
+                absolute_path=f.absolute_path,
+                filename=f.filename,
+                filetype=f.filetype,
+                current_stage=f.current_stage,
+                json_exists=f.json_exists,
             )
+            for f in scanned
         ]
-    elif force:
-        # Force processing: scan all source files regardless of status.
-        all_sources = _find_source_files(data_dir_path, ("mp4", "pdf", "html"))
-        files = []
-        for source in all_sources:
-            relative_path = source.relative_to(data_dir_path)
-            filetype = source.suffix.lower().lstrip(".")
-            files.append(
-                ScannedFile(
-                    filepath=str(relative_path),
-                    absolute_path=str(source),
-                    filename=source.name,
-                    filetype=filetype,
-                )
-            )
-    else:
-        files = scanner.scan_directory()
 
     from local_feed_generator.producer import Producer
 
     if files:
         click.echo(f"Initial scan: found {len(files)} file(s) to process.")
-        producer = Producer(data_dir=str(data_dir_path), force=force)
+        producer = Producer(force=force)
 
         for file in files:
             click.echo(f"Processing {file.filepath}...")
@@ -1029,7 +1066,7 @@ def watch(
         _print_feed_summary(counts)
 
     # --- Start watching ------------------------------------------------
-    producer = Producer(data_dir=str(data_dir_path))
+    producer = Producer()
     event_handler = _WatchHandler(data_dir=data_dir_path, producer=producer)
 
     from watchdog.observers import Observer
@@ -1095,15 +1132,13 @@ def watch(
 
 
 @app.command("feeds")
-@_data_dir_option_optional
 @_config_file_option
-@_file_option
 @_force_option
+@click.argument("paths", nargs=-1)
 def feeds(
-    data_dir: str | None,
     config_file: str | None,
-    file_path: str | None,
     force: bool,
+    paths: tuple[str, ...],
 ) -> None:
     """Generate RSS feeds from existing JSON metadata.
 
@@ -1113,26 +1148,19 @@ def feeds(
     to ``"complete"``, and adding ``completed_at`` timestamps. This makes
     files feed-eligible so they appear in the generated feeds.
 
-    When ``--file`` is specified, only that file's metadata is included
-    in the generated feeds.
+    At least one path (file or directory) is required.
     """
-    _load_config(config_file, data_dir)
+    _load_config(config_file)
 
-    data_dir_path = _resolve_data_dir(data_dir, file_path)
+    resolved_paths = _resolve_paths(paths)
+    data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
 
     # Finalize incomplete JSON metadata before generating feeds.
-    _finalize_incomplete_json(data_dir_path, file_path=file_path, force=force)
+    _finalize_incomplete_json(data_dir_path, paths=resolved_paths, force=force)
 
     from local_feed_generator.feeds import FeedGenerator
 
     generator = FeedGenerator(data_dir=str(data_dir_path))
-
-    if file_path is not None:
-        # Generate feeds including only the specified file.
-        resolved_file = _resolve_file_path(data_dir_path, file_path)
-        if resolved_file is None or not resolved_file.exists():
-            click.echo(f"Error: File not found: {file_path}", err=True)
-            sys.exit(1)
 
     generator.generate_all_feeds()
 
@@ -1161,17 +1189,15 @@ def feeds(
 
 
 @app.command()
-@_data_dir_option_optional
 @_config_file_option
-@_file_option
 @_force_option
+@click.argument("paths", nargs=-1)
 def validate(
-    data_dir: str | None,
     config_file: str | None,
-    file_path: str | None,
     force: bool,
+    paths: tuple[str, ...],
 ) -> None:
-    """Validate all JSON metadata files in the data directory.
+    """Validate all JSON metadata files in the given paths.
 
     Before validation, finalizes any incomplete JSON metadata files
     (i.e., files with step statuses that are not yet ``"complete"``) by
@@ -1184,28 +1210,21 @@ def validate(
     characters in filenames.  Exits with code 0 when all files are valid,
     1 when errors are found.
 
-    When ``--file`` is specified, only that file's JSON metadata is
-    validated.
+    At least one path (file or directory) is required.
     """
-    _load_config(config_file, data_dir)
+    _load_config(config_file)
 
-    data_dir_path = _resolve_data_dir(data_dir, file_path)
+    resolved_paths = _resolve_paths(paths)
+    data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
 
     # Finalize incomplete JSON metadata before validation.
-    _finalize_incomplete_json(data_dir_path, file_path=file_path, force=force)
+    _finalize_incomplete_json(data_dir_path, paths=resolved_paths, force=force)
 
     errors: list[str] = []
     warnings: list[str] = []
 
     # --- Find all JSON files -------------------------------------------
-    if file_path is not None:
-        resolved_file = _resolve_file_path(data_dir_path, file_path)
-        if resolved_file is None or not resolved_file.exists():
-            click.echo(f"Error: File not found: {file_path}", err=True)
-            sys.exit(1)
-        json_files = [resolved_file.with_name(resolved_file.name + ".json")]
-    else:
-        json_files = _find_json_files(data_dir_path)
+    json_files = _find_json_files(data_dir_path)
 
     # --- Validate each JSON file against the schema --------------------
     for json_path in json_files:
@@ -1224,19 +1243,14 @@ def validate(
             warnings.append(f"Orphaned JSON file (no matching source): {json_path}")
 
     # --- Check for special characters in filenames ---------------------
-    if file_path is None:
-        for root, _dirs, files in os.walk(data_dir_path):
-            root_path = Path(root)
-            for filename in files:
-                if filename.lower() in _IGNORE_FILENAMES:
-                    continue
-                source_path = root_path / filename
-                if source_path.suffix.lower() in SOURCE_EXTENSIONS:
-                    warnings.extend(_check_special_characters(source_path))
-    else:
-        resolved_file = _resolve_file_path(data_dir_path, file_path)
-        if resolved_file is not None:
-            warnings.extend(_check_special_characters(resolved_file))
+    for root, _dirs, files in os.walk(data_dir_path):
+        root_path = Path(root)
+        for filename in files:
+            if filename.lower() in _IGNORE_FILENAMES:
+                continue
+            source_path = root_path / filename
+            if source_path.suffix.lower() in SOURCE_EXTENSIONS:
+                warnings.extend(_check_special_characters(source_path))
 
     # --- Output report -------------------------------------------------
     click.echo("Validation Report")
@@ -1266,45 +1280,37 @@ def validate(
 
 
 @app.command()
-@_data_dir_option_optional
 @_config_file_option
-@_file_option
 @_force_option
 @_dry_run_option
+@click.argument("paths", nargs=-1)
 def transcribe(
-    data_dir: str | None,
     config_file: str | None,
-    file_path: str | None,
     force: bool,
     dry_run: bool,
+    paths: tuple[str, ...],
 ) -> None:
     """Transcribe MP4 files to markdown text.
 
-    Scans the data directory for MP4 files that do not yet have a complete
-    transcript, transcribes each one using the faster-whisper model, and
+    Scans the given paths for MP4 files that do not yet have a complete
+    transcript, transcribes each one using the faster-whisker model, and
     writes the transcript to the adjacent JSON metadata file.
 
     Files that already have ``transcribe.status="complete"`` are skipped
     unless ``--force`` is specified.  Use ``--dry-run`` to preview which
     files would be processed without making any changes.
 
-    When ``--file`` is specified, only that MP4 file is transcribed.
+    At least one path (file or directory) is required.
     """
-    _load_config(config_file, data_dir)
+    _load_config(config_file)
 
     from local_feed_generator.config import get_config
     from local_feed_generator.services.transcriber import Transcriber
 
-    data_dir_path = _resolve_data_dir(data_dir, file_path)
+    resolved_paths = _resolve_paths(paths)
+    data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
 
-    if file_path is not None:
-        resolved_file = _resolve_file_path(data_dir_path, file_path)
-        if resolved_file is None or not resolved_file.exists():
-            click.echo(f"Error: File not found: {file_path}", err=True)
-            sys.exit(1)
-        files = [resolved_file]
-    else:
-        files = _find_files_needing_transcription(data_dir_path, force=force)
+    files = _find_files_needing_transcription(data_dir_path, force=force, paths=resolved_paths)
 
     if not files:
         click.echo("No MP4 files need transcription.")
@@ -1315,7 +1321,7 @@ def transcribe(
     if dry_run:
         click.echo("[Dry run] Files that would be transcribed:")
         for f in files:
-            relative = f.relative_to(data_dir_path)
+            relative = os.path.relpath(f, Path.cwd())
             click.echo(f"  - {relative}")
         return
 
@@ -1334,7 +1340,7 @@ def transcribe(
     error_count = 0
 
     for i, source_file in enumerate(files, 1):
-        relative_path = source_file.relative_to(data_dir_path)
+        relative_path = os.path.relpath(source_file, Path.cwd())
         click.echo(f"[{i}/{len(files)}] Transcribing {relative_path}...")
         try:
             # Set transcribe step to in_progress and write before transcription begins.
@@ -1391,21 +1397,19 @@ def transcribe(
 
 
 @app.command()
-@_data_dir_option_optional
 @_config_file_option
-@_file_option
 @_force_option
 @_dry_run_option
+@click.argument("paths", nargs=-1)
 def summarize(
-    data_dir: str | None,
     config_file: str | None,
-    file_path: str | None,
     force: bool,
     dry_run: bool,
+    paths: tuple[str, ...],
 ) -> None:
     """Generate summaries from existing content.
 
-    Scans the data directory for MP4, PDF, and HTML files that have content
+    Scans the given paths for MP4, PDF, and HTML files that have content
     (transcript for MP4, extracted text for PDF/HTML) but no summary,
     generates a key-takeaways summary via the LLM, and writes the summary
     to the adjacent JSON metadata file.
@@ -1414,23 +1418,17 @@ def summarize(
     ``--force`` is specified.  Use ``--dry-run`` to preview which files
     would be processed without making any changes.
 
-    When ``--file`` is specified, only that file is summarized.
+    At least one path (file or directory) is required.
     """
-    _load_config(config_file, data_dir)
+    _load_config(config_file)
 
     from local_feed_generator.config import get_config
     from local_feed_generator.services.summarizer import Summarizer
 
-    data_dir_path = _resolve_data_dir(data_dir, file_path)
+    resolved_paths = _resolve_paths(paths)
+    data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
 
-    if file_path is not None:
-        resolved_file = _resolve_file_path(data_dir_path, file_path)
-        if resolved_file is None or not resolved_file.exists():
-            click.echo(f"Error: File not found: {file_path}", err=True)
-            sys.exit(1)
-        files = [resolved_file]
-    else:
-        files = _find_files_needing_summary(data_dir_path, force=force)
+    files = _find_files_needing_summary(data_dir_path, force=force, paths=resolved_paths)
 
     if not files:
         click.echo("No files need summarization.")
@@ -1441,7 +1439,7 @@ def summarize(
     if dry_run:
         click.echo("[Dry run] Files that would be summarized:")
         for f in files:
-            relative = f.relative_to(data_dir_path)
+            relative = os.path.relpath(f, Path.cwd())
             click.echo(f"  - {relative}")
         return
 
@@ -1450,7 +1448,7 @@ def summarize(
     error_count = 0
 
     for i, source_file in enumerate(files, 1):
-        relative_path = source_file.relative_to(data_dir_path)
+        relative_path = os.path.relpath(source_file, Path.cwd())
         click.echo(f"[{i}/{len(files)}] Summarizing {relative_path}...")
         reflection_questions = None
         try:
@@ -1522,21 +1520,19 @@ def summarize(
 
 
 @app.command("extract")
-@_data_dir_option_optional
 @_config_file_option
-@_file_option
 @_force_option
 @_dry_run_option
+@click.argument("paths", nargs=-1)
 def extract(
-    data_dir: str | None,
     config_file: str | None,
-    file_path: str | None,
     force: bool,
     dry_run: bool,
+    paths: tuple[str, ...],
 ) -> None:
     """Extract from PDF/HTML files.
 
-    Scans the data directory for PDF and HTML files that do not yet have
+    Scans the given paths for PDF and HTML files that do not yet have
     a complete metadata extraction, extracts metadata (title, description,
     date, size) using pypdf or BeautifulSoup, and writes the extracted data
     to the adjacent JSON metadata file.
@@ -1545,22 +1541,18 @@ def extract(
     is specified.  Use ``--dry-run`` to preview which files would be
     processed without making any changes.
 
-    When ``--file`` is specified, only that PDF/HTML file is processed.
+    At least one path (file or directory) is required.
     """
-    _load_config(config_file, data_dir)
+    _load_config(config_file)
 
     from local_feed_generator.services.extractors import HTMLExtractor, PDFExtractor
 
-    data_dir_path = _resolve_data_dir(data_dir, file_path)
+    resolved_paths = _resolve_paths(paths)
+    data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
 
-    if file_path is not None:
-        resolved_file = _resolve_file_path(data_dir_path, file_path)
-        if resolved_file is None or not resolved_file.exists():
-            click.echo(f"Error: File not found: {file_path}", err=True)
-            sys.exit(1)
-        files = [resolved_file]
-    else:
-        files = _find_files_needing_metadata_extraction(data_dir_path, force=force)
+    files = _find_files_needing_metadata_extraction(
+        data_dir_path, force=force, paths=resolved_paths
+    )
 
     if not files:
         click.echo("No PDF/HTML files need metadata extraction.")
@@ -1571,7 +1563,7 @@ def extract(
     if dry_run:
         click.echo("[Dry run] Files that would be processed:")
         for f in files:
-            relative = f.relative_to(data_dir_path)
+            relative = os.path.relpath(f, Path.cwd())
             click.echo(f"  - {relative}")
         return
 
@@ -1581,7 +1573,7 @@ def extract(
     error_count = 0
 
     for i, source_file in enumerate(files, 1):
-        relative_path = source_file.relative_to(data_dir_path)
+        relative_path = os.path.relpath(source_file, Path.cwd())
         click.echo(f"[{i}/{len(files)}] Extracting metadata from {relative_path}...")
         try:
             filetype = source_file.suffix.lower().lstrip(".")
@@ -1652,17 +1644,15 @@ def extract(
 
 
 @app.command()
-@_data_dir_option_optional
 @_config_file_option
-@_file_option
 @_force_option
 @_dry_run_option
+@click.argument("paths", nargs=-1)
 def title(
-    data_dir: str | None,
     config_file: str | None,
-    file_path: str | None,
     force: bool,
     dry_run: bool,
+    paths: tuple[str, ...],
 ) -> None:
     """Generate titles for files that lack proper titles.
 
@@ -1674,22 +1664,16 @@ def title(
     is specified.  Use ``--dry-run`` to preview which files would be
     processed without making any changes.
 
-    When ``--file`` is specified, only that file is processed.
+    At least one path (file or directory) is required.
     """
-    _load_config(config_file, data_dir)
+    _load_config(config_file)
 
     from local_feed_generator.services.summarizer import Summarizer
 
-    data_dir_path = _resolve_data_dir(data_dir, file_path)
+    resolved_paths = _resolve_paths(paths)
+    data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
 
-    if file_path is not None:
-        resolved_file = _resolve_file_path(data_dir_path, file_path)
-        if resolved_file is None or not resolved_file.exists():
-            click.echo(f"Error: File not found: {file_path}", err=True)
-            sys.exit(1)
-        files = [resolved_file]
-    else:
-        files = _find_files_needing_title(data_dir_path, force=force)
+    files = _find_files_needing_title(data_dir_path, force=force, paths=resolved_paths)
 
     if not files:
         click.echo("No files need title generation.")
@@ -1700,7 +1684,7 @@ def title(
     if dry_run:
         click.echo("[Dry run] Files that would be processed:")
         for f in files:
-            relative = f.relative_to(data_dir_path)
+            relative = os.path.relpath(f, Path.cwd())
             click.echo(f"  - {relative}")
         return
 
@@ -1709,7 +1693,7 @@ def title(
     error_count = 0
 
     for i, source_file in enumerate(files, 1):
-        relative_path = source_file.relative_to(data_dir_path)
+        relative_path = os.path.relpath(source_file, Path.cwd())
         click.echo(f"[{i}/{len(files)}] Generating title for {relative_path}...")
         try:
             json_path = source_file.with_name(source_file.name + ".json")
@@ -1721,7 +1705,7 @@ def title(
             metadata_dict = json.loads(json_path.read_text(encoding="utf-8"))
 
             # Check if title needs generation (redundant with _find_files_needing_title
-            # but needed for the --file case).
+            # but needed for the force case).
             title = metadata_dict.get("title", "")
             # Normalize string title to dict for backward compatibility.
             if isinstance(title, str):
@@ -1781,7 +1765,7 @@ def title(
 
 def _finalize_incomplete_json(
     data_dir_path: Path,
-    file_path: str | None = None,
+    paths: list[Path] | None = None,
     force: bool = False,
 ) -> tuple[int, int]:
     """Finalize incomplete JSON metadata files in the data directory.
@@ -1797,12 +1781,13 @@ def _finalize_incomplete_json(
 
     This makes files feed-eligible so they appear in generated feeds.
 
-    When *file_path* is provided, only that file is finalized.  When *force*
-    is ``True``, JSON is recreated even if the file is already feed-eligible.
+    When *paths* is provided, only files within those paths are finalized.
+    When *force* is ``True``, JSON is recreated even if the file is already
+    feed-eligible.
 
     Args:
         data_dir_path: Absolute path to the data directory.
-        file_path: Optional relative path to a single source file to finalize.
+        paths: Optional list of resolved paths to limit finalization to.
         force: When ``True``, finalize even feed-eligible files.
 
     Returns:
@@ -1811,11 +1796,16 @@ def _finalize_incomplete_json(
     from local_feed_generator.config import get_config
     from local_feed_generator.services.summarizer import Summarizer
 
-    if file_path is not None:
-        resolved_file = _resolve_file_path(data_dir_path, file_path)
-        if resolved_file is None or not resolved_file.exists():
-            return 0, 0
-        files = [resolved_file]
+    if paths is not None:
+        # Filter to only source files within the given paths.
+        all_files = _find_files_needing_json_generation(data_dir_path, force=force)
+        files = []
+        for f in all_files:
+            f_resolved = f.resolve()
+            for p in paths:
+                if str(f_resolved).startswith(str(p)) or f_resolved == p:
+                    files.append(f)
+                    break
     else:
         files = _find_files_needing_json_generation(data_dir_path, force=force)
 
@@ -1828,7 +1818,7 @@ def _finalize_incomplete_json(
 
     for source_file in files:
         try:
-            relative_path = source_file.relative_to(data_dir_path)
+            relative_path = os.path.relpath(source_file, Path.cwd())
             json_path = source_file.with_name(source_file.name + ".json")
             metadata = _get_json_metadata(json_path) or {}
 

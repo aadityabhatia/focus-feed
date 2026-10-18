@@ -1,11 +1,11 @@
 """File scanner for local-feed-generator.
 
-Discovers content files (MP4, PDF, HTML) in the data directory and determines
+Discovers content files (MP4, PDF, HTML) in the base directory and determines
 which ones need processing based on the presence, status, and freshness of
 their adjacent JSON metadata files.
 Scanning logic (design doc section 5.2, tasks.md T2.3):
-- Recursively walk ``DATA_DIR`` for files with extensions ``.mp4``, ``.pdf``,
-  ``.html`` (case-insensitive).
+- Recursively walk the base directory for files with extensions ``.mp4``,
+  ``.pdf``, ``.html`` (case-insensitive).
 - For each source file, check whether a corresponding ``.json`` metadata file
   exists in the same directory (named ``<source_filename>.json``).
 - A source file needs processing when:
@@ -39,8 +39,6 @@ import os
 from pathlib import Path
 import re
 from typing import Any
-
-from local_feed_generator.config import get_config
 
 _logger = logging.getLogger("local_feed_generator")
 
@@ -79,7 +77,8 @@ class ScannedFile:
     """A content file discovered by the scanner.
 
     Attributes:
-        filepath: Relative path from ``DATA_DIR`` root (e.g. ``"videos/lecture.mp4"``).
+        filepath: Relative path from the base directory root (e.g.
+            ``"videos/lecture.mp4"``).
         absolute_path: Absolute path to the source file on disk.
         filename: The base filename including extension (e.g. ``"lecture.mp4"``).
         filetype: Lowercase extension without the leading dot (e.g. ``"mp4"``).
@@ -142,31 +141,27 @@ def _validate_filename(filename: str, absolute_path: Path) -> None:
 
 
 class Scanner:
-    """Discovers content files in the data directory that need processing.
+    """Discovers content files in the base directory that need processing.
 
-    The scanner walks ``DATA_DIR`` recursively, identifies source files
+    The scanner walks the base directory recursively, identifies source files
     (``.mp4``, ``.pdf``, ``.html``), and determines which ones lack up-to-date
     JSON metadata. It also detects orphaned JSON files and warns about
     filenames with special characters.
 
     Attributes:
-        data_dir: Absolute path to the data directory.
+        data_dir: Absolute path to the base directory.
     """
 
-    def __init__(self, data_dir: str | Path | None = None) -> None:
-        """Initialize the scanner with a data directory.
+    def __init__(self, data_dir: str | Path) -> None:
+        """Initialize the scanner with a base directory.
 
         Args:
-            data_dir: Path to the data directory. When ``None``, the value is
-                loaded from the application configuration (``DATA_DIR``).
+            data_dir: Path to the base directory containing content files.
         """
-        if data_dir is None:
-            config = get_config()
-            data_dir = config.data_dir
         self.data_dir: Path = Path(data_dir).resolve()
 
     def scan_directory(self) -> list[ScannedFile]:
-        """Recursively scan ``DATA_DIR`` and return files needing processing.
+        """Recursively scan the base directory and return files needing processing.
 
         A source file needs processing when:
         - Its adjacent ``.json`` metadata file is missing, **or**
@@ -258,6 +253,139 @@ class Scanner:
         _logger.info("Scan complete: %d file(s) need processing", len(files_to_process))
         return files_to_process
 
+    def scan_paths(self, paths: list[Path]) -> list[ScannedFile]:
+        """Scan a list of file and/or directory paths for files needing processing.
+
+        For each path in *paths*:
+
+        - **File paths**: If the file has a supported source extension
+          (``.mp4``, ``.pdf``, ``.html``), it is checked for processing
+          need based on its adjacent JSON metadata.
+        - **Directory paths**: Scanned recursively for source files that
+          need processing, with the same evaluation logic as
+          :meth:`scan_directory`.
+
+        All filepaths in the returned :class:`ScannedFile` objects are
+        relative to the common parent directory of all input *paths*
+        (the "base directory" for this call).  This allows callers to
+        pass individual files or subdirectories and receive consistently
+        relative paths.
+
+        Args:
+            paths: A list of file and/or directory paths to scan. Paths
+                may be absolute or relative; they are resolved to
+                absolute paths before processing.
+
+        Returns:
+            A list of :class:`ScannedFile` instances, one per source file
+            that needs processing.  The list is sorted by relative path
+            for deterministic ordering.
+
+        Raises:
+            Nothing — filesystem errors on individual files or directories
+            are caught, logged, and skipped.
+        """
+        if not paths:
+            return []
+
+        # Resolve all paths to absolute for consistent handling.
+        resolved_paths: list[Path] = [p.resolve() for p in paths]
+
+        # Compute the common parent directory of all input paths.
+        try:
+            common_parent = Path(os.path.commonpath([str(p) for p in resolved_paths]))
+        except ValueError:
+            # Raised by os.path.commonpath when paths are on different
+            # drives (Windows) or when the list is empty.
+            _logger.warning("Could not determine common parent for paths: %s", paths)
+            return []
+
+        # If the common parent is itself a file (e.g. a single file path was
+        # passed), use its parent directory as the base.
+        if common_parent.is_file():
+            common_parent = common_parent.parent
+
+        files_to_process: list[ScannedFile] = []
+
+        for path in resolved_paths:
+            if not path.exists():
+                _logger.warning("Path does not exist: %s", path)
+                continue
+
+            if path.is_file():
+                self._scan_single_file(path, common_parent, files_to_process)
+            elif path.is_dir():
+                self._scan_directory_tree(path, common_parent, files_to_process)
+
+        files_to_process.sort(key=lambda f: f.filepath)
+        _logger.info("Scan paths complete: %d file(s) need processing", len(files_to_process))
+        return files_to_process
+
+    def _scan_single_file(
+        self, source_path: Path, base_dir: Path, results: list[ScannedFile]
+    ) -> None:
+        """Check a single source file and append it to *results* if needed.
+
+        Args:
+            source_path: Absolute path to the source file.
+            base_dir: The base directory for computing relative paths.
+            results: The list to append matching :class:`ScannedFile` objects to.
+        """
+        if not _is_supported_source_file(source_path):
+            return
+
+        _validate_filename(source_path.name, source_path)
+
+        needs_processing, current_stage, json_exists = self._evaluate_json_status(source_path)
+
+        if needs_processing:
+            relative_path = source_path.relative_to(base_dir)
+            results.append(
+                ScannedFile(
+                    filepath=str(relative_path),
+                    absolute_path=str(source_path),
+                    filename=source_path.name,
+                    filetype=_filetype_from_path(source_path),
+                    current_stage=current_stage,
+                    json_exists=json_exists,
+                )
+            )
+
+    def _scan_directory_tree(
+        self, dir_path: Path, base_dir: Path, results: list[ScannedFile]
+    ) -> None:
+        """Recursively scan *dir_path* and append needed files to *results*.
+
+        Args:
+            dir_path: Absolute path to the directory to scan.
+            base_dir: The base directory for computing relative paths.
+            results: The list to append matching :class:`ScannedFile` objects to.
+        """
+        for root, _dirs, files in os.walk(dir_path):
+            root_path = Path(root)
+            for filename in files:
+                # Skip generated feed files and known non-content artifacts.
+                # Comparison is case-insensitive to handle INDEX.HTML etc.
+                if filename.lower() in _IGNORE_FILENAMES:
+                    continue
+
+                source_path = root_path / filename
+
+                # --- Orphaned JSON detection ---
+                # A .json file is orphaned when stripping the ".json" suffix
+                # leaves no source file with a supported extension.
+                if filename.lower().endswith(".json"):
+                    self._check_orphaned_json(source_path, root_path)
+                    continue
+
+                # --- Source file handling ---
+                # Use stripped filename for extension check to handle trailing
+                # whitespace in filenames (e.g., "file.mp4 ").
+                if not _is_supported_source_file(root_path / filename.strip()):
+                    continue
+
+                self._scan_single_file(source_path, base_dir, results)
+
     def _read_json_metadata(self, json_path: Path) -> dict[str, Any] | None:
         """Read and parse a JSON metadata file.
 
@@ -331,7 +459,7 @@ class Scanner:
 
          Returns:
              ``True`` if the file is feed-eligible, ``False`` otherwise.
-         """
+        """
         if metadata.get(_ERROR_FIELD):
             return False
         if filetype == _MP4_FILETYPE:
@@ -369,9 +497,7 @@ class Scanner:
                     summarize.get("status") == _COMPLETED_STEP_STATUS
                 )
                 if not summarize_complete:
-                    summarize_complete = (
-                        metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
-                    )
+                    summarize_complete = metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
                 if not summarize_complete:
                     return False
             return True

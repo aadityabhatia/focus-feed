@@ -11,12 +11,12 @@ Design references:
     - design.md section 5.2 (Feed Generator responsibilities)
 
     The feed generator:
-    - Scans ``DATA_DIR`` recursively for all ``*.json`` files.
+    - Scans ``data_dir`` recursively for all ``*.json`` files.
     - Filters out metadata files where ``feed_eligible`` is ``False``
       (i.e. files with incomplete step statuses or error state).
     - Sorts items by folder name (ascending) then filename (ascending).
-    - Calculates absolute URLs as ``BASE_URL + DATA_DIR_basename + filepath``.
-    - Writes feeds to ``DATA_DIR/podcast.xml`` and ``DATA_DIR/articles.xml``.
+    - Calculates absolute URLs as ``base_url + filepath``.
+    - Writes feeds to ``data_dir/podcast.xml`` and ``data_dir/articles.xml``.
     - Supports per-folder feed generation via ``feed.json`` files.
 """
 
@@ -301,23 +301,20 @@ class FeedGenerator:
 
     def __init__(
         self,
-        data_dir: str | Path | None = None,
+        data_dir: str | Path,
         base_url: str | None = None,
     ) -> None:
         """Initialize the feed generator.
 
         Args:
-            data_dir: Path to the data directory. When ``None``, the value
-                is loaded from the application configuration (``DATA_DIR``).
+            data_dir: Path to the data directory. This is a required parameter;
+                the value is no longer loaded from the application configuration.
             base_url: Base URL for constructing absolute URLs. When ``None``,
                 the value is loaded from the application configuration
-                (``BASE_URL``).
+                (``base_url``).
         """
-        if data_dir is None or base_url is None:
-            config = get_config()
-        if data_dir is None:
-            data_dir = config.data_dir
         if base_url is None:
+            config = get_config()
             base_url = config.base_url
 
         self.data_dir: Path = Path(data_dir).resolve()
@@ -537,10 +534,10 @@ class FeedGenerator:
         return (folder_name, filename)
 
     def _absolute_url(self, filepath: str) -> str:
-        """Construct an absolute URL from BASE_URL and a relative filepath.
+        """Construct an absolute URL from ``base_url`` and a relative filepath.
 
-        BASE_URL is expected to already point to where DATA_DIR is served, so
-        the DATA_DIR basename is NOT prepended to the filepath.
+        ``base_url`` is expected to already point to where ``data_dir`` is served, so
+        the ``data_dir`` basename is NOT prepended to the filepath.
 
         Args:
             filepath: Relative path from the data directory root
@@ -1010,7 +1007,7 @@ class FeedGenerator:
              generated if a ``data_dir/feed.json`` file exists; its
              ``title``, ``description``, and optional ``link`` are used
              for the root-level feeds.  When ``link`` is omitted in
-             ``feed.json``, the channel link defaults to ``BASE_URL``.
+              ``feed.json``, the channel link defaults to ``base_url``.
              ``podcast.xml`` is only created if MP4 files are present;
              ``articles.xml`` is only created if PDF/HTML files are present.
 
@@ -1247,7 +1244,7 @@ class FeedGenerator:
         - A title "Feed Index".
         - Sections organized by feed type (Podcast Feeds, Articles Feeds,
           and an "Other Feeds" section for any additional XML files).
-        - Links using absolute URLs (``BASE_URL + relative path``).
+        - Links using absolute URLs (``base_url + relative path``).
         - HTML-escaped filenames and URLs for special characters.
 
         If no XML feeds are found, an index with empty sections is still

@@ -27,7 +27,6 @@ class Settings(BaseSettings):
     # --- Required fields ---
 
     base_url: str
-    data_dir: str
     llm_endpoint: str
     llm_api_key: str
     llm_model: str
@@ -50,7 +49,6 @@ class Settings(BaseSettings):
 
     @field_validator(
         "base_url",
-        "data_dir",
         "llm_endpoint",
         "llm_api_key",
         "llm_model",

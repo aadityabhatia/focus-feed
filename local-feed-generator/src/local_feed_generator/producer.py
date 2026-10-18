@@ -145,14 +145,18 @@ def _compute_file_hash(filepath: str) -> str:
 class Producer:
     """Orchestrates file processing and metadata generation.
 
-    The Producer accepts a :class:`~local_feed_generator.scanner.Scanner`
-    (or data directory path) and optional service instances. When services
-    are not provided, singleton instances are created lazily so that the
-    expensive model loading (e.g. the Whisper transcription model) happens
-    only once.
+    The Producer accepts an optional :class:`~local_feed_generator.scanner.Scanner`
+    and optional service instances. When services are not provided, singleton
+    instances are created lazily so that the expensive model loading (e.g. the
+    Whisper transcription model) happens only once.
+
+    When a scanner is provided, :meth:`process_all` can be used to discover and
+    process files in batch. Without a scanner, individual files can still be
+    processed via :meth:`process_file` using a :class:`ScannedFile` instance.
 
     Attributes:
-        scanner: The :class:`Scanner` used for batch discovery.
+        scanner: The optional :class:`Scanner` used for batch discovery.
+            May be ``None`` when only :meth:`process_file` is used.
         transcriber: The :class:`Transcriber` for MP4 audio transcription.
         summarizer: The :class:`Summarizer` for LLM-based summarization
             and title generation.
@@ -162,7 +166,6 @@ class Producer:
 
     def __init__(
         self,
-        data_dir: str | Path | None = None,
         scanner: Scanner | None = None,
         transcriber: Transcriber | None = None,
         summarizer: Summarizer | None = None,
@@ -173,12 +176,9 @@ class Producer:
         """Initialize the Producer with dependencies.
 
         Args:
-            data_dir: Path to the data directory. When ``scanner`` is
-                ``None``, a :class:`Scanner` is created with this directory.
-                When both are ``None``, the data directory is loaded from
-                configuration.
-            scanner: Optional pre-configured :class:`Scanner` instance.
-                Takes precedence over ``data_dir``.
+            scanner: Optional pre-configured :class:`Scanner` instance used
+                for batch file discovery via :meth:`process_all`. When
+                ``None``, :meth:`process_all` will raise an error.
             transcriber: Optional :class:`Transcriber` instance. When
                 ``None``, a new instance is created (lazy model loading).
             summarizer: Optional :class:`Summarizer` instance. When
@@ -192,7 +192,7 @@ class Producer:
                 by the ``process --force`` CLI command to force full
                 re-processing of files.
         """
-        self.scanner: Scanner = scanner or Scanner(data_dir=data_dir)
+        self.scanner: Scanner | None = scanner
         self.transcriber: Transcriber = transcriber or Transcriber()
         self.summarizer: Summarizer = summarizer or Summarizer()
         self.pdf_extractor: PDFExtractor = pdf_extractor or PDFExtractor()
@@ -390,7 +390,16 @@ class Producer:
             A list of :class:`Metadata` instances (or ``None`` values for
             unsupported file types) in the same order as the scanner's
             output.
+
+        Raises:
+            RuntimeError: If no scanner was provided to the Producer.
         """
+        if self.scanner is None:
+            raise RuntimeError(
+                "Cannot call process_all() without a scanner. "
+                "Provide a Scanner instance to the Producer, or use "
+                "process_file() directly."
+            )
         files = self.scanner.scan_directory()
         results: list[Metadata | None] = []
 
@@ -1146,8 +1155,7 @@ class Producer:
                 if known.
             absolute_path: Absolute path to the source file. Used to
                 determine where to write the adjacent JSON metadata file.
-                When ``None``, the path is resolved from ``filepath``
-                using the configured ``DATA_DIR``.
+                Must be provided.
         """
         error_metadata = create_error_metadata(
             exc=exc,
@@ -1157,12 +1165,13 @@ class Producer:
         )
 
         # Determine the absolute path for writing the error JSON.
-        if absolute_path is not None:
-            source_path = Path(absolute_path)
-        else:
-            config = get_config()
-            data_dir = Path(config.data_dir).resolve()
-            source_path = data_dir / filepath
+        if absolute_path is None:
+            raise ValueError(
+                "absolute_path is required for _handle_error; "
+                "cannot fall back to data_dir since Producer no longer "
+                "manages a data directory."
+            )
+        source_path = Path(absolute_path)
 
         json_path = source_path.with_name(source_path.name + ".json")
 
