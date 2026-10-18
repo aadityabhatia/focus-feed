@@ -1,12 +1,13 @@
 """Pytest configuration for local-feed-generator tests."""
 
+from collections.abc import Iterator
 from unittest import mock
 
 import pytest
 
 
 @pytest.fixture(autouse=True)
-def disable_env_file_loading(request):
+def disable_env_file_loading(request: pytest.FixtureRequest) -> Iterator[None]:
     """Disable loading .env file for tests that check config validation."""
     # Skip patching for env file loading tests
     test_node = request.node.nodeid

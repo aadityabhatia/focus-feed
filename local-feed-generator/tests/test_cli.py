@@ -12,9 +12,9 @@ Tests cover:
 """
 
 import json
-import os
 from pathlib import Path
 import time
+from typing import Any
 from unittest import mock
 
 import click
@@ -155,6 +155,11 @@ def _make_valid_metadata(
             meta["summary"] = "Test summary"
         else:
             meta["extract"] = {
+                "status": "complete",
+                "input_size": 0,
+                "output_size": 0,
+            }
+            meta["summarize"] = {
                 "status": "complete",
                 "input_size": 0,
                 "output_size": 0,
@@ -1384,11 +1389,13 @@ class TestValidateCommand:
     def test_validate_invalid_json_schema(self, runner, valid_env, tmp_data_dir):
         """Validate should report errors for invalid JSON metadata."""
         (tmp_data_dir / "bad.pdf").write_bytes(b"pdf")
-        # Invalid JSON - missing required fields
+        # Invalid JSON - missing required fields (but has all step maps complete
+        # so it won't be finalized)
         (tmp_data_dir / "bad.pdf.json").write_text(
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "Missing fields",
                 }
             )
@@ -1467,6 +1474,7 @@ class TestValidateCommand:
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "Missing fields",
                 }
             )
@@ -1560,6 +1568,7 @@ class TestValidateCommand:
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "Missing fields",
                 }
             )
@@ -1569,6 +1578,7 @@ class TestValidateCommand:
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "Missing fields",
                 }
             )
@@ -3010,7 +3020,6 @@ class TestFindFilesNeedingMetadataExtraction:
         assert len(result) == 1
         assert result[0].name == "doc1.pdf"
 
-
     """Tests for the extract command (T5.9)."""
 
     def test_extract_help(self, runner):
@@ -3313,11 +3322,12 @@ class TestJsonFinalizationIntegration:
     def test_feeds_skips_finalization_for_complete_files(self, runner, valid_env, tmp_data_dir):
         """Feeds should not re-finalize files that are already feed-eligible."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
-        # Already complete metadata
+        # Already complete metadata (extract + summarize both complete)
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
                     "title": "Existing Title",
                     "description": "Existing Description",
                     "filename": "doc.pdf",
@@ -3344,6 +3354,7 @@ class TestJsonFinalizationIntegration:
         json_path = tmp_data_dir / "doc.pdf.json"
         data = json.loads(json_path.read_text())
         assert data["extract"]["status"] == "complete"
+        assert data["summarize"]["status"] == "complete"
 
     def test_feeds_generates_title_for_mp4_without_title(self, runner, valid_env, tmp_data_dir):
         """Feeds finalization should generate a title for MP4 files when missing."""
@@ -4074,6 +4085,7 @@ class TestFindFilesNeedingTitle:
         result = _find_files_needing_title(tmp_data_dir, paths=[subdir])
         assert len(result) == 1
         assert result[0].name == "doc1.pdf"
+
     """Tests for the _get_content_for_title helper function."""
 
     def test_get_content_for_title_mp4_uses_transcript(self, valid_env):
@@ -4081,7 +4093,7 @@ class TestFindFilesNeedingTitle:
         from local_feed_generator.cli import _get_content_for_title
 
         file_path = Path("/fake/path/lecture.mp4")
-        metadata_dict = {"content": "This is the transcript."}
+        metadata_dict: dict[str, Any] = {"content": "This is the transcript."}
         result = _get_content_for_title(file_path, metadata_dict)
         assert result == "This is the transcript."
 
@@ -4090,7 +4102,7 @@ class TestFindFilesNeedingTitle:
         from local_feed_generator.cli import _get_content_for_title
 
         file_path = Path("/fake/path/lecture.mp4")
-        metadata_dict = {}
+        metadata_dict: dict[str, Any] = {}
         result = _get_content_for_title(file_path, metadata_dict)
         assert result == ""
 
@@ -4100,7 +4112,7 @@ class TestFindFilesNeedingTitle:
 
         source = tmp_path / "doc.pdf"
         source.write_text("PDF content here.")
-        metadata_dict = {}
+        metadata_dict: dict[str, Any] = {}
         result = _get_content_for_title(source, metadata_dict)
         assert "PDF content here." in result
 
@@ -4110,7 +4122,7 @@ class TestFindFilesNeedingTitle:
 
         source = tmp_path / "page.html"
         source.write_text("<html>HTML content</html>")
-        metadata_dict = {}
+        metadata_dict: dict[str, Any] = {}
         result = _get_content_for_title(source, metadata_dict)
         assert "HTML content" in result
 
@@ -4120,7 +4132,7 @@ class TestFindFilesNeedingTitle:
 
         source = tmp_path / "doc.pdf"
         source.write_text("x" * 20000)
-        metadata_dict = {}
+        metadata_dict: dict[str, Any] = {}
         result = _get_content_for_title(source, metadata_dict)
         assert len(result) <= 8000
 
@@ -4129,7 +4141,7 @@ class TestFindFilesNeedingTitle:
         from local_feed_generator.cli import _get_content_for_title
 
         file_path = Path("/fake/path/file.txt")
-        metadata_dict = {}
+        metadata_dict: dict[str, Any] = {}
         result = _get_content_for_title(file_path, metadata_dict)
         assert result == ""
 
@@ -4142,7 +4154,7 @@ class TestFindFilesNeedingTitle:
         # Make the file unreadable
         source.chmod(0o000)
         try:
-            metadata_dict = {}
+            metadata_dict: dict[str, Any] = {}
             result = _get_content_for_title(source, metadata_dict)
             assert result == ""
         finally:
@@ -4157,8 +4169,23 @@ class TestFindFilesNeedingTitle:
 class TestIsDictFeedEligible:
     """Tests for the _is_dict_feed_eligible helper function."""
 
-    def test_pdf_eligible_without_content(self, valid_env):
-        """PDF without content should be eligible if extract is complete."""
+    def test_pdf_eligible_with_extract_and_summarize(self, valid_env):
+        """PDF should be eligible if both extract and summarize are complete."""
+        from local_feed_generator.cli import _is_dict_feed_eligible
+
+        metadata = {
+            "extract": {"status": "complete"},
+            "summarize": {"status": "complete"},
+            "filetype": "pdf",
+            "title": "Test",
+            "filename": "doc.pdf",
+            "filepath": "doc.pdf",
+            "size": 1024,
+        }
+        assert _is_dict_feed_eligible(metadata, "pdf") is True
+
+    def test_pdf_not_eligible_with_extract_only(self, valid_env):
+        """PDF with only extract (no summarize) should not be eligible."""
         from local_feed_generator.cli import _is_dict_feed_eligible
 
         metadata = {
@@ -4169,10 +4196,10 @@ class TestIsDictFeedEligible:
             "filepath": "doc.pdf",
             "size": 1024,
         }
-        assert _is_dict_feed_eligible(metadata, "pdf") is True
+        assert _is_dict_feed_eligible(metadata, "pdf") is False
 
     def test_pdf_eligible_with_content_and_summarize(self, valid_env):
-        """PDF with content should be eligible only if summarize is also complete."""
+        """PDF with content should be eligible if summarize is also complete."""
         from local_feed_generator.cli import _is_dict_feed_eligible
 
         metadata = {
@@ -4218,8 +4245,23 @@ class TestIsDictFeedEligible:
         }
         assert _is_dict_feed_eligible(metadata, "pdf") is False
 
-    def test_html_eligible_without_content(self, valid_env):
-        """HTML without content should be eligible if extract is complete."""
+    def test_html_eligible_with_extract_and_summarize(self, valid_env):
+        """HTML should be eligible if both extract and summarize are complete."""
+        from local_feed_generator.cli import _is_dict_feed_eligible
+
+        metadata = {
+            "extract": {"status": "complete"},
+            "summarize": {"status": "complete"},
+            "filetype": "html",
+            "title": "Test",
+            "filename": "page.html",
+            "filepath": "page.html",
+            "size": 512,
+        }
+        assert _is_dict_feed_eligible(metadata, "html") is True
+
+    def test_html_not_eligible_with_extract_only(self, valid_env):
+        """HTML with only extract (no summarize) should not be eligible."""
         from local_feed_generator.cli import _is_dict_feed_eligible
 
         metadata = {
@@ -4230,7 +4272,7 @@ class TestIsDictFeedEligible:
             "filepath": "page.html",
             "size": 512,
         }
-        assert _is_dict_feed_eligible(metadata, "html") is True
+        assert _is_dict_feed_eligible(metadata, "html") is False
 
     def test_html_not_eligible_with_content_no_summarize(self, valid_env):
         """HTML with content but no summarize step should not be eligible."""
@@ -4253,6 +4295,7 @@ class TestIsDictFeedEligible:
 
         metadata = {
             "extract": {"status": "complete"},
+            "summarize": {"status": "complete"},
             "error": "Some error",
             "filetype": "pdf",
             "title": "Test",

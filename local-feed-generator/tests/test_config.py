@@ -11,7 +11,7 @@ import pytest
 class TestRequiredFields:
     """Tests for required field validation."""
 
-    def _get_valid_env(self):
+    def _get_valid_env(self) -> dict[str, str]:
         return {
             "BASE_URL": "https://example.com/feeds",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
@@ -24,7 +24,7 @@ class TestRequiredFields:
             "PROMPT_TITLE": "Test title prompt",
         }
 
-    def test_missing_all_required_fields_raises_error(self):
+    def test_missing_all_required_fields_raises_error(self) -> None:
         """Config validation should fail when all required fields are missing."""
         env = {
             "BASE_URL": "",
@@ -38,9 +38,9 @@ class TestRequiredFields:
             "PROMPT_TITLE": "",
         }
         with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
-            Settings()
+            Settings()  # type: ignore[call-arg]
 
-    def test_missing_base_url_raises_error(self):
+    def test_missing_base_url_raises_error(self) -> None:
         """Missing BASE_URL should raise a validation error."""
         env = {
             "LLM_ENDPOINT": "https://llm.example.com/v1",
@@ -53,9 +53,9 @@ class TestRequiredFields:
             "PROMPT_TITLE": "Test title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
-            Settings()
+            Settings()  # type: ignore[call-arg]
 
-    def test_missing_llm_endpoint_raises_error(self):
+    def test_missing_llm_endpoint_raises_error(self) -> None:
         """Missing LLM_ENDPOINT should raise a validation error."""
         env = {
             "BASE_URL": "https://example.com/feeds",
@@ -68,9 +68,9 @@ class TestRequiredFields:
             "PROMPT_TITLE": "Test title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
-            Settings()
+            Settings()  # type: ignore[call-arg]
 
-    def test_missing_llm_api_key_raises_error(self):
+    def test_missing_llm_api_key_raises_error(self) -> None:
         """Missing LLM_API_KEY should raise a validation error."""
         env = {
             "BASE_URL": "https://example.com/feeds",
@@ -83,9 +83,9 @@ class TestRequiredFields:
             "PROMPT_TITLE": "Test title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
-            Settings()
+            Settings()  # type: ignore[call-arg]
 
-    def test_missing_llm_model_raises_error(self):
+    def test_missing_llm_model_raises_error(self) -> None:
         """Missing LLM_MODEL should raise a validation error."""
         env = {
             "BASE_URL": "https://example.com/feeds",
@@ -98,9 +98,9 @@ class TestRequiredFields:
             "PROMPT_TITLE": "Test title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
-            Settings()
+            Settings()  # type: ignore[call-arg]
 
-    def test_missing_prompt_article_raises_error(self):
+    def test_missing_prompt_article_raises_error(self) -> None:
         """Missing PROMPT_ARTICLE should raise a validation error."""
         env = {
             "BASE_URL": "https://example.com/feeds",
@@ -113,13 +113,13 @@ class TestRequiredFields:
             "PROMPT_TITLE": "Test title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
-            Settings()
+            Settings()  # type: ignore[call-arg]
 
 
 class TestOptionalFields:
     """Tests for optional field defaults."""
 
-    def _get_valid_env(self):
+    def _get_valid_env(self) -> dict[str, str]:
         return {
             "BASE_URL": "https://example.com/feeds",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
@@ -132,51 +132,51 @@ class TestOptionalFields:
             "PROMPT_TITLE": "Test title prompt",
         }
 
-    def test_llm_model_required(self):
+    def test_llm_model_required(self) -> None:
         """LLM_MODEL should be required (no default)."""
         env = self._get_valid_env()
         del env["LLM_MODEL"]
         with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
-            Settings()
+            Settings()  # type: ignore[call-arg]
 
-    def test_llm_model_override(self):
+    def test_llm_model_override(self) -> None:
         """LLM_MODEL should accept a custom model name."""
         env = {**self._get_valid_env(), "LLM_MODEL": "mistralai/Mistral-7B-Instruct"}
         with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.llm_model == "mistralai/Mistral-7B-Instruct"
 
-    def test_transcription_model_default(self):
+    def test_transcription_model_default(self) -> None:
         """TRANSCRIPTION_MODEL should default to 'large-v3-turbo'."""
         with mock.patch.dict(os.environ, self._get_valid_env(), clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.transcription_model == "large-v3-turbo"
 
-    def test_transcription_device_default(self):
+    def test_transcription_device_default(self) -> None:
         """TRANSCRIPTION_DEVICE should default to 'cuda'."""
         with mock.patch.dict(os.environ, self._get_valid_env(), clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.transcription_device == "cuda"
 
-    def test_transcription_compute_type_default(self):
+    def test_transcription_compute_type_default(self) -> None:
         """TRANSCRIPTION_COMPUTE_TYPE should default to 'float16'."""
         with mock.patch.dict(os.environ, self._get_valid_env(), clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.transcription_compute_type == "float16"
 
-    def test_prompt_title_required(self):
+    def test_prompt_title_required(self) -> None:
         """PROMPT_TITLE should be required (no default)."""
         env = self._get_valid_env()
         del env["PROMPT_TITLE"]
         with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
-            Settings()
+            Settings()  # type: ignore[call-arg]
 
     def test_prompt_title_override(self):
         """PROMPT_TITLE should accept a custom prompt."""
         custom_prompt = "Extract key points from this text."
         env = {**self._get_valid_env(), "PROMPT_TITLE": custom_prompt}
         with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.prompt_title == custom_prompt
 
     def test_prompt_article_reflection_optional(self):
@@ -184,7 +184,7 @@ class TestOptionalFields:
         env = self._get_valid_env()
         del env["PROMPT_ARTICLE_REFLECTION"]
         with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.prompt_article_reflection is None
 
     def test_prompt_podcast_reflection_optional(self):
@@ -192,7 +192,7 @@ class TestOptionalFields:
         env = self._get_valid_env()
         del env["PROMPT_PODCAST_REFLECTION"]
         with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.prompt_podcast_reflection is None
 
     def test_prompt_article_reflection_override(self):
@@ -200,7 +200,7 @@ class TestOptionalFields:
         custom_prompt = "Custom article reflection prompt."
         env = {**self._get_valid_env(), "PROMPT_ARTICLE_REFLECTION": custom_prompt}
         with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.prompt_article_reflection == custom_prompt
 
     def test_prompt_podcast_reflection_override(self):
@@ -208,7 +208,7 @@ class TestOptionalFields:
         custom_prompt = "Custom podcast reflection prompt."
         env = {**self._get_valid_env(), "PROMPT_PODCAST_REFLECTION": custom_prompt}
         with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.prompt_podcast_reflection == custom_prompt
 
 
@@ -235,7 +235,7 @@ class TestEnvFileLoading:
         original_cwd = os.getcwd()
         try:
             os.chdir(tmp_path)
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.base_url == "https://feed.example.com"
             assert settings.llm_endpoint == "https://llm.example.com/v1"
             assert settings.llm_api_key == "secret-key"
@@ -268,7 +268,7 @@ class TestEnvFileLoading:
                 "BASE_URL": "https://from-env-var.com",
             }
             with mock.patch.dict(os.environ, env_override, clear=False):
-                settings = Settings()
+                settings = Settings()  # type: ignore[call-arg]
                 assert settings.base_url == "https://from-env-var.com"
                 assert settings.llm_model == "model-from-file"
                 assert settings.prompt_article == "Prompt from file"
@@ -297,7 +297,7 @@ class TestEnvironmentVariables:
             "TRANSCRIPTION_COMPUTE_TYPE": "int8",
         }
         with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.base_url == "https://env.example.com"
             assert settings.llm_endpoint == "https://env-llm.example.com/v1"
             assert settings.llm_api_key == "env-secret-key"
@@ -418,7 +418,7 @@ class TestBackwardsCompatibility:
             "TITLE_PROMPT": "Old title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.prompt_article == "Old summary prompt"
             assert settings.prompt_podcast == "Old summary prompt"
             assert settings.prompt_title == "Old title prompt"
@@ -435,7 +435,7 @@ class TestBackwardsCompatibility:
             "TITLE_PROMPT": "Old title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.prompt_article_reflection == "Old reflection prompt"
             assert settings.prompt_podcast_reflection == "Old reflection prompt"
 
@@ -454,7 +454,7 @@ class TestBackwardsCompatibility:
             "PROMPT_TITLE": "New title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()
+            settings = Settings()  # type: ignore[call-arg]
             assert settings.prompt_article == "New article prompt"
             assert settings.prompt_podcast == "New podcast prompt"
             assert settings.prompt_title == "New title prompt"

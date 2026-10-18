@@ -29,7 +29,6 @@ def mock_config():
     """Provide a Settings instance with test values."""
     return Settings(
         base_url="https://example.com",
-        data_dir="./data",
         llm_endpoint="https://llm.example.com/v1",
         llm_api_key="test-key",
         llm_model="test-model",
@@ -202,7 +201,7 @@ class TestSummarize:
     def test_filetype_mp4_with_reflection_uses_podcast_reflection_prompt(
         self, summarizer, mock_response
     ):
-        """summarize() with filetype='mp4' and reflection_questions should use prompt_podcast_reflection."""
+        """summarize() with filetype='mp4' and reflection questions uses podcast reflection."""
         summarizer._client.chat.completions.create.return_value = mock_response
         summarizer.summarize(
             "Test transcript",
@@ -218,7 +217,7 @@ class TestSummarize:
     def test_filetype_pdf_with_reflection_uses_article_reflection_prompt(
         self, summarizer, mock_response
     ):
-        """summarize() with filetype='pdf' and reflection_questions should use prompt_article_reflection."""
+        """summarize() with filetype='pdf' and reflection questions uses article reflection."""
         summarizer._client.chat.completions.create.return_value = mock_response
         summarizer.summarize(
             "Test transcript",

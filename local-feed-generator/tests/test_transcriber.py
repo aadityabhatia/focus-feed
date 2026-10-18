@@ -10,7 +10,6 @@ Tests cover:
 - CUDA availability check in _load_model()
 """
 
-import json
 import os
 from pathlib import Path
 from unittest import mock
@@ -341,7 +340,8 @@ class TestTranscribeSkipAlreadyComplete:
                 "New transcript",
             ),
             (
-                '{"status": {"transcribe": "complete", "summarize": null}, "transcript": "Existing"}',
+                '{"status": {"transcribe": "complete", "summarize": null},'
+                ' "transcript": "Existing"}',
                 True,
                 "Existing",
             ),
@@ -661,13 +661,17 @@ class TestCudaCheckInLoadModel:
         transcriber = Transcriber()
 
         mock_model = MockWhisperModel()
-        mock_model.transcribe = mock.Mock(
-            side_effect=OSError("Library libcublas.so.12 is not found or cannot be loaded")
-        )
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with (
+            mock.patch(
+                "local_feed_generator.services.transcriber.WhisperModel"
+            ) as mock_whisper_cls,
+            mock.patch.object(
+                mock_model,
+                "transcribe",
+                side_effect=OSError("Library libcublas.so.12 is not found or cannot be loaded"),
+            ),
+        ):
             mock_whisper_cls.return_value = mock_model
 
             with mock.patch.object(Path, "exists", return_value=True):
@@ -683,11 +687,15 @@ class TestCudaCheckInLoadModel:
         transcriber = Transcriber()
 
         mock_model = MockWhisperModel()
-        mock_model.transcribe = mock.Mock(side_effect=RuntimeError("Some other error"))
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with (
+            mock.patch(
+                "local_feed_generator.services.transcriber.WhisperModel"
+            ) as mock_whisper_cls,
+            mock.patch.object(
+                mock_model, "transcribe", side_effect=RuntimeError("Some other error")
+            ),
+        ):
             mock_whisper_cls.return_value = mock_model
 
             with mock.patch.object(Path, "exists", return_value=True):

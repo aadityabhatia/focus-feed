@@ -246,6 +246,7 @@ class TestSanitizeContent:
         # Simulate the binary content found in C102RF_FM_5-0 PDF
         dirty = "solved.\nPIN\x1d 082115\x10000\x03"
         result = _sanitize_content(dirty)
+        assert result is not None
         assert "\x1d" not in result
         assert "\x10" not in result
         assert "\x03" not in result
@@ -915,6 +916,11 @@ class TestMetadataCompatibility:
                     len(extracted["content"].encode("utf-8")) if extracted["content"] else 0
                 ),
             ),
+            summarize=StepMap(
+                status="complete",
+                input_size=extracted["size"],
+                output_size=0,
+            ),
             title=extracted["title"],
             description=extracted["description"] or "",
             filename=pdf_path.name,
@@ -952,6 +958,11 @@ class TestMetadataCompatibility:
                 output_size=(
                     len(extracted["content"].encode("utf-8")) if extracted["content"] else 0
                 ),
+            ),
+            summarize=StepMap(
+                status="complete",
+                input_size=extracted["size"],
+                output_size=0,
             ),
             title=extracted["title"],
             description=extracted["description"] or "",
@@ -1307,5 +1318,6 @@ class TestGetAudioMetadata:
             )
             result = get_audio_metadata(mock_probe)
 
+        assert result is not None
         required_keys = {"type", "duration", "creation_time", "bit_rate"}
         assert required_keys.issubset(set(result.keys()))

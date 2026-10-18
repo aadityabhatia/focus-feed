@@ -9,6 +9,7 @@ These tests verify that modules work together correctly:
 
 import os
 from pathlib import Path
+from typing import Any, Literal, cast
 from unittest import mock
 
 from local_feed_generator.config import get_config, reload_config
@@ -19,7 +20,11 @@ from local_feed_generator.errors import (
 )
 from local_feed_generator.metadata import Metadata, StepMap
 from local_feed_generator.scanner import Scanner
-from local_feed_generator.services.extractors import HTMLExtractor, PDFExtractor, _clean_title
+from local_feed_generator.services.extractors import (
+    HTMLExtractor,
+    PDFExtractor,
+    _clean_title,
+)
 
 # ---------------------------------------------------------------------------
 # Service Mocks
@@ -29,12 +34,12 @@ from local_feed_generator.services.extractors import HTMLExtractor, PDFExtractor
 class MockTranscriber:
     """Mock transcriber that returns deterministic transcript without GPU."""
 
-    def __init__(self, transcript="Mock transcript for testing"):
+    def __init__(self, transcript: str = "Mock transcript for testing") -> None:
         self.transcript = transcript
         self.call_count = 0
-        self.called_with = []
+        self.called_with: list[str] = []
 
-    def transcribe(self, filepath):
+    def transcribe(self, filepath: str | Path) -> str:
         self.call_count += 1
         self.called_with.append(str(filepath))
         return self.transcript
@@ -43,17 +48,23 @@ class MockTranscriber:
 class MockSummarizer:
     """Mock summarizer that returns deterministic summary without LLM."""
 
-    def __init__(self, summary="Mock summary of key takeaways"):
+    def __init__(self, summary: str = "Mock summary of key takeaways") -> None:
         self.summary = summary
         self.call_count = 0
-        self.called_with = []
+        self.called_with: list[str] = []
 
-    def summarize(self, transcript, **kwargs):
+    def summarize(self, transcript: str, **kwargs: Any) -> tuple[str, int, int]:
         self.call_count += 1
         self.called_with.append(transcript)
         return (self.summary, 100, 50)
 
-    def generate_title(self, content, filename=None, extracted_title=None, **kwargs):
+    def generate_title(
+        self,
+        content: str,
+        filename: str | None = None,
+        extracted_title: str | None = None,
+        **kwargs: Any,
+    ) -> tuple[str, int, int]:
         self.call_count += 1
         self.called_with.append(content)
         return ("Mock Generated Title", 30, 5)
@@ -62,14 +73,14 @@ class MockSummarizer:
 class FailingTranscriber:
     """Mock transcriber that always fails."""
 
-    def transcribe(self, filepath):
+    def transcribe(self, filepath: str | Path) -> str:
         raise TranscriptionError("Mock transcription failure", filepath=str(filepath))
 
 
 class FailingSummarizer:
     """Mock summarizer that always fails."""
 
-    def summarize(self, transcript, **kwargs):
+    def summarize(self, transcript: str, **kwargs: Any) -> tuple[str, int, int]:
         raise SummarizationError("Mock summarization failure")
 
 
@@ -81,7 +92,7 @@ class FailingSummarizer:
 class TestConfigMetadataIntegration:
     """Tests that config loads correctly and metadata can be created with config values."""
 
-    def _get_valid_env(self):
+    def _get_valid_env(self) -> dict[str, str]:
         return {
             "BASE_URL": "https://example.com/feeds",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
@@ -94,7 +105,7 @@ class TestConfigMetadataIntegration:
             "PROMPT_TITLE": "Test title prompt",
         }
 
-    def test_config_loads_and_metadata_created_with_config_values(self):
+    def test_config_loads_and_metadata_created_with_config_values(self) -> None:
         """Config should load and metadata can be created using config-derived paths."""
         env = self._get_valid_env()
         with mock.patch.dict(os.environ, env, clear=False):
@@ -127,7 +138,7 @@ class TestConfigMetadataIntegration:
             assert data["filepath"] == relative_path
             assert data["filename"] == "test.mp4"
 
-    def test_metadata_feed_eligible_from_config_context(self):
+    def test_metadata_feed_eligible_from_config_context(self) -> None:
         """Metadata feed_eligible should be computed correctly regardless of config."""
         env = self._get_valid_env()
         with mock.patch.dict(os.environ, env, clear=False):
@@ -140,10 +151,11 @@ class TestConfigMetadataIntegration:
                 date=1728931200,
                 size=100,
                 extract=StepMap(status="complete", input_size=100, output_size=0),
+                summarize=StepMap(status="complete", input_size=100, output_size=0),
             )
             assert metadata.feed_eligible is True
 
-    def test_config_reload_reflects_new_values_for_metadata_creation(self):
+    def test_config_reload_reflects_new_values_for_metadata_creation(self) -> None:
         """Config reload should allow metadata to be created with updated config."""
         env1 = {**self._get_valid_env(), "BASE_URL": "https://first.example.com"}
         env2 = {**self._get_valid_env(), "BASE_URL": "https://second.example.com"}
@@ -170,6 +182,7 @@ class TestConfigMetadataIntegration:
                 date=1728931200,
                 size=100,
                 extract=StepMap(status="complete", input_size=100, output_size=0),
+                summarize=StepMap(status="complete", input_size=100, output_size=0),
             )
             assert metadata.feed_eligible is True
 
@@ -182,7 +195,7 @@ class TestConfigMetadataIntegration:
 class TestScannerMetadataIntegration:
     """Tests that scanner returns files that can be processed into valid metadata."""
 
-    def test_scanner_finds_files_and_metadata_created(self, tmp_path):
+    def test_scanner_finds_files_and_metadata_created(self, tmp_path: Path) -> None:
         """Scanner should find files and they should be convertible to metadata."""
         # Create test files
         data_dir = tmp_path / "data"
@@ -210,7 +223,7 @@ class TestScannerMetadataIntegration:
             description="Test lecture",
             filename=scanned.filename,
             filepath=scanned.filepath,
-            filetype=scanned.filetype,
+            filetype=cast(Literal["mp4", "pdf", "html"], scanned.filetype),
             date=int(stat.st_mtime),
             size=stat.st_size,
             transcribe=StepMap(status="complete", input_size=stat.st_size, output_size=0),
@@ -222,7 +235,7 @@ class TestScannerMetadataIntegration:
         assert metadata.filetype == "mp4"
         assert metadata.feed_eligible is True
 
-    def test_scanner_skips_files_with_existing_metadata(self, tmp_path):
+    def test_scanner_skips_files_with_existing_metadata(self, tmp_path: Path) -> None:
         """Scanner should skip files that already have metadata."""
         data_dir = tmp_path / "data"
         data_dir.mkdir()
@@ -243,6 +256,7 @@ class TestScannerMetadataIntegration:
             date=1728931200,
             size=100,
             extract=StepMap(status="complete", input_size=100, output_size=0),
+            summarize=StepMap(status="complete", input_size=100, output_size=0),
         )
         metadata.to_json_file(metadata_file)
 
@@ -252,7 +266,7 @@ class TestScannerMetadataIntegration:
         # Should be empty because metadata exists
         assert len(files) == 0
 
-    def test_scanner_finds_outdated_metadata(self, tmp_path):
+    def test_scanner_finds_outdated_metadata(self, tmp_path: Path) -> None:
         """Scanner should find files where source is newer than metadata."""
         data_dir = tmp_path / "data"
         data_dir.mkdir()
@@ -286,7 +300,7 @@ class TestScannerMetadataIntegration:
         assert len(files) == 1
         assert files[0].filename == "page.html"
 
-    def test_scanner_returns_sorted_results(self, tmp_path):
+    def test_scanner_returns_sorted_results(self, tmp_path: Path) -> None:
         """Scanner should return files sorted by filepath."""
         data_dir = tmp_path / "data"
         data_dir.mkdir()
@@ -313,7 +327,7 @@ class TestScannerMetadataIntegration:
 class TestProducerComponent:
     """Tests for producer-like logic with mocked services."""
 
-    def test_file_type_detection(self):
+    def test_file_type_detection(self) -> None:
         """File type should be correctly detected from extension."""
         # Simulate file type detection logic
         test_cases = [
@@ -328,7 +342,7 @@ class TestProducerComponent:
             ext = Path(filename).suffix.lower().lstrip(".")
             assert ext == expected_type
 
-    def test_producer_dispatch_logic_with_mocks(self, tmp_path):
+    def test_producer_dispatch_logic_with_mocks(self, tmp_path: Path) -> None:
         """Producer should dispatch to correct services based on file type."""
         # Setup mock services
         transcriber = MockTranscriber()
@@ -349,7 +363,7 @@ class TestProducerComponent:
         assert transcript == "Mock transcript for testing"
         assert summary == "Mock summary of key takeaways"
 
-    def test_producer_creates_valid_metadata_for_mp4(self, tmp_path):
+    def test_producer_creates_valid_metadata_for_mp4(self, tmp_path: Path) -> None:
         """Producer should create valid metadata for MP4 files."""
         transcriber = MockTranscriber()
         summarizer = MockSummarizer()
@@ -376,14 +390,16 @@ class TestProducerComponent:
             summarize=StepMap(status="complete", input_size=0, output_size=0),
         )
 
+        assert metadata.transcribe is not None
         assert metadata.transcribe.status == "complete"
+        assert metadata.summarize is not None
         assert metadata.summarize.status == "complete"
         assert metadata.content == "Mock transcript for testing"
         assert metadata.summary == "Mock summary of key takeaways"
         assert metadata.filetype == "mp4"
         assert metadata.feed_eligible is True
 
-    def test_producer_creates_valid_metadata_for_pdf(self, tmp_path):
+    def test_producer_creates_valid_metadata_for_pdf(self, tmp_path: Path) -> None:
         """Producer should create valid metadata for PDF files using extractor."""
         # Create a simple PDF file (minimal valid PDF)
         pdf_file = tmp_path / "doc.pdf"
@@ -403,6 +419,7 @@ class TestProducerComponent:
             date=extracted["date"],
             size=extracted["size"],
             extract=StepMap(status="complete", input_size=extracted["size"], output_size=0),
+            summarize=StepMap(status="complete", input_size=0, output_size=0),
         )
 
         assert metadata.filetype == "pdf"
@@ -411,7 +428,7 @@ class TestProducerComponent:
         assert metadata.summary is None
         assert metadata.feed_eligible is True
 
-    def test_producer_creates_valid_metadata_for_html(self, tmp_path):
+    def test_producer_creates_valid_metadata_for_html(self, tmp_path: Path) -> None:
         """Producer should create valid metadata for HTML files using extractor."""
         html_file = tmp_path / "page.html"
         html_file.write_text(
@@ -431,6 +448,7 @@ class TestProducerComponent:
             date=extracted["date"],
             size=extracted["size"],
             extract=StepMap(status="complete", input_size=extracted["size"], output_size=0),
+            summarize=StepMap(status="complete", input_size=0, output_size=0),
         )
 
         assert metadata.filetype == "html"
@@ -441,7 +459,7 @@ class TestProducerComponent:
         assert metadata.summary is None
         assert metadata.feed_eligible is True
 
-    def test_producer_uses_title_generation_fallback(self, tmp_path):
+    def test_producer_uses_title_generation_fallback(self, tmp_path: Path) -> None:
         """Producer should use LLM title generation when extractor finds no title."""
         summarizer = MockSummarizer()
 
@@ -470,7 +488,7 @@ class TestProducerComponent:
 class TestErrorPathHandling:
     """Tests that errors result in proper error metadata."""
 
-    def test_transcription_error_creates_error_metadata(self, tmp_path):
+    def test_transcription_error_creates_error_metadata(self, tmp_path: Path) -> None:
         """Transcription failure should create error metadata."""
         mp4_file = tmp_path / "bad.mp4"
         mp4_file.write_bytes(b"corrupted")
@@ -498,7 +516,7 @@ class TestErrorPathHandling:
             assert metadata.error == "Mock transcription failure"
             assert metadata.feed_eligible is False
 
-    def test_summarization_error_creates_error_metadata(self, tmp_path):
+    def test_summarization_error_creates_error_metadata(self, tmp_path: Path) -> None:
         """Summarization failure should create error metadata."""
         summarizer = FailingSummarizer()
 
@@ -516,7 +534,7 @@ class TestErrorPathHandling:
             assert error_meta["error"]
             assert "Mock summarization failure" in error_meta["error"]
 
-    def test_error_metadata_excluded_from_feeds(self):
+    def test_error_metadata_excluded_from_feeds(self) -> None:
         """Error metadata should have error set and feed_eligible=False."""
         error_metadata = Metadata(
             title="Failed",
@@ -550,7 +568,7 @@ class TestErrorPathHandling:
         assert len(valid_for_feed) == 1
         assert valid_for_feed[0].filename == "good.mp4"
 
-    def test_error_metadata_has_required_fields(self):
+    def test_error_metadata_has_required_fields(self) -> None:
         """Error metadata should have all required fields with correct values."""
         exc = Exception("Test error")
         error_dict = create_error_metadata(

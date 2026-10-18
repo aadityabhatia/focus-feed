@@ -4,6 +4,7 @@ import logging
 import os
 from pathlib import Path
 import time
+from typing import Any
 from unittest import mock
 
 from local_feed_generator.scanner import ScannedFile, Scanner
@@ -355,18 +356,18 @@ class TestScannedFileDataclass:
     )
     def test_scanned_file_fields(self, with_optional, expected_stage, expected_json_exists):
         """ScannedFile should be immutable and have all required fields."""
-        kwargs = dict(
-            filepath="videos/lecture.mp4",
-            absolute_path="/data/videos/lecture.mp4",
-            filename="lecture.mp4",
-            filetype="mp4",
-        )
+        kwargs: dict[str, Any] = {
+            "filepath": "videos/lecture.mp4",
+            "absolute_path": "/data/videos/lecture.mp4",
+            "filename": "lecture.mp4",
+            "filetype": "mp4",
+        }
         if with_optional:
             kwargs["current_stage"] = expected_stage
             kwargs["json_exists"] = expected_json_exists
         entry = ScannedFile(**kwargs)
         with pytest.raises(AttributeError):
-            entry.filepath = "other.mp4"
+            entry.filepath = "other.mp4"  # type: ignore[misc]
         assert entry.filepath == "videos/lecture.mp4"
         assert entry.absolute_path == "/data/videos/lecture.mp4"
         assert entry.filename == "lecture.mp4"
@@ -508,7 +509,8 @@ class TestStepStatusBasedScanning:
         "filetype,json_content",
         [
             ("mp4", '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'),
-            ("pdf", '{"extract": {"status": "complete"}}'),
+            ("pdf", '{"extract": {"status": "complete"}, "summarize": {"status": "complete"}}'),
+            ("html", '{"extract": {"status": "complete"}, "summarize": {"status": "complete"}}'),
         ],
     )
     def test_complete_files_skipped(self, tmp_path, filetype, json_content):
@@ -522,6 +524,30 @@ class TestStepStatusBasedScanning:
         result = scanner.scan_directory()
 
         assert result == []
+
+    @pytest.mark.parametrize(
+        "filetype,json_content",
+        [
+            ("pdf", '{"extract": {"status": "complete"}}'),
+            ("html", '{"extract": {"status": "complete"}}'),
+        ],
+    )
+    def test_pdf_html_without_summarize_returned(self, tmp_path, filetype, json_content):
+        """PDF/HTML files with extract complete but no summarize should be returned.
+
+        Files that have extract complete but no summarize step should be
+        returned for processing.
+        """
+        source = tmp_path / f"lecture.{filetype}"
+        source.write_bytes(b"data")
+        json_file = tmp_path / f"lecture.{filetype}.json"
+        json_file.write_text(json_content)
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_directory()
+
+        assert len(result) == 1
+        assert result[0].filename == f"lecture.{filetype}"
 
     def test_partial_mp4_returned(self, tmp_path):
         """MP4 files with only transcribe complete but not summarize should be returned."""
@@ -759,7 +785,8 @@ class TestStageTracking:
         [
             ('{"transcribe_status": "in_progress", "summarize_status": null}', False),
             ('{"transcribe_status": "complete", "summarize_status": "complete"}', True),
-            ('{"extract_status": "complete"}', True),
+            ('{"extract_status": "complete"}', False),  # Missing summarize_status
+            ('{"extract_status": "complete", "summarize_status": "complete"}', True),
         ],
     )
     def test_legacy_status_fields(self, tmp_path, json_content, should_skip):

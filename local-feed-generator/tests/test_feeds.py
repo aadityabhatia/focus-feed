@@ -13,13 +13,14 @@ Tests cover:
 """
 
 import json
-import os
 from pathlib import Path
+from typing import Any
 from unittest import mock
 
 from local_feed_generator.feeds import (
     FeedGenerator,
     FeedValidationResult,
+    _get_summarization_attribution,
     _markdown_to_html,
     validate_feed,
 )
@@ -41,7 +42,7 @@ def make_metadata(
     size: int = 1000,
     feed_eligible: bool = True,
     error: str | None = None,
-    date: int = 1728931200,
+    date: int | None = 1728931200,
     publication_date: float | None = None,
     hash: str | None = None,
 ) -> Metadata:
@@ -67,7 +68,7 @@ def make_metadata(
         A validated Metadata instance.
     """
     filename = Path(filepath).name
-    kwargs = {
+    kwargs: dict[str, Any] = {
         "title": title or filename,
         "filename": filename,
         "filepath": filepath,
@@ -105,6 +106,13 @@ def make_metadata(
                 status="complete",
                 input_size=size,
                 output_size=len(description.encode("utf-8")) if description else 0,
+            )
+            kwargs["summarize"] = StepMap(
+                status="complete",
+                input_size=len(description.encode("utf-8")) if description else 0,
+                output_size=len((summary or description).encode("utf-8"))
+                if (summary or description)
+                else 0,
             )
     if error:
         kwargs["error"] = error
@@ -3286,6 +3294,7 @@ class TestHashUpdateIntegration:
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 1000, "output_size": 500},
+                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
                     "title": {"filename": "doc", "extracted": None, "generated": "My Doc"},
                     "description": "Description",
                     "filename": "doc.pdf",
@@ -3411,3 +3420,506 @@ class TestHashUpdateIntegration:
         fg.generate_all_feeds()
         data2 = json.loads(json_path.read_text(encoding="utf-8"))
         assert data2["hash"] == data1["hash"]
+
+
+# ---------------------------------------------------------------------------
+# Summarization attribution (_get_summarization_attribution)
+# ---------------------------------------------------------------------------
+
+
+class TestSummarizationAttribution:
+    """Tests for _get_summarization_attribution() helper function."""
+
+    @pytest.fixture
+    def mock_config(self):
+        """Mock get_config to return a config with llm_model set."""
+        with mock.patch("local_feed_generator.feeds.get_config") as mock_get_config:
+            mock_config_obj = mock.MagicMock()
+            mock_config_obj.llm_model = "test-llm-model"
+            mock_get_config.return_value = mock_config_obj
+            yield mock_get_config
+
+    def test_mp4_uses_summarize_model_and_end_time(self, mock_config):
+        """MP4 files should use summarize.model and summarize.end_time."""
+        metadata = make_metadata(
+            filepath="videos/lecture.mp4",
+            filetype="mp4",
+            summary="Summary text",
+        )
+        # Override summarize step with model and end_time
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            model="whisper-large-v3",
+            end_time=1728931200.0,
+        )
+
+        result = _get_summarization_attribution(metadata)
+        assert "Summarized by whisper-large-v3" in result
+        assert "2024-10-14" in result  # datetime from 1728931200.0
+
+    def test_pdf_with_summarize_uses_summarize_model(self, mock_config):
+        """PDF with summarize step should use summarize.model and summarize.end_time."""
+        metadata = make_metadata(
+            filepath="docs/doc.pdf",
+            filetype="pdf",
+            description="Description",
+        )
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            model="gpt-4o-mini",
+            end_time=1719211200.0,  # 2024-06-24 12:00:00 UTC (noon to avoid tz date boundary)
+        )
+
+        result = _get_summarization_attribution(metadata)
+        assert "Summarized by gpt-4o-mini" in result
+        assert "2024-06-24" in result  # datetime from 1719211200.0
+
+    def test_pdf_without_summarize_uses_config_llm_model(self, mock_config):
+        """PDF without summarize should use config.llm_model and metadata.date."""
+        metadata = make_metadata(
+            filepath="docs/doc.pdf",
+            filetype="pdf",
+            description="Description",
+        )
+        # No summarize step; falls back to config.llm_model and metadata.date
+        metadata.summarize = None
+        metadata.extract = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            end_time=1728931200.0,
+        )
+
+        result = _get_summarization_attribution(metadata)
+        assert "Summarized by test-llm-model" in result
+        assert "2024-10-14" in result  # from metadata.date
+
+    def test_html_without_summarize_uses_config_llm_model(self, mock_config):
+        """HTML without summarize should use config.llm_model and metadata.date."""
+        metadata = make_metadata(
+            filepath="pages/page.html",
+            filetype="html",
+            description="Description",
+        )
+        metadata.summarize = None
+        metadata.extract = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            end_time=1728931200.0,
+        )
+
+        result = _get_summarization_attribution(metadata)
+        assert "Summarized by test-llm-model" in result
+        assert "2024-10-14" in result  # from metadata.date
+
+    def test_falls_back_to_metadata_date_when_end_time_none(self, mock_config):
+        """Should fall back to metadata.date when step.end_time is None."""
+        metadata = make_metadata(
+            filepath="videos/lecture.mp4",
+            filetype="mp4",
+            summary="Summary",
+            date=1728931200,
+        )
+        # summarize has no end_time
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            model="whisper-model",
+        )
+
+        result = _get_summarization_attribution(metadata)
+        assert "Summarized by whisper-model" in result
+        assert "2024-10-14" in result  # from metadata.date
+
+    def test_falls_back_to_publication_date(self, mock_config):
+        """Should fall back to publication_date when summarize.end_time is None and date is None."""
+        metadata = make_metadata(
+            filepath="docs/doc.pdf",
+            filetype="pdf",
+            description="Description",
+            date=None,
+            publication_date=1719211200.0,  # 2024-06-24 12:00:00 UTC
+        )
+        metadata.summarize = None
+        metadata.extract = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+        )
+
+        result = _get_summarization_attribution(metadata)
+        assert "Summarized by test-llm-model" in result
+        assert "2024-06-24" in result  # from publication_date
+
+    def test_returns_empty_when_no_timestamp_available(self, mock_config):
+        """Should return empty string when no timestamp is available."""
+        metadata = make_metadata(
+            filepath="docs/doc.pdf",
+            filetype="pdf",
+            description="Description",
+            date=None,
+            publication_date=None,
+        )
+        metadata.summarize = None
+        metadata.extract = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+        )
+
+        result = _get_summarization_attribution(metadata)
+        assert result == ""
+
+    def test_returns_empty_when_no_model_available(self, mock_config):
+        """Should return empty string when no model can be determined."""
+        # Mock config with no llm_model
+        mock_config.return_value.llm_model = None
+
+        metadata = make_metadata(
+            filepath="docs/doc.pdf",
+            filetype="pdf",
+            description="Description",
+        )
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+        )
+        # summarize.model is None, and config.llm_model is None
+
+        result = _get_summarization_attribution(metadata)
+        assert result == ""
+
+    def test_returns_empty_when_config_unavailable(self):
+        """Should return empty string when get_config() raises an exception."""
+        with mock.patch(
+            "local_feed_generator.feeds.get_config",
+            side_effect=Exception("Config not loaded"),
+        ):
+            metadata = make_metadata(
+                filepath="videos/lecture.mp4",
+                filetype="mp4",
+                summary="Summary",
+            )
+            metadata.summarize = StepMap(
+                status="complete",
+                input_size=100,
+                output_size=50,
+                model=None,  # model is None, so falls back to config which fails
+            )
+
+            result = _get_summarization_attribution(metadata)
+            assert result == ""
+
+    def test_datetime_uses_local_timezone(self, mock_config):
+        """Datetime should be converted to local timezone."""
+        metadata = make_metadata(
+            filepath="videos/lecture.mp4",
+            filetype="mp4",
+            summary="Summary",
+        )
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            model="test-model",
+            end_time=1728931200.0,  # 2024-10-14 12:00:00 UTC
+        )
+
+        result = _get_summarization_attribution(metadata)
+        # The result should contain a timezone abbreviation (local tz)
+        # and the date should be in the expected format
+        assert "Summarized by test-model at" in result
+        # Verify datetime format: YYYY-MM-DD HH:MM:SS TZ
+        import re
+
+        pattern = r"Summarized by test-model at \d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2} \S+"
+        assert re.match(pattern, result)
+
+    def test_mp4_fallback_to_config_model_when_summarize_model_none(self, mock_config):
+        """MP4 with summarize.model=None should fall back to config.llm_model."""
+        metadata = make_metadata(
+            filepath="videos/lecture.mp4",
+            filetype="mp4",
+            summary="Summary",
+        )
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            model=None,  # None, should fall back to config
+            end_time=1728931200.0,
+        )
+
+        result = _get_summarization_attribution(metadata)
+        assert "Summarized by test-llm-model" in result
+
+    def test_pdf_with_summarize_fallback_to_config_model(self, mock_config):
+        """PDF with summarize.model=None should fall back to config.llm_model."""
+        metadata = make_metadata(
+            filepath="docs/doc.pdf",
+            filetype="pdf",
+            description="Description",
+        )
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            model=None,
+            end_time=1728931200.0,
+        )
+
+        result = _get_summarization_attribution(metadata)
+        assert "Summarized by test-llm-model" in result
+
+    def test_pdf_without_summarize_falls_back_to_date(self, mock_config):
+        """PDF without summarize and without summarize.end_time should use metadata.date."""
+        metadata = make_metadata(
+            filepath="docs/doc.pdf",
+            filetype="pdf",
+            description="Description",
+            date=1728931200,
+        )
+        metadata.summarize = None
+        metadata.extract = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            # end_time is None
+        )
+
+        result = _get_summarization_attribution(metadata)
+        assert "Summarized by test-llm-model" in result
+        assert "2024-10-14" in result
+
+
+class TestAttributionInPodcastFeed:
+    """Tests for attribution appearing in generated podcast feeds."""
+
+    @pytest.fixture
+    def mock_config(self):
+        """Mock get_config to return a config with llm_model set."""
+        with mock.patch("local_feed_generator.feeds.get_config") as mock_get_config:
+            mock_config_obj = mock.MagicMock()
+            mock_config_obj.llm_model = "podcast-llm-model"
+            mock_get_config.return_value = mock_config_obj
+            yield mock_get_config
+
+    def test_podcast_feed_includes_attribution(self, tmp_path, mock_config):
+        """Podcast feed should include summarization attribution in description."""
+        metadata = make_metadata(
+            filepath="videos/lecture.mp4",
+            filetype="mp4",
+            summary="Key takeaways from the lecture.",
+        )
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            model="whisper-large-v3",
+            end_time=1728931200.0,
+        )
+        # Write metadata file
+        source = tmp_path / "videos" / "lecture.mp4"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"video data")
+        json_path = tmp_path / "videos" / "lecture.mp4.json"
+        json_path.write_text(metadata.to_json(), encoding="utf-8")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_podcast_feed()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert "Key takeaways from the lecture." in content
+        assert "Summarized by whisper-large-v3" in content
+
+    def test_podcast_feed_attribution_separated_by_paragraph(self, tmp_path, mock_config):
+        """Attribution should be separated from description by paragraph break."""
+        metadata = make_metadata(
+            filepath="videos/lecture.mp4",
+            filetype="mp4",
+            summary="Summary text",
+        )
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            model="test-model",
+            end_time=1728931200.0,
+        )
+        source = tmp_path / "videos" / "lecture.mp4"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"video data")
+        json_path = tmp_path / "videos" / "lecture.mp4.json"
+        json_path.write_text(metadata.to_json(), encoding="utf-8")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_podcast_feed()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        # Both summary and attribution should be present
+        assert "Summary text" in content
+        assert "Summarized by test-model" in content
+
+    def test_podcast_feed_no_attribution_when_config_unavailable(self, tmp_path):
+        """Podcast feed should still work when config is unavailable (no attribution)."""
+        with mock.patch(
+            "local_feed_generator.feeds.get_config",
+            side_effect=Exception("Config not loaded"),
+        ):
+            metadata = make_metadata(
+                filepath="videos/lecture.mp4",
+                filetype="mp4",
+                summary="Summary text",
+            )
+            metadata.summarize = StepMap(
+                status="complete",
+                input_size=100,
+                output_size=50,
+                model=None,
+            )
+            source = tmp_path / "videos" / "lecture.mp4"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"video data")
+            json_path = tmp_path / "videos" / "lecture.mp4.json"
+            json_path.write_text(metadata.to_json(), encoding="utf-8")
+
+            fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+            fg.generate_podcast_feed()
+
+            content = parse_rss_file(tmp_path / "podcast.xml")
+            assert "Summary text" in content
+            assert "Summarized by" not in content
+
+
+class TestAttributionInArticlesFeed:
+    """Tests for attribution appearing in generated articles feeds."""
+
+    @pytest.fixture
+    def mock_config(self):
+        """Mock get_config to return a config with llm_model set."""
+        with mock.patch("local_feed_generator.feeds.get_config") as mock_get_config:
+            mock_config_obj = mock.MagicMock()
+            mock_config_obj.llm_model = "articles-llm-model"
+            mock_get_config.return_value = mock_config_obj
+            yield mock_get_config
+
+    def test_articles_feed_includes_attribution_for_pdf_with_summarize(self, tmp_path, mock_config):
+        """Articles feed should include attribution for PDF with summarize step."""
+        metadata = make_metadata(
+            filepath="docs/doc.pdf",
+            filetype="pdf",
+            description="Description text",
+        )
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            model="gpt-4o",
+            end_time=1728931200.0,
+        )
+        source = tmp_path / "docs" / "doc.pdf"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"pdf data")
+        json_path = tmp_path / "docs" / "doc.pdf.json"
+        json_path.write_text(metadata.to_json(), encoding="utf-8")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_articles_feed()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "Summarized by gpt-4o" in content
+
+    def test_articles_feed_includes_attribution_for_pdf_with_summarize_model_none(
+        self, tmp_path, mock_config
+    ):
+        """Articles feed should include attribution for PDF with summarize.model=None,
+        falling back to config.llm_model."""
+        metadata = make_metadata(
+            filepath="docs/doc.pdf",
+            filetype="pdf",
+            description="Description text",
+        )
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            model=None,  # None, should fall back to config
+            end_time=1728931200.0,
+        )
+        source = tmp_path / "docs" / "doc.pdf"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_bytes(b"pdf data")
+        json_path = tmp_path / "docs" / "doc.pdf.json"
+        json_path.write_text(metadata.to_json(), encoding="utf-8")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_articles_feed()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "Summarized by articles-llm-model" in content
+
+    def test_articles_feed_includes_attribution_for_html_with_summarize_model_none(
+        self, tmp_path, mock_config
+    ):
+        """Articles feed should include attribution for HTML with summarize.model=None,
+        falling back to config.llm_model."""
+        metadata = make_metadata(
+            filepath="pages/page.html",
+            filetype="html",
+            description="Description text",
+        )
+        metadata.summarize = StepMap(
+            status="complete",
+            input_size=100,
+            output_size=50,
+            model=None,  # None, should fall back to config
+            end_time=1728931200.0,
+        )
+        source = tmp_path / "pages" / "page.html"
+        source.parent.mkdir(parents=True, exist_ok=True)
+        source.write_text("<html></html>", encoding="utf-8")
+        json_path = tmp_path / "pages" / "page.html.json"
+        json_path.write_text(metadata.to_json(), encoding="utf-8")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_articles_feed()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "Summarized by articles-llm-model" in content
+
+    def test_articles_feed_no_attribution_when_config_unavailable(self, tmp_path):
+        """Articles feed should work without attribution when config unavailable."""
+        with mock.patch(
+            "local_feed_generator.feeds.get_config",
+            side_effect=Exception("Config not loaded"),
+        ):
+            metadata = make_metadata(
+                filepath="docs/doc.pdf",
+                filetype="pdf",
+                description="Description text",
+            )
+            metadata.summarize = StepMap(
+                status="complete",
+                input_size=100,
+                output_size=50,
+                model=None,
+            )
+            source = tmp_path / "docs" / "doc.pdf"
+            source.parent.mkdir(parents=True, exist_ok=True)
+            source.write_bytes(b"pdf data")
+            json_path = tmp_path / "docs" / "doc.pdf.json"
+            json_path.write_text(metadata.to_json(), encoding="utf-8")
+
+            fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+            fg.generate_articles_feed()
+
+            content = parse_rss_file(tmp_path / "articles.xml")
+            assert "Description text" in content
+            assert "Summarized by" not in content

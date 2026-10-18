@@ -4,7 +4,6 @@ from io import StringIO
 import json
 import logging
 from pathlib import Path
-from unittest import mock
 
 from local_feed_generator.errors import (
     ProcessingError,
@@ -68,14 +67,18 @@ class TestExceptionHierarchy:
         kwargs = {}
         if exc_msg is not None:
             kwargs["message"] = exc_msg
+        exc: Exception
         if attr_name == "filepath":
             exc = ProcessingError("disk full", filepath="videos/lecture.mp4")
+            assert isinstance(exc, ProcessingError)
             assert exc.filepath == "videos/lecture.mp4"
         elif attr_name == "field":
             exc = ValidationError("invalid value", field="email")
+            assert isinstance(exc, ValidationError)
             assert exc.field == "email"
         elif attr_name == "message":
             exc = ProcessingError("disk full")
+            assert isinstance(exc, ProcessingError)
             assert exc.message == "disk full"
 
     def test_processing_error_filepath_defaults_none(self):
@@ -349,13 +352,16 @@ class TestConfigureErrorLog:
     def test_handler_logs_at_error_level(self, tmp_path):
         """The file handler should be configured at ERROR level."""
         handler = _configure_error_log(data_dir=tmp_path, force=True)
+        assert handler is not None
         assert handler.level == logging.ERROR
 
     def test_handler_has_correct_formatter(self, tmp_path):
         """The file handler should use the expected format."""
         handler = _configure_error_log(data_dir=tmp_path, force=True)
+        assert handler is not None
         formatter = handler.formatter
         assert formatter is not None
+        assert formatter._fmt is not None
         # The format should include asctime, levelname, and message
         assert "%(asctime)s" in formatter._fmt
         assert "%(levelname)s" in formatter._fmt

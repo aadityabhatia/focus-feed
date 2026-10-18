@@ -1103,10 +1103,12 @@ class TestIntermediateStateSaving:
             pdf_extractor=mock.MagicMock(),
             html_extractor=mock.MagicMock(),
         )
-        producer.transcriber.transcribe.return_value = "Test transcript."
+        producer.transcriber.transcribe.return_value = "Test transcript."  # type: ignore[attr-defined]
 
         metadata = producer.process_file(scanned)
 
+        assert metadata is not None
+        assert metadata.transcribe is not None
         assert metadata.transcribe.model == "whisper-1"
 
         json_path = tmp_path / "lecture.mp4.json"
@@ -1146,10 +1148,12 @@ class TestIntermediateStateSaving:
             pdf_extractor=mock.MagicMock(),
             html_extractor=mock.MagicMock(),
         )
-        producer.transcriber.transcribe.return_value = "Test transcript."
+        producer.transcriber.transcribe.return_value = "Test transcript."  # type: ignore[attr-defined]
 
         metadata = producer.process_file(scanned)
 
+        assert metadata is not None
+        assert metadata.transcribe is not None
         assert metadata.transcribe.model == "remote"
 
         json_path = tmp_path / "lecture.mp4.json"
@@ -1387,12 +1391,13 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "doc.pdf.json"
         data = json.loads(json_path.read_text())
-        # PDF should NOT have transcribe or summarize step maps
+        # PDF should NOT have transcribe step map
         assert "transcribe" not in data
-        assert "summarize" not in data
         assert "error" not in data
         # extract should be complete
         assert data["extract"]["status"] == "complete"
+        # summarize should be complete (PDF files are now always summarized)
+        assert data["summarize"]["status"] == "complete"
 
     def test_final_state_has_step_maps_with_timing(self, producer, tmp_path):
         """Final JSON state should have step maps with start_time and end_time."""

@@ -1,6 +1,7 @@
 """Tests for the Metadata model."""
 
 import json
+from typing import Any
 
 from local_feed_generator.metadata import Metadata, StepMap
 from pydantic import ValidationError
@@ -112,7 +113,9 @@ class TestValidMetadata:
             size=12345678,
             content="# Lecture 1\n\nWelcome to the course.",
         )
+        assert metadata.transcribe is not None
         assert metadata.transcribe.status == "complete"
+        assert metadata.summarize is not None
         assert metadata.summarize.status == "complete"
         assert metadata.filetype == "mp4"
         assert metadata.content is not None
@@ -131,6 +134,17 @@ class TestValidMetadata:
                 output_size=12345,
                 words=543,
             ),
+            summarize=StepMap(
+                status="complete",
+                start_time=1792096505,
+                end_time=1792096510,
+                input_size=12345,
+                output_size=500,
+                words=75,
+                model="mistralai/Mistral-7B-Instruct",
+                input_tokens=200,
+                output_tokens=50,
+            ),
             title="Document 1",
             description="A PDF document",
             filename="doc.pdf",
@@ -140,7 +154,10 @@ class TestValidMetadata:
             size=500000,
             content="Extracted plaintext from PDF.",
         )
+        assert metadata.extract is not None
         assert metadata.extract.status == "complete"
+        assert metadata.summarize is not None
+        assert metadata.summarize.status == "complete"
         assert metadata.filetype == "pdf"
         assert metadata.content is not None
         assert metadata.error is None
@@ -157,6 +174,17 @@ class TestValidMetadata:
                 output_size=12345,
                 words=543,
             ),
+            summarize=StepMap(
+                status="complete",
+                start_time=1792096505,
+                end_time=1792096510,
+                input_size=12345,
+                output_size=500,
+                words=75,
+                model="mistralai/Mistral-7B-Instruct",
+                input_tokens=200,
+                output_tokens=50,
+            ),
             title="Web Article",
             description="An HTML article",
             filename="article.html",
@@ -166,7 +194,10 @@ class TestValidMetadata:
             size=150000,
             content="Plaintext from HTML body.",
         )
+        assert metadata.extract is not None
         assert metadata.extract.status == "complete"
+        assert metadata.summarize is not None
+        assert metadata.summarize.status == "complete"
         assert metadata.filetype == "html"
         assert metadata.feed_eligible is True
 
@@ -194,7 +225,9 @@ class TestValidMetadata:
                 date=1728931200,
                 size=12345678,
             )
+            assert metadata.transcribe is not None
             assert metadata.transcribe.status == "in_progress"
+            assert metadata.summarize is not None
             assert metadata.summarize.status is None
         else:
             metadata = Metadata(
@@ -212,6 +245,7 @@ class TestValidMetadata:
                 date=1728931200,
                 size=500000,
             )
+            assert metadata.extract is not None
             assert metadata.extract.status == "in_progress"
         assert metadata.error is None
         assert metadata.feed_eligible is False
@@ -272,6 +306,7 @@ class TestValidMetadata:
             date=1728931200,
             size=100,
         )
+        assert metadata.transcribe is not None
         assert metadata.transcribe.status == "in_progress"
         assert metadata.summarize is None
         assert metadata.extract is None
@@ -290,9 +325,12 @@ class TestFeedEligible:
             ("mp4", {"transcribe": "complete", "summarize": "in_progress"}, False),
             ("mp4", {"transcribe": None, "summarize": None}, False),
             ("mp4", {"transcribe": "complete", "summarize": None}, False),  # missing summarize
-            ("pdf", {"extract": "complete"}, True),
-            ("html", {"extract": "complete"}, True),
-            ("pdf", {"extract": "in_progress"}, False),
+            ("pdf", {"extract": "complete", "summarize": "complete"}, True),
+            ("html", {"extract": "complete", "summarize": "complete"}, True),
+            ("pdf", {"extract": "in_progress", "summarize": "complete"}, False),
+            ("pdf", {"extract": "complete", "summarize": "in_progress"}, False),
+            ("pdf", {"extract": "complete", "summarize": None}, False),  # missing summarize
+            ("pdf", {"extract": None, "summarize": "complete"}, False),  # missing extract
         ],
     )
     def test_feed_eligible_computation(self, filetype, step_map, expected):
@@ -319,6 +357,10 @@ class TestFeedEligible:
             if step_map["extract"] is not None:
                 kwargs["extract"] = StepMap(
                     status=step_map["extract"], input_size=100, output_size=0
+                )
+            if step_map.get("summarize") is not None:
+                kwargs["summarize"] = StepMap(
+                    status=step_map["summarize"], input_size=100, output_size=0
                 )
         metadata = Metadata(**kwargs)
         assert metadata.feed_eligible is expected
@@ -400,7 +442,7 @@ class TestSerialization:
     )
     def test_to_json_serialization(self, status, include_error):
         """to_json should correctly serialize metadata with various states."""
-        kwargs = {
+        kwargs: dict[str, Any] = {
             "title": "Test",
             "description": "Test desc",
             "filename": "test.mp4",
@@ -548,8 +590,8 @@ class TestDeserialization:
     @pytest.mark.parametrize(
         "filetype,expected_content",
         [
-            ("pdf", "Extracted plaintext from PDF."),
-            ("html", "Plaintext from HTML body."),
+            ("pdf", "This is the extracted plaintext."),
+            ("html", "Plaintext from HTML."),
         ],
     )
     def test_from_json_with_content(self, filetype, expected_content):
@@ -560,6 +602,11 @@ class TestDeserialization:
                     "status": "complete",
                     "input_size": 5000,
                     "output_size": 1234,
+                },
+                "summarize": {
+                    "status": "complete",
+                    "input_size": 1234,
+                    "output_size": 500,
                 },
                 "title": "Test Doc",
                 "description": "A document",
@@ -600,7 +647,9 @@ class TestDeserialization:
             }
         )
         metadata = Metadata.from_json(json_str)
+        assert metadata.transcribe is not None
         assert metadata.transcribe.status == "complete"
+        assert metadata.summarize is not None
         assert metadata.summarize.status == "complete"
         assert metadata.title == "Lecture 1"
         assert metadata.filetype == "mp4"
@@ -646,6 +695,7 @@ class TestDeserialization:
             }
         )
         metadata = Metadata.from_json(json_str)
+        assert metadata.transcribe is not None
         assert metadata.transcribe.status == "in_progress"
         assert metadata.feed_eligible is False
 
@@ -657,6 +707,11 @@ class TestDeserialization:
                 "input_size": 5000,
                 "output_size": 1234,
             },
+            "summarize": {
+                "status": "complete",
+                "input_size": 1234,
+                "output_size": 500,
+            },
             "title": "Test",
             "description": "Test",
             "filename": "test.pdf",
@@ -666,7 +721,10 @@ class TestDeserialization:
             "size": 5000,
         }
         metadata = Metadata.from_dict(data)
+        assert metadata.extract is not None
         assert metadata.extract.status == "complete"
+        assert metadata.summarize is not None
+        assert metadata.summarize.status == "complete"
         assert metadata.filetype == "pdf"
         assert metadata.feed_eligible is True
 
@@ -700,7 +758,7 @@ class TestExtraFields:
             filetype="mp4",
             date=1728931200,
             size=100,
-            extra_field="should be ignored",
+            extra_field="should be ignored",  # type: ignore[call-arg]
         )
         # Extra fields are ignored, not stored
         assert not hasattr(metadata, "extra_field")
@@ -799,6 +857,11 @@ class TestJsonFileIO:
                     input_size=5000,
                     output_size=1234,
                 ),
+                summarize=StepMap(
+                    status="complete",
+                    input_size=1234,
+                    output_size=500,
+                ),
                 title="PDF Round Trip",
                 description="Test round trip",
                 filename="doc.pdf",
@@ -842,61 +905,6 @@ class TestJsonFileIO:
         metadata = Metadata.from_json_file(json_path)
         assert metadata.error == "Transcription failed"
         assert metadata.feed_eligible is False
-
-    @pytest.mark.parametrize("filetype", ["mp4", "pdf"])
-    def test_roundtrip_complete_metadata(self, tmp_path, filetype):
-        """Writing and reading back should produce equivalent metadata."""
-        if filetype == "mp4":
-            original = Metadata(
-                transcribe=StepMap(
-                    status="complete",
-                    input_size=12345678,
-                    output_size=456789,
-                ),
-                summarize=StepMap(
-                    status="complete",
-                    input_size=456789,
-                    output_size=1997,
-                ),
-                title="Round Trip",
-                description="Test round trip",
-                filename="roundtrip.mp4",
-                filepath="videos/roundtrip.mp4",
-                filetype="mp4",
-                date=1728931200,
-                size=999999,
-                content="Original transcript",
-            )
-            json_path = tmp_path / "roundtrip.mp4.json"
-        else:
-            original = Metadata(
-                extract=StepMap(
-                    status="complete",
-                    input_size=5000,
-                    output_size=1234,
-                ),
-                title="PDF Round Trip",
-                description="Test round trip",
-                filename="doc.pdf",
-                filepath="docs/doc.pdf",
-                filetype="pdf",
-                date=1728931200,
-                size=5000,
-                content="This is the extracted plaintext content.",
-            )
-            json_path = tmp_path / "doc.pdf.json"
-        original.to_json_file(json_path)
-
-        loaded = Metadata.from_json_file(json_path)
-        assert loaded.title == original.title
-        assert loaded.description == original.description
-        assert loaded.filename == original.filename
-        assert loaded.filepath == original.filepath
-        assert loaded.filetype == original.filetype
-        assert loaded.size == original.size
-        assert loaded.content == original.content
-        assert loaded.error == original.error
-        assert loaded.feed_eligible == original.feed_eligible
 
 
 class TestSchemaCompliance:
@@ -1203,6 +1211,7 @@ class TestTitleDict:
         """Create a Metadata instance with the given title."""
         return Metadata(
             extract=StepMap(status="complete", input_size=100, output_size=50),
+            summarize=StepMap(status="complete", input_size=50, output_size=20),
             title=title,
             description="Test",
             filename="test.pdf",
@@ -1479,7 +1488,11 @@ class TestModulePrefix:
         assert metadata.final_title == "my course: My Lecture"
 
     def test_module_prefix_case_insensitive_title_match(self):
-        """Module prefix should not be applied when title starts with module name (case-insensitive)."""
+        """Module prefix not applied when title starts with module name (case-insensitive).
+
+        Title "Videos My Lecture" starts with "Videos" (case-insensitive),
+        so no prefix is applied to avoid duplication.
+        """
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": None, "generated": "Videos My Lecture"},
             filepath="Videos/lecture.mp4",
@@ -1490,7 +1503,11 @@ class TestModulePrefix:
         assert metadata.final_title == "Videos My Lecture"
 
     def test_module_prefix_not_applied_when_title_starts_with_module_underscored(self):
-        """Module prefix should not be applied when title starts with module name (underscores in title)."""
+        """Module prefix not applied when title starts with module name (underscores in title).
+
+        Title "Videos_my_topic" → normalized "videos my topic" starts with
+        "videos", so no prefix is applied to avoid duplication.
+        """
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": None, "generated": "Videos_my_topic"},
             filepath="videos/lecture.mp4",

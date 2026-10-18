@@ -12,8 +12,8 @@ test_summarizer.py since both Summarizer and RemoteTranscriber share
 identical retry implementations.
 """
 
+from collections.abc import Iterator
 import json
-import os
 from pathlib import Path
 from unittest import mock
 
@@ -35,9 +35,9 @@ import pytest
 
 
 @pytest.fixture
-def mock_config():
+def mock_config() -> Settings:
     """Provide a Settings instance with test values for remote transcription."""
-    return Settings(
+    return Settings(  # type: ignore[call-arg]
         base_url="https://example.com/feeds",
         data_dir="./data",
         llm_endpoint="https://llm.example.com/v1",
@@ -55,7 +55,7 @@ def mock_config():
 
 
 @pytest.fixture
-def remote_transcriber(mock_config):
+def remote_transcriber(mock_config: Settings) -> Iterator[RemoteTranscriber]:
     """Create a RemoteTranscriber instance with a mocked OpenAI client."""
     with mock.patch.object(OpenAI, "__init__", return_value=None):
         t = RemoteTranscriber(config=mock_config)
@@ -71,13 +71,13 @@ def remote_transcriber(mock_config):
 class TestRemoteTranscriberInit:
     """Tests for RemoteTranscriber initialization."""
 
-    def test_initializes_with_config(self, mock_config):
+    def test_initializes_with_config(self, mock_config: Settings) -> None:
         """RemoteTranscriber should accept a config parameter."""
         with mock.patch.object(OpenAI, "__init__", return_value=None):
             t = RemoteTranscriber(config=mock_config)
             assert t._config is mock_config
 
-    def test_client_uses_endpoint_from_config(self, mock_config):
+    def test_client_uses_endpoint_from_config(self, mock_config: Settings) -> None:
         """OpenAI client should be initialized with the configured endpoint."""
         with mock.patch.object(OpenAI, "__init__", return_value=None) as mock_init:
             RemoteTranscriber(config=mock_config)
@@ -93,7 +93,9 @@ class TestRemoteTranscriberInit:
             ("transcription_api_key", "TRANSCRIPTION_API_KEY is not configured"),
         ],
     )
-    def test_missing_config_raises_error(self, mock_config, unset_attr, error_msg):
+    def test_missing_config_raises_error(
+        self, mock_config: Settings, unset_attr: str, error_msg: str
+    ) -> None:
         """Should raise TranscriptionError when required config is missing."""
         setattr(mock_config, unset_attr, None)
         with (
@@ -102,7 +104,7 @@ class TestRemoteTranscriberInit:
         ):
             RemoteTranscriber(config=mock_config)
 
-    def test_client_init_failure_raises_transcription_error(self, mock_config):
+    def test_client_init_failure_raises_transcription_error(self, mock_config: Settings) -> None:
         """Should raise TranscriptionError if OpenAI client init fails."""
         with (
             mock.patch.object(OpenAI, "__init__", side_effect=RuntimeError("connection refused")),
@@ -158,9 +160,11 @@ class TestTranscribeOutput:
             ),
         ],
     )
-    def test_transcribe_output_handling(self, remote_transcriber, api_response, expected_result):
+    def test_transcribe_output_handling(
+        self, remote_transcriber: RemoteTranscriber, api_response: str, expected_result: str
+    ) -> None:
         """transcribe() should handle various API response formats and strip whitespace."""
-        remote_transcriber._client.audio.transcriptions.create.return_value = api_response
+        remote_transcriber._client.audio.transcriptions.create.return_value = api_response  # type: ignore[attr-defined]
 
         with mock.patch.object(Path, "exists", return_value=True):
             result = remote_transcriber.transcribe("fake.mp4")
@@ -175,8 +179,12 @@ class TestTranscribeOutput:
         ],
     )
     def test_transcribe_model_selection(
-        self, mock_config, remote_model, transcription_model, expected_model
-    ):
+        self,
+        mock_config: Settings,
+        remote_model: str | None,
+        transcription_model: str,
+        expected_model: str,
+    ) -> None:
         """transcribe() should select the correct model based on config."""
         mock_config.transcription_model = transcription_model
         mock_config.transcription_remote_model = remote_model
@@ -191,14 +199,14 @@ class TestTranscribeOutput:
         call_kwargs = t._client.audio.transcriptions.create.call_args
         assert call_kwargs.kwargs["model"] == expected_model
 
-    def test_transcribe_api_call_params(self, remote_transcriber):
+    def test_transcribe_api_call_params(self, remote_transcriber: RemoteTranscriber) -> None:
         """transcribe() should pass correct parameters to the API."""
-        remote_transcriber._client.audio.transcriptions.create.return_value = "text"
+        remote_transcriber._client.audio.transcriptions.create.return_value = "text"  # type: ignore[attr-defined]
 
         with mock.patch.object(Path, "exists", return_value=True):
             remote_transcriber.transcribe("my_audio.mp4")
 
-        call_kwargs = remote_transcriber._client.audio.transcriptions.create.call_args
+        call_kwargs = remote_transcriber._client.audio.transcriptions.create.call_args  # type: ignore[attr-defined]
         assert call_kwargs.kwargs["response_format"] == "text"
         assert call_kwargs.kwargs["file"] == Path("my_audio.mp4")
 
@@ -220,9 +228,9 @@ class TestTranscribeProgressOutput:
 class TestTranscribeErrorHandling:
     """Tests for error handling in transcribe()."""
 
-    def test_api_connection_error_wrapped(self, remote_transcriber):
+    def test_api_connection_error_wrapped(self, remote_transcriber: RemoteTranscriber) -> None:
         """APIConnectionError should be wrapped in TranscriptionError."""
-        remote_transcriber._client.audio.transcriptions.create.side_effect = APIConnectionError(
+        remote_transcriber._client.audio.transcriptions.create.side_effect = APIConnectionError(  # type: ignore[attr-defined]
             message="Connection failed", request=mock.MagicMock()
         )
 
@@ -236,9 +244,9 @@ class TestTranscribeErrorHandling:
             assert "failed after" in str(exc_info.value)
             assert exc_info.value.filepath == "fake.mp4"
 
-    def test_authentication_error_wrapped(self, remote_transcriber):
+    def test_authentication_error_wrapped(self, remote_transcriber: RemoteTranscriber) -> None:
         """AuthenticationError should be wrapped in TranscriptionError."""
-        remote_transcriber._client.audio.transcriptions.create.side_effect = AuthenticationError(
+        remote_transcriber._client.audio.transcriptions.create.side_effect = AuthenticationError(  # type: ignore[attr-defined]
             message="Invalid API key",
             response=mock.MagicMock(status_code=401),
             body=None,
@@ -251,9 +259,9 @@ class TestTranscribeErrorHandling:
             assert "non-retryable" in str(exc_info.value)
             assert exc_info.value.filepath == "fake.mp4"
 
-    def test_rate_limit_error_wrapped(self, remote_transcriber):
+    def test_rate_limit_error_wrapped(self, remote_transcriber: RemoteTranscriber) -> None:
         """RateLimitError should be wrapped in TranscriptionError after retries."""
-        remote_transcriber._client.audio.transcriptions.create.side_effect = RateLimitError(
+        remote_transcriber._client.audio.transcriptions.create.side_effect = RateLimitError(  # type: ignore[attr-defined]
             message="Rate limited",
             response=mock.MagicMock(status_code=429),
             body=None,
@@ -266,9 +274,9 @@ class TestTranscribeErrorHandling:
         ):
             remote_transcriber.transcribe("fake.mp4")
 
-    def test_bad_request_error_wrapped(self, remote_transcriber):
+    def test_bad_request_error_wrapped(self, remote_transcriber: RemoteTranscriber) -> None:
         """BadRequestError should be wrapped in TranscriptionError."""
-        remote_transcriber._client.audio.transcriptions.create.side_effect = BadRequestError(
+        remote_transcriber._client.audio.transcriptions.create.side_effect = BadRequestError(  # type: ignore[attr-defined]
             message="Bad request",
             response=mock.MagicMock(status_code=400),
             body=None,
