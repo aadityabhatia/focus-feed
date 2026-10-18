@@ -539,10 +539,8 @@ class FeedGenerator:
     def _absolute_url(self, filepath: str) -> str:
         """Construct an absolute URL from BASE_URL and a relative filepath.
 
-        The DATA_DIR basename is automatically prepended to the filepath to
-        account for the web server serving DATA_DIR at a subpath of BASE_URL.
-        When DATA_DIR is the root directory (basename is empty), the basename
-        component is omitted to avoid a double slash.
+        BASE_URL is expected to already point to where DATA_DIR is served, so
+        the DATA_DIR basename is NOT prepended to the filepath.
 
         Args:
             filepath: Relative path from the data directory root
@@ -550,10 +548,8 @@ class FeedGenerator:
 
         Returns:
             Absolute URL string (e.g.,
-            ``"https://example.com/data/videos/lecture.mp4"``).
+            ``"https://example.com/videos/lecture.mp4"``).
         """
-        if self.data_dir_basename:
-            return f"{self.base_url}/{self.data_dir_basename}/{filepath}"
         return f"{self.base_url}/{filepath}"
 
     def _compute_guid(self, metadata: Metadata) -> str:
@@ -1110,6 +1106,16 @@ class FeedGenerator:
                 _logger.error("Failed to generate articles feed: %s", exc)
         else:
             _logger.info("No feed.json at %s; skipping root-level feed generation", self.data_dir)
+            # Clean up any stale root-level feed files from a previous run
+            # when no feed.json exists at the data directory root.
+            for stale_feed in ("podcast.xml", "articles.xml"):
+                stale_path = self.data_dir / stale_feed
+                if stale_path.exists():
+                    try:
+                        stale_path.unlink()
+                        _logger.info("Removed stale root-level feed: %s", stale_path)
+                    except OSError as exc:
+                        _logger.warning("Failed to remove stale feed %s: %s", stale_path, exc)
 
         # --- Phase 2: Per-folder feeds ---
         # Walk for feed.json files in subdirectories (skip root data_dir

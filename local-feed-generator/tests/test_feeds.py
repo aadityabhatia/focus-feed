@@ -397,34 +397,34 @@ class TestUrlCalculation:
             (
                 "https://example.com/feeds",
                 "videos/lecture.mp4",
-                "https://example.com/feeds/data/videos/lecture.mp4",
+                "https://example.com/feeds/videos/lecture.mp4",
             ),
-            ("https://example.com", "doc.pdf", "https://example.com/data/doc.pdf"),
+            ("https://example.com", "doc.pdf", "https://example.com/doc.pdf"),
             (
                 "https://example.com/feeds",
                 "Course1/Sub/lesson.mp4",
-                "https://example.com/feeds/data/Course1/Sub/lesson.mp4",
+                "https://example.com/feeds/Course1/Sub/lesson.mp4",
             ),
         ],
     )
     def test_absolute_url(self, tmp_path, base_url, filepath, expected):
-        """Absolute URL should be BASE_URL + DATA_DIR_basename + filepath."""
+        """Absolute URL should be BASE_URL + filepath (no data_dir basename)."""
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         fg = FeedGenerator(data_dir=data_dir, base_url=base_url)
         url = fg._absolute_url(filepath)
         assert url == expected
 
-    def test_absolute_url_includes_data_dir_basename(self, tmp_path):
-        """URL should include the DATA_DIR basename in the path."""
+    def test_absolute_url_no_data_dir_basename(self, tmp_path):
+        """URL should NOT include the DATA_DIR basename in the path."""
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com")
         url = fg._absolute_url("videos/lecture.mp4")
-        assert url == "https://example.com/data/videos/lecture.mp4"
+        assert url == "https://example.com/videos/lecture.mp4"
 
-    def test_absolute_url_empty_basename_for_root(self, tmp_path):
-        """When DATA_DIR is root, basename should be empty and not added."""
+    def test_absolute_url_for_root(self, tmp_path):
+        """When DATA_DIR is root, URL should still be BASE_URL + filepath."""
         fg = FeedGenerator(data_dir=Path("/"), base_url="https://example.com")
         url = fg._absolute_url("doc.pdf")
         assert url == "https://example.com/doc.pdf"
@@ -563,15 +563,15 @@ class TestPodcastFeedGeneration:
 
         content = parse_rss_file(data_dir / "podcast.xml")
         assert "<enclosure" in content
-        assert 'url="https://example.com/feeds/data/videos/lecture.mp4"' in content
+        assert 'url="https://example.com/feeds/videos/lecture.mp4"' in content
         assert 'length="12345678"' in content
         assert 'type="audio/mp4"' in content
 
     @pytest.mark.parametrize(
         "field,substring",
         [
-            ("link", "https://example.com/feeds/data/videos/lecture.mp4"),
-            ("guid", "https://example.com/feeds/data/videos/lecture.mp4"),
+            ("link", "https://example.com/feeds/videos/lecture.mp4"),
+            ("guid", "https://example.com/feeds/videos/lecture.mp4"),
             ("pubdate", "<pubDate>"),
         ],
     )
@@ -802,8 +802,8 @@ class TestArticlesFeedGeneration:
     @pytest.mark.parametrize(
         "field,substring",
         [
-            ("link", "https://example.com/feeds/data/documents/doc.pdf"),
-            ("guid", "https://example.com/feeds/data/documents/doc.pdf"),
+            ("link", "https://example.com/feeds/documents/doc.pdf"),
+            ("guid", "https://example.com/feeds/documents/doc.pdf"),
             ("pubdate", "<pubDate>"),
         ],
     )
@@ -1116,7 +1116,7 @@ class TestEdgeCases:
 
         content = parse_rss_file(data_dir / xml_name)
         assert 'rel="self"' in content
-        assert f"https://example.com/feeds/data/{xml_name}" in content
+        assert f"https://example.com/feeds/{xml_name}" in content
 
 
 # ---------------------------------------------------------------------------
@@ -1701,6 +1701,53 @@ class TestGenerateAllFeedsWithPerFolder:
         assert not (tmp_path / "podcast.xml").exists()
         assert not (tmp_path / "articles.xml").exists()
 
+    def test_stale_root_feeds_removed_without_feed_json(self, tmp_path):
+        """Stale root-level feeds should be removed when no feed.json exists at root.
+
+        If a previous run generated root-level podcast.xml and articles.xml,
+        a subsequent run without a root feed.json should clean them up so
+        they don't appear in the index.html.
+        """
+        write_metadata_file(tmp_path, "videos/lecture.mp4")
+        write_metadata_file(tmp_path, "documents/doc.pdf")
+        # Create stale root-level feed files (simulating a previous run)
+        (tmp_path / "podcast.xml").write_text("<rss></rss>", encoding="utf-8")
+        (tmp_path / "articles.xml").write_text("<rss></rss>", encoding="utf-8")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        results = fg.generate_all_feeds()
+
+        # Root feeds should not be generated (no feed.json)
+        assert results["podcast"] == []
+        assert results["articles"] == []
+        # Stale root-level feeds should be removed
+        assert not (tmp_path / "podcast.xml").exists()
+        assert not (tmp_path / "articles.xml").exists()
+
+    def test_stale_root_feeds_not_removed_when_feed_json_exists(self, tmp_path):
+        """Stale root-level feeds should NOT be removed when feed.json exists at root.
+
+        When a feed.json exists, root-level feeds are regenerated (overwritten),
+        so stale files are naturally replaced — no explicit cleanup needed.
+        """
+        write_metadata_file(tmp_path, "videos/lecture.mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Root", "description": "Root Desc"}),
+            encoding="utf-8",
+        )
+        # Create stale root-level feed file (simulating a previous run)
+        (tmp_path / "podcast.xml").write_text("<rss></rss>", encoding="utf-8")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        results = fg.generate_all_feeds()
+
+        # Root feeds should be regenerated (overwriting stale file)
+        assert len(results["podcast"]) == 1
+        assert (tmp_path / "podcast.xml").exists()
+        # The stale file should have been overwritten with valid content
+        content = (tmp_path / "podcast.xml").read_text(encoding="utf-8")
+        assert "<item>" in content
+
     @pytest.mark.parametrize(
         "filetype,expected_podcast,expected_articles,folder",
         [
@@ -2134,19 +2181,19 @@ class TestNestedFeedScenarios:
 
         # Root feed self link
         root_content = parse_rss_file(tmp_path / "podcast.xml")
-        assert f'href="https://example.com/feeds/{tmp_path.name}/podcast.xml"' in root_content
+        assert 'href="https://example.com/feeds/podcast.xml"' in root_content
 
         # Course1 feed self link
         course1_content = parse_rss_file(tmp_path / "Course1" / "podcast.xml")
         assert (
-            f'href="https://example.com/feeds/{tmp_path.name}/Course1/podcast.xml"'
+            'href="https://example.com/feeds/Course1/podcast.xml"'
             in course1_content
         )
 
         # Unit1 feed self link
         unit1_content = parse_rss_file(tmp_path / "Course1" / "Unit1" / "podcast.xml")
         assert (
-            f'href="https://example.com/feeds/{tmp_path.name}/Course1/Unit1/podcast.xml"'
+            'href="https://example.com/feeds/Course1/Unit1/podcast.xml"'
             in unit1_content
         )
 
@@ -2379,13 +2426,13 @@ class TestGenerateIndexHtml:
 
         content = (data_dir / "index.html").read_text(encoding="utf-8")
         if should_list_podcast:
-            assert f'href="https://example.com/feeds/data/podcast.xml"' in content
+            assert 'href="https://example.com/feeds/podcast.xml"' in content
         else:
-            assert f'href="https://example.com/feeds/data/podcast.xml"' not in content
+            assert 'href="https://example.com/feeds/podcast.xml"' not in content
         if should_list_articles:
-            assert f'href="https://example.com/feeds/data/articles.xml"' in content
+            assert 'href="https://example.com/feeds/articles.xml"' in content
         else:
-            assert f'href="https://example.com/feeds/data/articles.xml"' not in content
+            assert 'href="https://example.com/feeds/articles.xml"' not in content
         # Both sections should exist even if one feed is empty
         assert "<h2>Podcast Feeds</h2>" in content
         assert "<h2>Articles Feeds</h2>" in content
@@ -2415,8 +2462,8 @@ class TestGenerateIndexHtml:
     @pytest.mark.parametrize(
         "base_url,expected_href",
         [
-            ("https://example.com/feeds", 'href="https://example.com/feeds/data/podcast.xml"'),
-            ("https://example.com/feeds/", 'href="https://example.com/feeds/data/podcast.xml"'),
+            ("https://example.com/feeds", 'href="https://example.com/feeds/podcast.xml"'),
+            ("https://example.com/feeds/", 'href="https://example.com/feeds/podcast.xml"'),
         ],
     )
     def test_index_html_url_uses_base_url_without_double_slash(
@@ -2437,7 +2484,7 @@ class TestGenerateIndexHtml:
         content = (data_dir / "index.html").read_text(encoding="utf-8")
         assert expected_href in content
         # articles.xml should NOT exist since no PDF/HTML files
-        assert 'href="https://example.com/feeds/data/articles.xml"' not in content
+        assert 'href="https://example.com/feeds/articles.xml"' not in content
         assert "//podcast.xml" not in content
 
     def test_index_html_lists_feeds_from_root_and_subfolders(self, tmp_path):
@@ -2565,7 +2612,7 @@ class TestFeedLinkHandling:
         assert "<link>https://example.com/feeds</link>" in content
 
     def test_item_links_always_use_base_url_plus_filepath(self, tmp_path):
-        """Item links should always be BASE_URL + DATA_DIR_basename + filepath, regardless of feed.json link."""
+        """Item links should always be BASE_URL + filepath, regardless of feed.json link."""
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         write_metadata_file(data_dir, "videos/lecture.mp4", filetype="mp4")
@@ -2584,8 +2631,8 @@ class TestFeedLinkHandling:
         fg.generate_all_feeds()
 
         content = parse_rss_file(data_dir / "podcast.xml")
-        # Item link should be BASE_URL + data_dir_basename + filepath, NOT the feed.json link
-        assert "<link>https://example.com/feeds/data/videos/lecture.mp4</link>" in content
+        # Item link should be BASE_URL + filepath, NOT the feed.json link
+        assert "<link>https://example.com/feeds/videos/lecture.mp4</link>" in content
 
     def test_link_parameter_overrides_base_url_directly(self, tmp_path):
         """generate_podcast_feed link parameter should override base_url for channel link."""
@@ -2684,7 +2731,7 @@ class TestHashBasedGuid:
             fg.generate_articles_feed()
 
         content = parse_rss_file(data_dir / xml_name)
-        expected_guid = f"https://example.com/feeds/data/{filepath}"
+        expected_guid = f"https://example.com/feeds/{filepath}"
         assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
 
     def test_guid_uses_hash_for_mp4(self, tmp_path):
@@ -2707,7 +2754,7 @@ class TestHashBasedGuid:
         assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
         # Should NOT contain the filepath-based guid
         guid_section = content.split("<guid")[1].split("</guid>")[0]
-        assert "https://example.com/feeds/data/videos/lecture.mp4" not in guid_section
+        assert "https://example.com/feeds/videos/lecture.mp4" not in guid_section
 
     def test_guid_uses_hash_for_pdf(self, tmp_path):
         """Articles feed GUID should use hash[-12:] when hash is present."""
@@ -2786,7 +2833,7 @@ class TestHashBasedGuid:
         assert f'<guid isPermaLink="false">{hash_with[-12:]}</guid>' in content
         # Second item should use filepath URL
         assert (
-            '<guid isPermaLink="false">https://example.com/feeds/data/videos/without_hash.mp4</guid>'
+            '<guid isPermaLink="false">https://example.com/feeds/videos/without_hash.mp4</guid>'
             in content
         )
 
@@ -2820,7 +2867,7 @@ class TestComputeGuid:
         fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
         guid = fg._compute_guid(metadata)
 
-        assert guid == "https://example.com/feeds/data/videos/lecture.mp4"
+        assert guid == "https://example.com/feeds/videos/lecture.mp4"
 
     def test_compute_guid_with_empty_hash(self, tmp_path):
         """_compute_guid should return absolute URL when hash is empty string."""
@@ -2835,7 +2882,7 @@ class TestComputeGuid:
         fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
         guid = fg._compute_guid(metadata)
 
-        assert guid == "https://example.com/feeds/data/videos/lecture.mp4"
+        assert guid == "https://example.com/feeds/videos/lecture.mp4"
 
 
 # ---------------------------------------------------------------------------

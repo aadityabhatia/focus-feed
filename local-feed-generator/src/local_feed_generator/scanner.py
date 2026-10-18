@@ -317,19 +317,21 @@ class Scanner:
         - **MP4**: ``transcribe`` step map exists and
           ``transcribe.status == "complete"`` and ``summarize`` step map
           exists and ``summarize.status == "complete"``.
-        - **PDF/HTML**: ``extract`` step map exists and
-          ``extract.status == "complete"``.
+         - **PDF/HTML**: ``extract`` step map exists and
+           ``extract.status == "complete"``.  If ``content`` exists, the
+           ``summarize`` step map must also exist with
+           ``summarize.status == "complete"``.
 
-        Legacy fields (``transcribe_status``, ``summarize_status``,
-        ``extract_status``) are also supported for backward compatibility.
+         Legacy fields (``transcribe_status``, ``summarize_status``,
+         ``extract_status``) are also supported for backward compatibility.
 
-        Args:
-            metadata: The parsed JSON metadata dictionary.
-            filetype: The source file type (``"mp4"``, ``"pdf"``, ``"html"``).
+         Args:
+             metadata: The parsed JSON metadata dictionary.
+             filetype: The source file type (``"mp4"``, ``"pdf"``, ``"html"``).
 
-        Returns:
-            ``True`` if the file is feed-eligible, ``False`` otherwise.
-        """
+         Returns:
+             ``True`` if the file is feed-eligible, ``False`` otherwise.
+         """
         if metadata.get(_ERROR_FIELD):
             return False
         if filetype == _MP4_FILETYPE:
@@ -357,7 +359,22 @@ class Scanner:
             # Legacy schema support
             if not extract_complete:
                 extract_complete = metadata.get("extract_status") == _COMPLETED_STEP_STATUS
-            return extract_complete
+            if not extract_complete:
+                return False
+            # If content exists, summarize step must also be complete.
+            content = metadata.get("content")
+            if content:
+                summarize = metadata.get("summarize")
+                summarize_complete = isinstance(summarize, dict) and (
+                    summarize.get("status") == _COMPLETED_STEP_STATUS
+                )
+                if not summarize_complete:
+                    summarize_complete = (
+                        metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
+                    )
+                if not summarize_complete:
+                    return False
+            return True
         return False
 
     def _evaluate_json_status(self, source_path: Path) -> tuple[bool, str | None, bool]:
