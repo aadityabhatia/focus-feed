@@ -4,14 +4,14 @@
 
 ## Project Summary
 
-Turn disorganized PDF, HTML, and MP4 audio files into RSS feeds for mobile apps. 
+Turn disorganized PDF, HTML, and MP4 audio files into RSS feeds for mobile apps.
 
-- **Podcast feed** - For MP4 audio (Antennapod and other podcast apps)
-- **Articles feed** - For PDF/HTML documents (any RSS reader)
-- **Per-folder feeds** - Organize with `feed.json` in subfolders
-- **Discovery** - Auto-generated `index.html` lists all available feeds
+- Podcast feed - For MP4 audio (Antennapod and other podcast apps)
+- Articles feed - For PDF/HTML documents (any RSS reader)
+- Per-folder feeds - Organize with `feed.json` in subfolders
+- Discovery - Auto-generated `index.html` lists all available feeds
 
-All processing happens locally on your infrastructure with optional remote transcription.
+All processing uses your configured endpoints. Optional local transcription available.
 
 **Documentation:**
 - [Proposal](./artifacts/proposal.md) - Problem and scope
@@ -39,29 +39,25 @@ All processing happens locally on your infrastructure with optional remote trans
 
 ### Required Environment Variables
 
-| Variable | Description |
-|----------|-------------|
-| `BASE_URL` | Root URL where data directory is served (e.g., `https://example.com`) |
-| `DATA_DIR` | Path to your content directory (e.g., `./data`) |
-| `LLM_ENDPOINT` | OpenAI-compatible API endpoint for summarization |
-| `LLM_API_KEY` | API key for LLM endpoint |
-| `LLM_MODEL` | Model identifier for summarization |
-| `PROMPT_ARTICLE` | Article summarization prompt (PDF/HTML) |
-| `PROMPT_PODCAST` | Podcast summarization prompt (MP4) |
-| `PROMPT_TITLE` | Title generation prompt |
+- `BASE_URL` - Root URL where data directory is served (e.g., `https://example.com`)
+- `DATA_DIR` - Path to your content directory (e.g., `./data`)
+- `LLM_ENDPOINT` - OpenAI-compatible API endpoint for summarization (can be remote or local)
+- `LLM_API_KEY` - API key for LLM endpoint
+- `LLM_MODEL` - Model identifier for summarization
+- `PROMPT_ARTICLE` - Article summarization prompt (PDF/HTML)
+- `PROMPT_PODCAST` - Podcast summarization prompt (MP4)
+- `PROMPT_TITLE` - Title generation prompt
 
 ### Optional Environment Variables
 
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PROMPT_ARTICLE_REFLECTION` | `PROMPT_ARTICLE` | Article summarization with reflection questions |
-| `PROMPT_PODCAST_REFLECTION` | `PROMPT_PODCAST` | Podcast summarization with reflection questions |
-| `TRANSCRIPTION_ENDPOINT` | - | Remote transcription API endpoint (enables remote mode) |
-| `TRANSCRIPTION_API_KEY` | - | Remote transcription API key |
-| `TRANSCRIPTION_REMOTE_MODEL` | - | Remote transcription model override |
-| `TRANSCRIPTION_MODEL` | `large-v3-turbo` | Local transcription model |
-| `TRANSCRIPTION_DEVICE` | `cuda` | Transcription device (cuda/cpu) |
-| `TRANSCRIPTION_COMPUTE_TYPE` | `float16` | Compute type for transcription |
+- `PROMPT_ARTICLE_REFLECTION` - Article summarization with reflection questions (default: `PROMPT_ARTICLE`)
+- `PROMPT_PODCAST_REFLECTION` - Podcast summarization with reflection questions (default: `PROMPT_PODCAST`)
+- `TRANSCRIPTION_ENDPOINT` - Remote transcription API endpoint (enables remote mode)
+- `TRANSCRIPTION_API_KEY` - Remote transcription API key
+- `TRANSCRIPTION_REMOTE_MODEL` - Remote transcription model override
+- `TRANSCRIPTION_MODEL` - Local transcription model (default: `large-v3-turbo`)
+- `TRANSCRIPTION_DEVICE` - Transcription device (cuda/cpu) (default: `cuda`)
+- `TRANSCRIPTION_COMPUTE_TYPE` - Compute type for transcription (default: `float16`)
 
 ### Example `.env` File
 
@@ -118,24 +114,20 @@ uv run local-feed-generator watch
 
 Target specific steps or files:
 
-| Command | Description |
-|---------|-------------|
-| `transcribe` | Transcribe MP4 files to markdown |
-| `summarize` | Generate summaries from transcripts or document content |
-| `extract` | Extract metadata from PDF/HTML files |
-| `feeds` | Generate RSS feeds and index.html |
-| `validate` | Validate all metadata files |
-| `create-feed` | Create a template `feed.json` in a directory |
+- `transcribe` - Transcribe MP4 files to markdown
+- `summarize` - Generate summaries from transcripts or document content
+- `extract` - Extract metadata from PDF/HTML files
+- `feeds` - Generate RSS feeds and index.html
+- `validate` - Validate all metadata files
+- `create-feed` - Create a template `feed.json` in a directory
 
 ### Common Flags
 
-| Flag | Description |
-|------|-------------|
-| `--data-dir <path>` | Path to data directory (default: `DATA_DIR`) |
-| `--file <path>` | Process only this specific file |
-| `--force` | Force re-processing even if complete |
-| `--dry-run` | Preview without making changes (transcribe, summarize, extract) |
-| `--config-file <path>` | Use custom `.env` file |
+- `--data-dir <path>` - Path to data directory (default: `DATA_DIR`)
+- `--file <path>` - Process only this specific file
+- `--force` - Force re-processing even if complete
+- `--dry-run` - Preview without making changes (transcribe, summarize, extract)
+- `--config-file <path>` - Use custom `.env` file
 
 ### Examples
 
@@ -216,29 +208,27 @@ Place a `reflection.md` file in any folder to focus summarization on specific qu
 
 ## Supported File Types
 
-| File Type | Processing | Feed | Fields |
-|-----------|------------|------|--------|
-| MP4 (audio) | Transcribed + summarized | Podcast | `description=""`, `summary`=key takeaways, `content`=transcript |
-| PDF | Metadata + content extracted | Articles | `description`=metadata, `content`=text, `summary`=null (unless summarized) |
-| HTML | Metadata + content extracted | Articles | `description`=metadata, `content`=text, `summary`=null (unless summarized) |
+- **MP4 (audio)** - Transcribed + summarized, Podcast feed, `description=""`, `summary`=key takeaways, `content`=transcript
+- **PDF** - Metadata + content extracted, Articles feed, `description`=metadata, `content`=text, `summary`=null (unless summarized)
+- **HTML** - Metadata + content extracted, Articles feed, `description`=metadata, `content`=text, `summary`=null (unless summarized)
 
 ---
 
 ## Requirements
 
-### Hardware
-- **Nvidia GPU with CUDA** - Required for efficient local transcription
-- **CUDA Toolkit** - Must be installed
-
 ### Software
-- **Python 3.14+**
-- **uv** - For dependency management
-- **Local LLM Endpoint** - Running OpenAI-compatible API (vLLM, Ollama, etc.)
-- **Optional**: `ffprobe` - For audio metadata extraction (falls back to file metadata)
+- Python 3.14+
+- uv - For dependency management
+- LLM Endpoint - OpenAI-compatible API for summarization (can be remote or local)
+- Optional: `ffprobe` - For audio metadata extraction (falls back to file metadata)
+
+### Optional: Local Transcription
+- Nvidia GPU with CUDA - Required for efficient local transcription
+- CUDA Toolkit - Must be installed
+- Models: faster-whisper models (downloaded automatically, ~2-6 GB)
 
 ### Models
-- **Transcription**: faster-whisper models (downloaded automatically, ~2-6 GB)
-- **Summarization**: Any OpenAI-compatible model with 128K+ context window recommended
+- Summarization: Any OpenAI-compatible model with 128K+ context window recommended
 
 ---
 

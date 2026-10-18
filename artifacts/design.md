@@ -101,6 +101,6 @@ Missing feeds → document feed.json requirement
 - data directory exists and writable
 - Existing web server serves data directory
 - Python 3.14+ and uv for dependency management
-- Local LLM endpoint available
+- LLM endpoint available (can be remote or local)
 - Nvidia GPU optional for local transcription; required for best performance in local mode, not needed for remote transcription
 - No ffprobe required; av library provides audio metadata
