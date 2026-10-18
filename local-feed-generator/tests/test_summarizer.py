@@ -88,7 +88,6 @@ class TestSummarizerInit:
         """Summarizer should use get_config() when no config is provided."""
         env = {
             "BASE_URL": "https://example.com",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",

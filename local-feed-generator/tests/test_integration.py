@@ -84,7 +84,6 @@ class TestConfigMetadataIntegration:
     def _get_valid_env(self):
         return {
             "BASE_URL": "https://example.com/feeds",
-            "DATA_DIR": "/tmp/test-data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
@@ -106,7 +105,6 @@ class TestConfigMetadataIntegration:
 
             config = get_config()
             assert config.base_url == "https://example.com/feeds"
-            assert config.data_dir == "/tmp/test-data"
 
             # Create metadata using config values for filepath
             relative_path = "videos/test.mp4"

@@ -14,7 +14,6 @@ class TestRequiredFields:
     def _get_valid_env(self):
         return {
             "BASE_URL": "https://example.com/feeds",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
@@ -29,7 +28,6 @@ class TestRequiredFields:
         """Config validation should fail when all required fields are missing."""
         env = {
             "BASE_URL": "",
-            "DATA_DIR": "",
             "LLM_ENDPOINT": "",
             "LLM_API_KEY": "",
             "LLM_MODEL": "",
@@ -45,23 +43,6 @@ class TestRequiredFields:
     def test_missing_base_url_raises_error(self):
         """Missing BASE_URL should raise a validation error."""
         env = {
-            "DATA_DIR": "./data",
-            "LLM_ENDPOINT": "https://llm.example.com/v1",
-            "LLM_API_KEY": "test-key",
-            "LLM_MODEL": "test-model",
-            "PROMPT_ARTICLE": "Test article prompt",
-            "PROMPT_ARTICLE_REFLECTION": "Test article reflection prompt",
-            "PROMPT_PODCAST": "Test podcast prompt",
-            "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
-            "PROMPT_TITLE": "Test title prompt",
-        }
-        with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
-            Settings()
-
-    def test_missing_data_dir_raises_error(self):
-        """Missing DATA_DIR should raise a validation error."""
-        env = {
-            "BASE_URL": "https://example.com/feeds",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
@@ -78,7 +59,6 @@ class TestRequiredFields:
         """Missing LLM_ENDPOINT should raise a validation error."""
         env = {
             "BASE_URL": "https://example.com/feeds",
-            "DATA_DIR": "./data",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
             "PROMPT_ARTICLE": "Test article prompt",
@@ -94,7 +74,6 @@ class TestRequiredFields:
         """Missing LLM_API_KEY should raise a validation error."""
         env = {
             "BASE_URL": "https://example.com/feeds",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_MODEL": "test-model",
             "PROMPT_ARTICLE": "Test article prompt",
@@ -110,7 +89,6 @@ class TestRequiredFields:
         """Missing LLM_MODEL should raise a validation error."""
         env = {
             "BASE_URL": "https://example.com/feeds",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "PROMPT_ARTICLE": "Test article prompt",
@@ -126,7 +104,6 @@ class TestRequiredFields:
         """Missing PROMPT_ARTICLE should raise a validation error."""
         env = {
             "BASE_URL": "https://example.com/feeds",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
@@ -145,7 +122,6 @@ class TestOptionalFields:
     def _get_valid_env(self):
         return {
             "BASE_URL": "https://example.com/feeds",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
@@ -243,7 +219,6 @@ class TestEnvFileLoading:
         """Config should be loadable from a .env file."""
         env_content = (
             "BASE_URL=https://feed.example.com\n"
-            "DATA_DIR=./mydata\n"
             "LLM_ENDPOINT=https://llm.example.com/v1\n"
             "LLM_API_KEY=secret-key\n"
             "LLM_MODEL=my-model\n"
@@ -262,7 +237,6 @@ class TestEnvFileLoading:
             os.chdir(tmp_path)
             settings = Settings()
             assert settings.base_url == "https://feed.example.com"
-            assert settings.data_dir == "./mydata"
             assert settings.llm_endpoint == "https://llm.example.com/v1"
             assert settings.llm_api_key == "secret-key"
             assert settings.llm_model == "my-model"
@@ -275,7 +249,6 @@ class TestEnvFileLoading:
         """Environment variables should take precedence over .env file."""
         env_content = (
             "BASE_URL=https://from-env-file.com\n"
-            "DATA_DIR=./from-env-file\n"
             "LLM_ENDPOINT=https://llm.example.com/v1\n"
             "LLM_API_KEY=secret-key\n"
             "LLM_MODEL=model-from-file\n"
@@ -297,7 +270,6 @@ class TestEnvFileLoading:
             with mock.patch.dict(os.environ, env_override, clear=False):
                 settings = Settings()
                 assert settings.base_url == "https://from-env-var.com"
-                assert settings.data_dir == "./from-env-file"
                 assert settings.llm_model == "model-from-file"
                 assert settings.prompt_article == "Prompt from file"
                 assert settings.prompt_title == "Prompt from file"
@@ -312,7 +284,6 @@ class TestEnvironmentVariables:
         """Config should be loadable from environment variables directly."""
         env = {
             "BASE_URL": "https://env.example.com",
-            "DATA_DIR": "/tmp/envdata",
             "LLM_ENDPOINT": "https://env-llm.example.com/v1",
             "LLM_API_KEY": "env-secret-key",
             "LLM_MODEL": "env-model",
@@ -328,7 +299,6 @@ class TestEnvironmentVariables:
         with mock.patch.dict(os.environ, env, clear=False):
             settings = Settings()
             assert settings.base_url == "https://env.example.com"
-            assert settings.data_dir == "/tmp/envdata"
             assert settings.llm_endpoint == "https://env-llm.example.com/v1"
             assert settings.llm_api_key == "env-secret-key"
             assert settings.llm_model == "env-model"
@@ -346,7 +316,6 @@ class TestSingletonPattern:
         """get_config() should return the same instance on repeated calls."""
         env = {
             "BASE_URL": "https://singleton.example.com",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
@@ -370,7 +339,6 @@ class TestSingletonPattern:
         """reload_config() should create a new Settings instance."""
         env = {
             "BASE_URL": "https://reload.example.com",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
@@ -398,7 +366,6 @@ class TestSingletonPattern:
         """Singleton should reflect environment changes after reload."""
         env1 = {
             "BASE_URL": "https://first.example.com",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
@@ -410,7 +377,6 @@ class TestSingletonPattern:
         }
         env2 = {
             "BASE_URL": "https://second.example.com",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
@@ -444,7 +410,6 @@ class TestBackwardsCompatibility:
         """If PROMPT_ARTICLE is unset but SUMMARY_PROMPT is set, use the old value."""
         env = {
             "BASE_URL": "https://example.com",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
@@ -462,7 +427,6 @@ class TestBackwardsCompatibility:
         """If PROMPT_*_REFLECTION is unset but SUMMARY_REFLECTION_PROMPT is set, use old value."""
         env = {
             "BASE_URL": "https://example.com",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",
@@ -479,7 +443,6 @@ class TestBackwardsCompatibility:
         """New env vars should take priority over old ones."""
         env = {
             "BASE_URL": "https://example.com",
-            "DATA_DIR": "./data",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
             "LLM_API_KEY": "test-key",
             "LLM_MODEL": "test-model",

@@ -30,7 +30,6 @@ import pytest
 def _set_valid_env(monkeypatch):
     """Set valid environment variables for config."""
     monkeypatch.setenv("BASE_URL", "https://example.com/feeds")
-    monkeypatch.setenv("DATA_DIR", "./data")
     monkeypatch.setenv("LLM_ENDPOINT", "https://llm.example.com/v1")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "test-model")
@@ -184,11 +183,10 @@ class TestProducerInit:
         assert p.pdf_extractor is not None
         assert p.html_extractor is not None
 
-    def test_init_with_data_dir(self, valid_env):
-        """Producer should create a Scanner with the provided data_dir."""
-        p = Producer(data_dir="/some/data/dir")
-        assert p.scanner is not None
-        assert p.scanner.data_dir == Path("/some/data/dir").resolve()
+    def test_init_scanner_defaults_to_none(self, valid_env):
+        """Producer scanner should be None when no scanner is provided."""
+        p = Producer()
+        assert p.scanner is None
 
     def test_init_with_scanner(self, valid_env):
         """Producer should accept a pre-configured Scanner."""
@@ -794,6 +792,12 @@ class TestProcessFileHTML:
 
 class TestProcessAll:
     """Tests for process_all() batch processing."""
+
+    def test_process_all_raises_without_scanner(self, producer):
+        """process_all should raise RuntimeError when scanner is None."""
+        producer.scanner = None
+        with pytest.raises(RuntimeError, match="Cannot call process_all"):
+            producer.process_all()
 
     def test_process_all_returns_results(self, producer, tmp_path):
         """process_all should return a list of results."""

@@ -20,26 +20,10 @@ class TestScannerConstruction:
         scanner = Scanner(data_dir=dir_arg)
         assert scanner.data_dir == tmp_path.resolve()
 
-    def test_init_uses_config_data_dir_when_none(self, tmp_path):
-        """Scanner should fall back to config DATA_DIR when data_dir is None."""
-        env = {
-            "BASE_URL": "https://example.com/feeds",
-            "DATA_DIR": str(tmp_path),
-            "LLM_ENDPOINT": "https://llm.example.com/v1",
-            "LLM_API_KEY": "test-key",
-            "LLM_MODEL": "test-model",
-            "PROMPT_ARTICLE": "Test article prompt",
-            "PROMPT_ARTICLE_REFLECTION": "Test article reflection prompt",
-            "PROMPT_PODCAST": "Test podcast prompt",
-            "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
-            "PROMPT_TITLE": "Test title prompt",
-        }
-        with mock.patch.dict(os.environ, env, clear=False):
-            from local_feed_generator.config import reload_config
-
-            reload_config()
-            scanner = Scanner()
-            assert scanner.data_dir == tmp_path.resolve()
+    def test_init_requires_data_dir(self):
+        """Scanner should require data_dir to be provided (no config fallback)."""
+        with pytest.raises(TypeError):
+            Scanner()  # type: ignore[call-arg]
 
 
 class TestScanDirectory:
@@ -794,3 +778,232 @@ class TestStageTracking:
         else:
             assert len(result) == 1
             assert result[0].filename == f"lecture.{filetype}"
+
+
+class TestScanPaths:
+    """Tests for the scan_paths() method."""
+
+    def test_empty_paths_returns_empty_list(self, tmp_path):
+        """An empty paths list should return an empty list."""
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([])
+        assert result == []
+
+    def test_single_file_needing_processing(self, tmp_path):
+        """A single source file without JSON should be returned."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([source])
+
+        assert len(result) == 1
+        assert result[0].filename == "lecture.mp4"
+        assert result[0].filetype == "mp4"
+        assert result[0].filepath == "lecture.mp4"
+        assert result[0].absolute_path == str(source.resolve())
+        assert result[0].json_exists is False
+        assert result[0].current_stage is None
+
+    def test_single_file_with_complete_json_skipped(self, tmp_path):
+        """A source file with complete JSON should be skipped."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        json_file = tmp_path / "lecture.mp4.json"
+        json_file.write_text(
+            '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'
+        )
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([source])
+
+        assert result == []
+
+    def test_single_directory(self, tmp_path):
+        """A single directory should be scanned recursively."""
+        (tmp_path / "subdir").mkdir()
+        (tmp_path / "lecture.mp4").write_bytes(b"video")
+        (tmp_path / "subdir" / "doc.pdf").write_bytes(b"pdf")
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([tmp_path])
+
+        assert len(result) == 2
+        filepaths = {f.filepath for f in result}
+        assert "lecture.mp4" in filepaths
+        assert "subdir/doc.pdf" in filepaths
+
+    def test_mixed_files_and_directories(self, tmp_path):
+        """Mix of file and directory paths should be scanned together."""
+        (tmp_path / "subdir").mkdir()
+        (tmp_path / "lecture.mp4").write_bytes(b"video")
+        (tmp_path / "subdir" / "doc.pdf").write_bytes(b"pdf")
+        (tmp_path / "article.html").write_text("<html></html>")
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([tmp_path / "lecture.mp4", tmp_path / "subdir"])
+
+        assert len(result) == 2
+        filenames = {f.filename for f in result}
+        assert filenames == {"lecture.mp4", "doc.pdf"}
+
+    def test_filepaths_relative_to_common_parent(self, tmp_path):
+        """Filepaths should be relative to the common parent of all input paths."""
+        (tmp_path / "subdir").mkdir()
+        (tmp_path / "lecture.mp4").write_bytes(b"video")
+        (tmp_path / "subdir" / "doc.pdf").write_bytes(b"pdf")
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([tmp_path / "lecture.mp4", tmp_path / "subdir" / "doc.pdf"])
+
+        assert len(result) == 2
+        filepaths = {f.filepath for f in result}
+        assert "lecture.mp4" in filepaths
+        assert "subdir/doc.pdf" in filepaths
+
+    def test_common_parent_is_subdirectory(self, tmp_path):
+        """When all paths are under a subdirectory, filepaths should be relative to that subdir."""
+        (tmp_path / "Course1").mkdir()
+        (tmp_path / "Course1" / "lecture.mp4").write_bytes(b"video")
+        (tmp_path / "Course1" / "doc.pdf").write_bytes(b"pdf")
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([tmp_path / "Course1"])
+
+        assert len(result) == 2
+        filepaths = {f.filepath for f in result}
+        assert "lecture.mp4" in filepaths
+        assert "doc.pdf" in filepaths
+
+    def test_nonexistent_path_skipped(self, tmp_path, caplog):
+        """Nonexistent paths should be skipped with a warning."""
+        scanner = Scanner(data_dir=tmp_path)
+        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+            result = scanner.scan_paths([tmp_path / "nonexistent.mp4"])
+
+        assert result == []
+        assert any(
+            "does not exist" in record.message
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        )
+
+    def test_unsupported_file_skipped(self, tmp_path):
+        """Unsupported file types should be skipped."""
+        (tmp_path / "data.txt").write_text("some text")
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([tmp_path / "data.txt"])
+
+        assert result == []
+
+    def test_ignored_filenames_skipped(self, tmp_path):
+        """Ignored filenames (feed.json, index.html, etc.) should be skipped."""
+        (tmp_path / "feed.json").write_text('{"title": "Feed"}')
+        (tmp_path / "index.html").write_text("<html></html>")
+        (tmp_path / "lecture.mp4").write_bytes(b"video")
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([tmp_path])
+
+        assert len(result) == 1
+        assert result[0].filename == "lecture.mp4"
+
+    def test_results_sorted_by_filepath(self, tmp_path):
+        """Results should be sorted by relative filepath."""
+        (tmp_path / "zebra.mp4").write_bytes(b"video")
+        (tmp_path / "alpha.pdf").write_bytes(b"pdf")
+        (tmp_path / "mid").mkdir()
+        (tmp_path / "mid" / "file.html").write_text("<html></html>")
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([tmp_path])
+
+        filepaths = [f.filepath for f in result]
+        assert filepaths == sorted(filepaths)
+
+    def test_json_status_evaluated_for_scanned_files(self, tmp_path):
+        """scan_paths should evaluate JSON status like scan_directory."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        json_file = tmp_path / "lecture.mp4.json"
+        json_file.write_text(
+            '{"transcribe": {"status": "in_progress"}, "summarize": {"status": null}}'
+        )
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([source])
+
+        assert len(result) == 1
+        assert result[0].filename == "lecture.mp4"
+        assert result[0].json_exists is True
+
+    def test_orphaned_json_detected_in_directory_scan(self, tmp_path, caplog):
+        """Orphaned JSON files should be detected during directory scanning."""
+        (tmp_path / "orphan.pdf.json").write_text('{"extract": {"status": "complete"}}')
+
+        scanner = Scanner(data_dir=tmp_path)
+        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+            result = scanner.scan_paths([tmp_path])
+
+        assert result == []
+        assert any(
+            "Orphaned JSON" in record.message
+            for record in caplog.records
+            if record.levelno == logging.WARNING
+        )
+
+    def test_current_stage_preserved(self, tmp_path):
+        """current_stage should be preserved from JSON metadata."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        json_file = tmp_path / "lecture.mp4.json"
+        json_file.write_text(
+            '{"transcribe": {"status": "in_progress"}, '
+            '"summarize": {"status": null}, "stage": "transcribing"}'
+        )
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([source])
+
+        assert len(result) == 1
+        assert result[0].current_stage == "transcribing"
+
+    def test_multiple_files_in_directory(self, tmp_path):
+        """Multiple source files in a directory should all be returned."""
+        (tmp_path / "a.mp4").write_bytes(b"video")
+        (tmp_path / "b.pdf").write_bytes(b"pdf")
+        (tmp_path / "c.html").write_text("<html></html>")
+
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([tmp_path])
+
+        assert len(result) == 3
+        filenames = {f.filename for f in result}
+        assert filenames == {"a.mp4", "b.pdf", "c.html"}
+
+    def test_scan_paths_with_relative_paths(self, tmp_path, monkeypatch):
+        """scan_paths should work with relative paths."""
+        (tmp_path / "lecture.mp4").write_bytes(b"video data")
+
+        monkeypatch.chdir(tmp_path)
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([Path("lecture.mp4")])
+
+        assert len(result) == 1
+        assert result[0].filename == "lecture.mp4"
+        assert result[0].filepath == "lecture.mp4"
+
+    def test_scan_paths_mixed_relative_and_absolute(self, tmp_path, monkeypatch):
+        """scan_paths should handle a mix of relative and absolute paths."""
+        (tmp_path / "subdir").mkdir()
+        (tmp_path / "lecture.mp4").write_bytes(b"video")
+        (tmp_path / "subdir" / "doc.pdf").write_bytes(b"pdf")
+
+        monkeypatch.chdir(tmp_path)
+        scanner = Scanner(data_dir=tmp_path)
+        result = scanner.scan_paths([Path("lecture.mp4"), tmp_path / "subdir"])
+
+        assert len(result) == 2
+        filenames = {f.filename for f in result}
+        assert filenames == {"lecture.mp4", "doc.pdf"}

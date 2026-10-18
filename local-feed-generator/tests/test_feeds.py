@@ -182,16 +182,26 @@ class TestFeedGeneratorConstruction:
         assert fg.base_url == expected_url
 
     def test_init_stores_data_dir_basename(self, tmp_path):
-        """FeedGenerator should store the DATA_DIR basename for URL construction."""
+        """FeedGenerator should store the data_dir basename for URL construction."""
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com")
         assert fg.data_dir_basename == "data"
 
     def test_init_data_dir_basename_for_root(self, tmp_path):
-        """FeedGenerator should store empty basename when DATA_DIR is root."""
+        """FeedGenerator should store empty basename when data_dir is root."""
         fg = FeedGenerator(data_dir=Path("/"), base_url="https://example.com")
         assert fg.data_dir_basename == ""
+
+    def test_init_data_dir_is_required(self):
+        """FeedGenerator should raise TypeError when data_dir is not provided."""
+        with pytest.raises(TypeError):
+            FeedGenerator()  # type: ignore[call-arg]
+
+    def test_init_data_dir_none_raises_type_error(self):
+        """FeedGenerator should raise TypeError when data_dir is explicitly None."""
+        with pytest.raises(TypeError):
+            FeedGenerator(data_dir=None, base_url="https://example.com")  # type: ignore[arg-type]
 
 
 # ---------------------------------------------------------------------------
@@ -416,7 +426,7 @@ class TestUrlCalculation:
         assert url == expected
 
     def test_absolute_url_no_data_dir_basename(self, tmp_path):
-        """URL should NOT include the DATA_DIR basename in the path."""
+        """URL should NOT include the data_dir basename in the path."""
         data_dir = tmp_path / "data"
         data_dir.mkdir()
         fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com")
@@ -424,7 +434,7 @@ class TestUrlCalculation:
         assert url == "https://example.com/videos/lecture.mp4"
 
     def test_absolute_url_for_root(self, tmp_path):
-        """When DATA_DIR is root, URL should still be BASE_URL + filepath."""
+        """When data_dir is root, URL should still be BASE_URL + filepath."""
         fg = FeedGenerator(data_dir=Path("/"), base_url="https://example.com")
         url = fg._absolute_url("doc.pdf")
         assert url == "https://example.com/doc.pdf"
@@ -446,7 +456,7 @@ class TestPodcastFeedGeneration:
         ],
     )
     def test_feed_file_created(self, tmp_path, xml_name, method, filetype, filepath):
-        """Feed XML should be written to DATA_DIR."""
+        """Feed XML should be written to data_dir."""
         write_metadata_file(tmp_path, filepath, filetype=filetype)
 
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
@@ -717,7 +727,7 @@ class TestArticlesFeedGeneration:
     """Tests for generate_articles_feed()."""
 
     def test_articles_feed_file_created(self, tmp_path):
-        """articles.xml should be written to DATA_DIR."""
+        """articles.xml should be written to data_dir."""
         write_metadata_file(tmp_path, "documents/doc.pdf", filetype="pdf")
 
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
@@ -2185,17 +2195,11 @@ class TestNestedFeedScenarios:
 
         # Course1 feed self link
         course1_content = parse_rss_file(tmp_path / "Course1" / "podcast.xml")
-        assert (
-            'href="https://example.com/feeds/Course1/podcast.xml"'
-            in course1_content
-        )
+        assert 'href="https://example.com/feeds/Course1/podcast.xml"' in course1_content
 
         # Unit1 feed self link
         unit1_content = parse_rss_file(tmp_path / "Course1" / "Unit1" / "podcast.xml")
-        assert (
-            'href="https://example.com/feeds/Course1/Unit1/podcast.xml"'
-            in unit1_content
-        )
+        assert 'href="https://example.com/feeds/Course1/Unit1/podcast.xml"' in unit1_content
 
     def test_filter_metadata_includes_deeply_nested_files(self, tmp_path):
         """_filter_metadata_for_folder should include deeply nested files."""

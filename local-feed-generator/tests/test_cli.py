@@ -7,7 +7,7 @@ Tests cover:
 - Generate-feeds command: skip processing, read JSON, generate feeds, summary
 - Validate command: schema validation, orphaned JSON, special characters, exit codes
 - Entry point: main() function, pyproject.toml configuration
-- --file flag: process only a specific file
+- Positional args: process only specific files/directories
 - --force flag: force processing even if complete
 """
 
@@ -31,7 +31,6 @@ import pytest
 def _set_valid_env(monkeypatch):
     """Set valid environment variables for config."""
     monkeypatch.setenv("BASE_URL", "https://example.com/feeds")
-    monkeypatch.setenv("DATA_DIR", "./data")
     monkeypatch.setenv("LLM_ENDPOINT", "https://llm.example.com/v1")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "test-model")
@@ -69,21 +68,14 @@ def valid_env(monkeypatch):
 
 
 @pytest.fixture(autouse=True)
-def _restore_data_dir_env():
-    """Save and restore DATA_DIR env var around every test.
+def _restore_env():
+    """Reset the config singleton after every test.
 
-    The CLI's ``_load_config`` function sets ``os.environ["DATA_DIR"]``
-    directly during command execution.  This fixture ensures the original
-    value is restored after each test so that environment state does not
-    leak between test modules.
+    This fixture ensures the config singleton is reset after each test
+    so that environment state does not leak between test modules.
     """
-    original = os.environ.get("DATA_DIR")
     yield
-    if original is not None:
-        os.environ["DATA_DIR"] = original
-    else:
-        os.environ.pop("DATA_DIR", None)
-    # Also reset the config singleton
+    # Reset the config singleton
     import local_feed_generator.config as config_module
 
     config_module._config_instance = None
@@ -215,52 +207,47 @@ class TestCliFramework:
         """The process command should have help text."""
         result = runner.invoke(app, ["process", "--help"])
         assert result.exit_code == 0
-        assert "--data-dir" in result.output
         assert "--config-file" in result.output
-        assert "--file" in result.output
         assert "--force" in result.output
+        assert "PATHS" in result.output
 
     def test_watch_help(self, runner):
         """The watch command should have help text."""
         result = runner.invoke(app, ["watch", "--help"])
         assert result.exit_code == 0
-        assert "--data-dir" in result.output
         assert "--config-file" in result.output
-        assert "--file" in result.output
         assert "--force" in result.output
+        assert "PATHS" in result.output
 
     def test_feeds_help(self, runner):
         """The feeds command should have help text."""
         result = runner.invoke(app, ["feeds", "--help"])
         assert result.exit_code == 0
-        assert "--data-dir" in result.output
         assert "--config-file" in result.output
-        assert "--file" in result.output
         assert "--force" in result.output
+        assert "PATHS" in result.output
 
     def test_validate_help(self, runner):
         """The validate command should have help text."""
         result = runner.invoke(app, ["validate", "--help"])
         assert result.exit_code == 0
-        assert "--data-dir" in result.output
         assert "--config-file" in result.output
-        assert "--file" in result.output
         assert "--force" in result.output
+        assert "PATHS" in result.output
 
     def test_config_loading_with_valid_env(self, runner, valid_env, tmp_data_dir):
         """Config should load successfully with valid environment variables."""
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
 
-    def test_config_error_exits_with_code_1(self, runner, tmp_data_dir, monkeypatch):
+    def test_config_error_exits_with_code_1(self, runner, tmp_path, monkeypatch):
         """CLI should exit with code 1 when config is invalid."""
         # Clear all required env vars
         required_keys = [
             "BASE_URL",
-            "DATA_DIR",
             "LLM_ENDPOINT",
             "LLM_API_KEY",
             "LLM_MODEL",
@@ -278,15 +265,15 @@ class TestCliFramework:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_path / "data")],
         )
         assert result.exit_code != 0
 
     def test_data_dir_option_validates_directory(self, runner, valid_env, tmp_path):
-        """--data-dir should reject non-existent directories."""
+        """Positional args should reject non-existent paths."""
         result = runner.invoke(
             app,
-            ["process", "--data-dir", str(tmp_path / "nonexistent")],
+            ["process", str(tmp_path / "nonexistent")],
         )
         assert result.exit_code != 0
 
@@ -310,7 +297,7 @@ class TestProcessCommand:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
             result = runner.invoke(
                 app,
-                ["process", "--data-dir", str(tmp_data_dir)],
+                ["process", str(tmp_data_dir)],
             )
         assert result.exit_code == 0
         assert "No files to process." in result.output
@@ -328,7 +315,7 @@ class TestProcessCommand:
 
                 result = runner.invoke(
                     app,
-                    ["process", "--data-dir", str(tmp_data_dir)],
+                    ["process", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 0
@@ -349,7 +336,7 @@ class TestProcessCommand:
 
                 result = runner.invoke(
                     app,
-                    ["process", "--data-dir", str(tmp_data_dir)],
+                    ["process", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 0
@@ -369,7 +356,7 @@ class TestProcessCommand:
 
                 result = runner.invoke(
                     app,
-                    ["process", "--data-dir", str(tmp_data_dir)],
+                    ["process", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 0
@@ -388,7 +375,7 @@ class TestProcessCommand:
 
                 result = runner.invoke(
                     app,
-                    ["process", "--data-dir", str(tmp_data_dir)],
+                    ["process", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 1
@@ -413,7 +400,7 @@ class TestProcessCommand:
 
                 result = runner.invoke(
                     app,
-                    ["process", "--data-dir", str(tmp_data_dir)],
+                    ["process", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 1
@@ -435,7 +422,7 @@ class TestProcessCommand:
 
                 result = runner.invoke(
                     app,
-                    ["process", "--data-dir", str(tmp_data_dir)],
+                    ["process", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 0
@@ -449,7 +436,6 @@ class TestProcessCommand:
         config_file = tmp_path / "custom.env"
         config_file.write_text(
             "BASE_URL=https://custom.example.com\n"
-            "DATA_DIR=./data\n"
             "LLM_ENDPOINT=https://llm.example.com/v1\n"
             "LLM_API_KEY=test-key\n"
             "LLM_MODEL=test-model\n"
@@ -466,7 +452,6 @@ class TestProcessCommand:
                 app,
                 [
                     "process",
-                    "--data-dir",
                     str(tmp_data_dir),
                     "--config-file",
                     str(config_file),
@@ -489,7 +474,7 @@ class TestProcessCommand:
 
                 result = runner.invoke(
                     app,
-                    ["process", "--data-dir", str(tmp_data_dir)],
+                    ["process", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 0
@@ -524,7 +509,7 @@ class TestWatchCommand:
 
                         result = runner.invoke(
                             app,
-                            ["watch", "--data-dir", str(tmp_data_dir)],
+                            ["watch", str(tmp_data_dir)],
                         )
 
         assert result.exit_code == 0
@@ -553,7 +538,7 @@ class TestWatchCommand:
 
                         result = runner.invoke(
                             app,
-                            ["watch", "--data-dir", str(tmp_data_dir)],
+                            ["watch", str(tmp_data_dir)],
                         )
 
         assert result.exit_code == 0
@@ -576,7 +561,7 @@ class TestWatchCommand:
 
                         result = runner.invoke(
                             app,
-                            ["watch", "--data-dir", str(tmp_data_dir)],
+                            ["watch", str(tmp_data_dir)],
                         )
 
         assert result.exit_code == 0
@@ -586,7 +571,7 @@ class TestWatchCommand:
         """Watch should exit with code 1 for nonexistent directory."""
         result = runner.invoke(
             app,
-            ["watch", "--data-dir", str(tmp_path / "nonexistent")],
+            ["watch", str(tmp_path / "nonexistent")],
         )
         assert result.exit_code != 0
 
@@ -685,7 +670,7 @@ class TestWatchCommand:
 
                         result = runner.invoke(
                             app,
-                            ["watch", "--data-dir", str(tmp_data_dir)],
+                            ["watch", str(tmp_data_dir)],
                         )
 
         assert result.exit_code == 0
@@ -875,9 +860,9 @@ class TestWatchCommand:
 
         # Each file should have been processed once
         assert producer.process_file.call_count == 2
-        call_filepaths = [call.args[0].filepath for call in producer.process_file.call_args_list]
-        assert "file_a.mp4" in call_filepaths
-        assert "file_b.mp4" in call_filepaths
+        call_filenames = [call.args[0].filename for call in producer.process_file.call_args_list]
+        assert "file_a.mp4" in call_filenames
+        assert "file_b.mp4" in call_filenames
 
     def test_debounce_allows_reprocessing_after_interval(self, valid_env, tmp_data_dir):
         """A file should be processed again after the debounce interval expires."""
@@ -1168,7 +1153,7 @@ class TestWatchCommand:
 
                         result = runner.invoke(
                             app,
-                            ["watch", "--data-dir", str(tmp_data_dir)],
+                            ["watch", str(tmp_data_dir)],
                         )
 
         assert result.exit_code == 0
@@ -1190,7 +1175,7 @@ class TestWatchCommand:
 
                         result = runner.invoke(
                             app,
-                            ["watch", "--data-dir", str(tmp_data_dir)],
+                            ["watch", str(tmp_data_dir)],
                         )
 
         assert result.exit_code == 0
@@ -1216,7 +1201,7 @@ class TestWatchCommand:
 
                         result = runner.invoke(
                             app,
-                            ["watch", "--data-dir", str(tmp_data_dir)],
+                            ["watch", str(tmp_data_dir)],
                         )
 
         assert result.exit_code == 0
@@ -1240,7 +1225,7 @@ class TestWatchCommand:
 
                         result = runner.invoke(
                             app,
-                            ["watch", "--data-dir", str(tmp_data_dir)],
+                            ["watch", str(tmp_data_dir)],
                         )
 
         assert result.exit_code == 0
@@ -1265,7 +1250,7 @@ class TestFeedsCommand:
 
             result = runner.invoke(
                 app,
-                ["feeds", "--data-dir", str(tmp_data_dir)],
+                ["feeds", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -1289,7 +1274,7 @@ class TestFeedsCommand:
 
             result = runner.invoke(
                 app,
-                ["feeds", "--data-dir", str(tmp_data_dir)],
+                ["feeds", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -1304,7 +1289,7 @@ class TestFeedsCommand:
 
             result = runner.invoke(
                 app,
-                ["feeds", "--data-dir", str(tmp_data_dir)],
+                ["feeds", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -1315,7 +1300,6 @@ class TestFeedsCommand:
         config_file = tmp_path / "custom.env"
         config_file.write_text(
             "BASE_URL=https://custom.example.com\n"
-            "DATA_DIR=./data\n"
             "LLM_ENDPOINT=https://llm.example.com/v1\n"
             "LLM_API_KEY=test-key\n"
             "LLM_MODEL=test-model\n"
@@ -1335,7 +1319,6 @@ class TestFeedsCommand:
                 app,
                 [
                     "feeds",
-                    "--data-dir",
                     str(tmp_data_dir),
                     "--config-file",
                     str(config_file),
@@ -1367,7 +1350,7 @@ class TestFeedsCommand:
 
             result = runner.invoke(
                 app,
-                ["feeds", "--data-dir", str(tmp_data_dir)],
+                ["feeds", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -1392,7 +1375,7 @@ class TestValidateCommand:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 0
@@ -1413,7 +1396,7 @@ class TestValidateCommand:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 1
@@ -1430,7 +1413,7 @@ class TestValidateCommand:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 0  # warnings, not errors
@@ -1443,7 +1426,7 @@ class TestValidateCommand:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 0
@@ -1455,7 +1438,7 @@ class TestValidateCommand:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 0
@@ -1471,7 +1454,7 @@ class TestValidateCommand:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 0
@@ -1491,7 +1474,7 @@ class TestValidateCommand:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 1
@@ -1513,7 +1496,7 @@ class TestValidateCommand:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 0
@@ -1523,7 +1506,7 @@ class TestValidateCommand:
         """Validate should handle empty directory."""
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 0
@@ -1534,7 +1517,6 @@ class TestValidateCommand:
         config_file = tmp_path / "custom.env"
         config_file.write_text(
             "BASE_URL=https://custom.example.com\n"
-            "DATA_DIR=./data\n"
             "LLM_ENDPOINT=https://llm.example.com/v1\n"
             "LLM_API_KEY=test-key\n"
             "LLM_MODEL=test-model\n"
@@ -1549,7 +1531,6 @@ class TestValidateCommand:
             app,
             [
                 "validate",
-                "--data-dir",
                 str(tmp_data_dir),
                 "--config-file",
                 str(config_file),
@@ -1567,7 +1548,7 @@ class TestValidateCommand:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 0
@@ -1595,7 +1576,7 @@ class TestValidateCommand:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 1
@@ -1624,7 +1605,7 @@ class TestEntryPoint:
         """main() should work via CliRunner when called as the command."""
         with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
-            result = runner.invoke(app, ["validate", "--data-dir", str(tmp_data_dir)])
+            result = runner.invoke(app, ["validate", str(tmp_data_dir)])
         assert result.exit_code == 0
 
     def test_all_commands_accessible_from_app(self):
@@ -1679,7 +1660,7 @@ class TestCliIntegration:
 
                 result = runner.invoke(
                     app,
-                    ["process", "--data-dir", str(tmp_data_dir)],
+                    ["process", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 0
@@ -1695,7 +1676,7 @@ class TestCliIntegration:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 0
@@ -1715,7 +1696,7 @@ class TestCliIntegration:
 
             result = runner.invoke(
                 app,
-                ["feeds", "--data-dir", str(tmp_data_dir)],
+                ["feeds", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -1745,17 +1726,15 @@ class TestTranscribeCommand:
         """The transcribe command should have help text."""
         result = runner.invoke(app, ["transcribe", "--help"])
         assert result.exit_code == 0
-        assert "--data-dir" in result.output
         assert "--dry-run" in result.output
         assert "--config-file" in result.output
-        assert "--file" in result.output
         assert "--force" in result.output
 
     def test_transcribe_no_files(self, runner, valid_env, tmp_data_dir):
         """Transcribe should report no files when directory is empty."""
         result = runner.invoke(
             app,
-            ["transcribe", "--data-dir", str(tmp_data_dir)],
+            ["transcribe", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
         assert "No MP4 files need transcription." in result.output
@@ -1770,7 +1749,7 @@ class TestTranscribeCommand:
 
             result = runner.invoke(
                 app,
-                ["transcribe", "--data-dir", str(tmp_data_dir), "--dry-run"],
+                ["transcribe", str(tmp_data_dir), "--dry-run"],
             )
 
         assert result.exit_code == 0
@@ -1802,7 +1781,7 @@ class TestTranscribeCommand:
 
         result = runner.invoke(
             app,
-            ["transcribe", "--data-dir", str(tmp_data_dir)],
+            ["transcribe", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
         assert "No MP4 files need transcription." in result.output
@@ -1818,7 +1797,7 @@ class TestTranscribeCommand:
 
             result = runner.invoke(
                 app,
-                ["transcribe", "--data-dir", str(tmp_data_dir)],
+                ["transcribe", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -1836,7 +1815,7 @@ class TestTranscribeCommand:
 
             result = runner.invoke(
                 app,
-                ["transcribe", "--data-dir", str(tmp_data_dir)],
+                ["transcribe", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -1846,16 +1825,9 @@ class TestTranscribeCommand:
         assert data["content"] == "This is a transcript."
         assert data["transcribe"]["status"] == "complete"
 
-    def test_transcribe_uses_data_dir_from_config(
-        self, runner, valid_env, tmp_data_dir, monkeypatch
-    ):
-        """Transcribe should use DATA_DIR from config when --data-dir is not provided."""
-        monkeypatch.setenv("DATA_DIR", str(tmp_data_dir))
-        import local_feed_generator.config as config_module
-
-        config_module._config_instance = None
-
-        result = runner.invoke(app, ["transcribe"])
+    def test_transcribe_uses_positional_arg_for_directory(self, runner, valid_env, tmp_data_dir):
+        """Transcribe should use the directory passed as a positional argument."""
+        result = runner.invoke(app, ["transcribe", str(tmp_data_dir)])
         assert result.exit_code == 0
         assert "No MP4 files need transcription." in result.output
 
@@ -1870,7 +1842,7 @@ class TestTranscribeCommand:
 
             result = runner.invoke(
                 app,
-                ["transcribe", "--data-dir", str(tmp_data_dir)],
+                ["transcribe", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 1
@@ -1881,7 +1853,6 @@ class TestTranscribeCommand:
         config_file = tmp_path / "custom.env"
         config_file.write_text(
             "BASE_URL=https://custom.example.com\n"
-            "DATA_DIR=./data\n"
             "LLM_ENDPOINT=https://llm.example.com/v1\n"
             "LLM_API_KEY=test-key\n"
             "LLM_MODEL=test-model\n"
@@ -1896,7 +1867,6 @@ class TestTranscribeCommand:
             app,
             [
                 "transcribe",
-                "--data-dir",
                 str(tmp_data_dir),
                 "--config-file",
                 str(config_file),
@@ -1934,7 +1904,7 @@ class TestTranscribeCommand:
 
             result = runner.invoke(
                 app,
-                ["transcribe", "--data-dir", str(tmp_data_dir), "--force"],
+                ["transcribe", str(tmp_data_dir), "--force"],
             )
 
         assert result.exit_code == 0
@@ -1942,9 +1912,26 @@ class TestTranscribeCommand:
         mock_transcriber.transcribe.assert_called_once()
 
     def test_transcribe_file_flag_processes_specific_file(self, runner, valid_env, tmp_data_dir):
-        """Transcribe --file should process only the specified file."""
+        """Transcribe should process a specific file passed as positional arg."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
         (tmp_data_dir / "other.mp4").write_bytes(b"video data")
+        # other.mp4 already has a complete transcript, so only lecture.mp4 needs transcription
+        (tmp_data_dir / "other.mp4.json").write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "other.mp4",
+                    "filepath": "other.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Existing transcript",
+                }
+            )
+        )
 
         with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
             mock_transcriber = mock.MagicMock()
@@ -1953,11 +1940,11 @@ class TestTranscribeCommand:
 
             result = runner.invoke(
                 app,
-                ["transcribe", "--data-dir", str(tmp_data_dir), "--file", "lecture.mp4"],
+                ["transcribe", str(tmp_data_dir / "lecture.mp4")],
             )
 
         assert result.exit_code == 0
-        # Only one file should be transcribed
+        # Only lecture.mp4 should be transcribed
         mock_transcriber.transcribe.assert_called_once_with(str(tmp_data_dir / "lecture.mp4"))
 
     def test_transcribe_cuda_unavailable_shows_error(self, runner, valid_env, tmp_data_dir):
@@ -1970,7 +1957,7 @@ class TestTranscribeCommand:
         ):
             result = runner.invoke(
                 app,
-                ["transcribe", "--data-dir", str(tmp_data_dir)],
+                ["transcribe", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 1
@@ -2006,7 +1993,7 @@ class TestTranscribeCommand:
             ):
                 result = runner.invoke(
                     app,
-                    ["transcribe", "--data-dir", str(tmp_data_dir)],
+                    ["transcribe", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 0
@@ -2030,17 +2017,15 @@ class TestSummarizeCommand:
         """The summarize command should have help text."""
         result = runner.invoke(app, ["summarize", "--help"])
         assert result.exit_code == 0
-        assert "--data-dir" in result.output
         assert "--dry-run" in result.output
         assert "--config-file" in result.output
-        assert "--file" in result.output
         assert "--force" in result.output
 
     def test_summarize_no_files(self, runner, valid_env, tmp_data_dir):
         """Summarize should report no files when none need summarization."""
         result = runner.invoke(
             app,
-            ["summarize", "--data-dir", str(tmp_data_dir)],
+            ["summarize", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
         assert "No files need summarization." in result.output
@@ -2071,7 +2056,7 @@ class TestSummarizeCommand:
 
             result = runner.invoke(
                 app,
-                ["summarize", "--data-dir", str(tmp_data_dir), "--dry-run"],
+                ["summarize", str(tmp_data_dir), "--dry-run"],
             )
 
         assert result.exit_code == 0
@@ -2106,7 +2091,7 @@ class TestSummarizeCommand:
 
             result = runner.invoke(
                 app,
-                ["summarize", "--data-dir", str(tmp_data_dir)],
+                ["summarize", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -2135,7 +2120,7 @@ class TestSummarizeCommand:
 
         result = runner.invoke(
             app,
-            ["summarize", "--data-dir", str(tmp_data_dir)],
+            ["summarize", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
         assert "No files need summarization." in result.output
@@ -2167,7 +2152,7 @@ class TestSummarizeCommand:
 
             result = runner.invoke(
                 app,
-                ["summarize", "--data-dir", str(tmp_data_dir)],
+                ["summarize", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -2207,7 +2192,7 @@ class TestSummarizeCommand:
 
             result = runner.invoke(
                 app,
-                ["summarize", "--data-dir", str(tmp_data_dir), "--force"],
+                ["summarize", str(tmp_data_dir), "--force"],
             )
 
         assert result.exit_code == 0
@@ -2259,7 +2244,7 @@ class TestSummarizeCommand:
             ):
                 result = runner.invoke(
                     app,
-                    ["summarize", "--data-dir", str(tmp_data_dir)],
+                    ["summarize", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 0
@@ -2306,7 +2291,7 @@ class TestSummarizeCommand:
 
             result = runner.invoke(
                 app,
-                ["summarize", "--data-dir", str(tmp_data_dir)],
+                ["summarize", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -2344,7 +2329,7 @@ class TestSummarizeCommand:
 
             result = runner.invoke(
                 app,
-                ["summarize", "--data-dir", str(tmp_data_dir)],
+                ["summarize", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -2377,7 +2362,7 @@ class TestSummarizeCommand:
 
             result = runner.invoke(
                 app,
-                ["summarize", "--data-dir", str(tmp_data_dir)],
+                ["summarize", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -2411,7 +2396,7 @@ class TestSummarizeCommand:
 
             result = runner.invoke(
                 app,
-                ["summarize", "--data-dir", str(tmp_data_dir)],
+                ["summarize", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -2448,7 +2433,7 @@ class TestSummarizeCommand:
 
             result = runner.invoke(
                 app,
-                ["summarize", "--data-dir", str(tmp_data_dir)],
+                ["summarize", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -2477,7 +2462,7 @@ class TestSummarizeCommand:
 
         result = runner.invoke(
             app,
-            ["summarize", "--data-dir", str(tmp_data_dir)],
+            ["summarize", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
         assert "No files need summarization." in result.output
@@ -2508,7 +2493,7 @@ class TestSummarizeCommand:
 
             result = runner.invoke(
                 app,
-                ["summarize", "--data-dir", str(tmp_data_dir), "--dry-run"],
+                ["summarize", str(tmp_data_dir), "--dry-run"],
             )
 
         assert result.exit_code == 0
@@ -2517,7 +2502,7 @@ class TestSummarizeCommand:
         mock_summarizer.summarize.assert_not_called()
 
     def test_summarize_file_flag_processes_pdf(self, runner, valid_env, tmp_data_dir):
-        """Summarize --file should process a specific PDF file."""
+        """Summarize should process a specific file passed as positional arg."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
@@ -2543,7 +2528,7 @@ class TestSummarizeCommand:
 
             result = runner.invoke(
                 app,
-                ["summarize", "--data-dir", str(tmp_data_dir), "--file", "doc.pdf"],
+                ["summarize", str(tmp_data_dir / "doc.pdf")],
             )
 
         assert result.exit_code == 0
@@ -2784,23 +2769,263 @@ class TestFindFilesNeedingSummary:
         assert "doc.pdf" in names
         assert "page.html" not in names
 
+    def test_find_files_needing_summary_paths_filters_to_specific_file(
+        self, valid_env, tmp_data_dir
+    ):
+        """Should only return files matching the specified paths."""
+        # Create two files needing summary
+        (tmp_data_dir / "doc1.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc1.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "doc1.pdf",
+                    "filepath": "doc1.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Content 1",
+                }
+            )
+        )
+        (tmp_data_dir / "doc2.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc2.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "doc2.pdf",
+                    "filepath": "doc2.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Content 2",
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_summary
+
+        # Without paths filter: both files returned
+        result = _find_files_needing_summary(tmp_data_dir)
+        assert len(result) == 2
+
+        # With paths filter for only doc1.pdf: only doc1.pdf returned
+        result = _find_files_needing_summary(tmp_data_dir, paths=[tmp_data_dir / "doc1.pdf"])
+        assert len(result) == 1
+        assert result[0].name == "doc1.pdf"
+
+    def test_find_files_needing_summary_paths_filters_to_directory(self, valid_env, tmp_data_dir):
+        """Should return files within the specified directory."""
+        # Create a subdirectory with a file
+        subdir = tmp_data_dir / "subdir"
+        subdir.mkdir()
+        (subdir / "doc1.pdf").write_bytes(b"pdf")
+        (subdir / "doc1.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "doc1.pdf",
+                    "filepath": "doc1.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Content 1",
+                }
+            )
+        )
+        # Create a file in the parent directory
+        (tmp_data_dir / "doc2.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc2.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "Desc",
+                    "filename": "doc2.pdf",
+                    "filepath": "doc2.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Content 2",
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_summary
+
+        # With paths filter for subdir: only doc1.pdf returned
+        result = _find_files_needing_summary(tmp_data_dir, paths=[subdir])
+        assert len(result) == 1
+        assert result[0].name == "doc1.pdf"
+
+
+class TestFindFilesNeedingTranscription:
+    """Tests for the _find_files_needing_transcription helper function."""
+
+    def test_find_files_needing_transcription_finds_mp4_without_json(self, valid_env, tmp_data_dir):
+        """Should find MP4 files with no JSON metadata."""
+        (tmp_data_dir / "video.mp4").write_bytes(b"video")
+
+        from local_feed_generator.cli import _find_files_needing_transcription
+
+        result = _find_files_needing_transcription(tmp_data_dir)
+        assert len(result) == 1
+        assert result[0].name == "video.mp4"
+
+    def test_find_files_needing_transcription_skips_complete(self, valid_env, tmp_data_dir):
+        """Should skip MP4 files with complete transcription."""
+        (tmp_data_dir / "video.mp4").write_bytes(b"video")
+        (tmp_data_dir / "video.mp4.json").write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete"},
+                    "filename": "video.mp4",
+                    "filetype": "mp4",
+                    "content": "Transcript",
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_transcription
+
+        result = _find_files_needing_transcription(tmp_data_dir)
+        assert len(result) == 0
+
+    def test_find_files_needing_transcription_paths_filters_to_specific_file(
+        self, valid_env, tmp_data_dir
+    ):
+        """Should only return MP4 files matching the specified paths."""
+        (tmp_data_dir / "video1.mp4").write_bytes(b"video")
+        (tmp_data_dir / "video2.mp4").write_bytes(b"video")
+
+        from local_feed_generator.cli import _find_files_needing_transcription
+
+        # Without paths filter: both files returned
+        result = _find_files_needing_transcription(tmp_data_dir)
+        assert len(result) == 2
+
+        # With paths filter for only video1.mp4: only video1.mp4 returned
+        result = _find_files_needing_transcription(
+            tmp_data_dir, paths=[tmp_data_dir / "video1.mp4"]
+        )
+        assert len(result) == 1
+        assert result[0].name == "video1.mp4"
+
+    def test_find_files_needing_transcription_paths_filters_to_directory(
+        self, valid_env, tmp_data_dir
+    ):
+        """Should return MP4 files within the specified directory."""
+        subdir = tmp_data_dir / "subdir"
+        subdir.mkdir()
+        (subdir / "video1.mp4").write_bytes(b"video")
+        (tmp_data_dir / "video2.mp4").write_bytes(b"video")
+
+        from local_feed_generator.cli import _find_files_needing_transcription
+
+        # With paths filter for subdir: only video1.mp4 returned
+        result = _find_files_needing_transcription(tmp_data_dir, paths=[subdir])
+        assert len(result) == 1
+        assert result[0].name == "video1.mp4"
+
+
+class TestFindFilesNeedingMetadataExtraction:
+    """Tests for the _find_files_needing_metadata_extraction helper function."""
+
+    def test_find_files_needing_metadata_extraction_finds_pdf_without_json(
+        self, valid_env, tmp_data_dir
+    ):
+        """Should find PDF files with no JSON metadata."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+
+        from local_feed_generator.cli import _find_files_needing_metadata_extraction
+
+        result = _find_files_needing_metadata_extraction(tmp_data_dir)
+        assert len(result) == 1
+        assert result[0].name == "doc.pdf"
+
+    def test_find_files_needing_metadata_extraction_skips_complete_with_title(
+        self, valid_env, tmp_data_dir
+    ):
+        """Should skip PDF files with complete extraction and a title."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete"},
+                    "title": "My Doc",
+                    "filename": "doc.pdf",
+                    "filetype": "pdf",
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_metadata_extraction
+
+        result = _find_files_needing_metadata_extraction(tmp_data_dir)
+        assert len(result) == 0
+
+    def test_find_files_needing_metadata_extraction_paths_filters_to_specific_file(
+        self, valid_env, tmp_data_dir
+    ):
+        """Should only return files matching the specified paths."""
+        (tmp_data_dir / "doc1.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc2.pdf").write_bytes(b"pdf")
+
+        from local_feed_generator.cli import _find_files_needing_metadata_extraction
+
+        # Without paths filter: both files returned
+        result = _find_files_needing_metadata_extraction(tmp_data_dir)
+        assert len(result) == 2
+
+        # With paths filter for only doc1.pdf: only doc1.pdf returned
+        result = _find_files_needing_metadata_extraction(
+            tmp_data_dir, paths=[tmp_data_dir / "doc1.pdf"]
+        )
+        assert len(result) == 1
+        assert result[0].name == "doc1.pdf"
+
+    def test_find_files_needing_metadata_extraction_paths_filters_to_directory(
+        self, valid_env, tmp_data_dir
+    ):
+        """Should return files within the specified directory."""
+        subdir = tmp_data_dir / "subdir"
+        subdir.mkdir()
+        (subdir / "doc1.pdf").write_bytes(b"pdf")
+        (tmp_data_dir / "doc2.pdf").write_bytes(b"pdf")
+
+        from local_feed_generator.cli import _find_files_needing_metadata_extraction
+
+        # With paths filter for subdir: only doc1.pdf returned
+        result = _find_files_needing_metadata_extraction(tmp_data_dir, paths=[subdir])
+        assert len(result) == 1
+        assert result[0].name == "doc1.pdf"
+
+
     """Tests for the extract command (T5.9)."""
 
     def test_extract_help(self, runner):
         """The extract command should have help text."""
         result = runner.invoke(app, ["extract", "--help"])
         assert result.exit_code == 0
-        assert "--data-dir" in result.output
         assert "--dry-run" in result.output
         assert "--config-file" in result.output
-        assert "--file" in result.output
         assert "--force" in result.output
 
     def test_extract_no_files(self, runner, valid_env, tmp_data_dir):
         """Extract should report no files when directory is empty."""
         result = runner.invoke(
             app,
-            ["extract", "--data-dir", str(tmp_data_dir)],
+            ["extract", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
         assert "No PDF/HTML files need metadata extraction." in result.output
@@ -2815,7 +3040,7 @@ class TestFindFilesNeedingSummary:
 
             result = runner.invoke(
                 app,
-                ["extract", "--data-dir", str(tmp_data_dir), "--dry-run"],
+                ["extract", str(tmp_data_dir), "--dry-run"],
             )
 
         assert result.exit_code == 0
@@ -2840,7 +3065,7 @@ class TestFindFilesNeedingSummary:
 
             result = runner.invoke(
                 app,
-                ["extract", "--data-dir", str(tmp_data_dir)],
+                ["extract", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -2864,7 +3089,7 @@ class TestFindFilesNeedingSummary:
 
             result = runner.invoke(
                 app,
-                ["extract", "--data-dir", str(tmp_data_dir)],
+                ["extract", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -2891,7 +3116,7 @@ class TestFindFilesNeedingSummary:
 
         result = runner.invoke(
             app,
-            ["extract", "--data-dir", str(tmp_data_dir)],
+            ["extract", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
         assert "No PDF/HTML files need metadata extraction." in result.output
@@ -2913,7 +3138,7 @@ class TestFindFilesNeedingSummary:
 
             result = runner.invoke(
                 app,
-                ["extract", "--data-dir", str(tmp_data_dir)],
+                ["extract", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -2956,7 +3181,7 @@ class TestFindFilesNeedingSummary:
 
             result = runner.invoke(
                 app,
-                ["extract", "--data-dir", str(tmp_data_dir), "--force"],
+                ["extract", str(tmp_data_dir), "--force"],
             )
 
         assert result.exit_code == 0
@@ -2998,7 +3223,7 @@ class TestFindFilesNeedingSummary:
             ):
                 result = runner.invoke(
                     app,
-                    ["extract", "--data-dir", str(tmp_data_dir)],
+                    ["extract", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 0
@@ -3038,7 +3263,7 @@ class TestJsonFinalizationIntegration:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 0
@@ -3075,7 +3300,7 @@ class TestJsonFinalizationIntegration:
 
             result = runner.invoke(
                 app,
-                ["feeds", "--data-dir", str(tmp_data_dir)],
+                ["feeds", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -3111,7 +3336,7 @@ class TestJsonFinalizationIntegration:
 
             result = runner.invoke(
                 app,
-                ["feeds", "--data-dir", str(tmp_data_dir)],
+                ["feeds", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -3153,7 +3378,7 @@ class TestJsonFinalizationIntegration:
 
                 result = runner.invoke(
                     app,
-                    ["feeds", "--data-dir", str(tmp_data_dir)],
+                    ["feeds", str(tmp_data_dir)],
                 )
 
         assert result.exit_code == 0
@@ -3182,7 +3407,7 @@ class TestJsonFinalizationIntegration:
 
         result = runner.invoke(
             app,
-            ["validate", "--data-dir", str(tmp_data_dir)],
+            ["validate", str(tmp_data_dir)],
         )
 
         assert result.exit_code == 0
@@ -3201,10 +3426,8 @@ class TestTitleCommand:
         """The title command should have help text."""
         result = runner.invoke(app, ["title", "--help"])
         assert result.exit_code == 0
-        assert "--data-dir" in result.output
         assert "--dry-run" in result.output
         assert "--config-file" in result.output
-        assert "--file" in result.output
         assert "--force" in result.output
 
     def test_title_no_files_needing_titles(self, runner, valid_env, tmp_data_dir):
@@ -3227,7 +3450,7 @@ class TestTitleCommand:
 
         result = runner.invoke(
             app,
-            ["title", "--data-dir", str(tmp_data_dir)],
+            ["title", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
         assert "No files need title generation." in result.output
@@ -3256,7 +3479,7 @@ class TestTitleCommand:
 
             result = runner.invoke(
                 app,
-                ["title", "--data-dir", str(tmp_data_dir), "--dry-run"],
+                ["title", str(tmp_data_dir), "--dry-run"],
             )
 
         assert result.exit_code == 0
@@ -3289,7 +3512,7 @@ class TestTitleCommand:
 
             result = runner.invoke(
                 app,
-                ["title", "--data-dir", str(tmp_data_dir)],
+                ["title", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -3321,7 +3544,7 @@ class TestTitleCommand:
 
             result = runner.invoke(
                 app,
-                ["title", "--data-dir", str(tmp_data_dir)],
+                ["title", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -3353,7 +3576,7 @@ class TestTitleCommand:
 
             result = runner.invoke(
                 app,
-                ["title", "--data-dir", str(tmp_data_dir)],
+                ["title", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -3385,7 +3608,7 @@ class TestTitleCommand:
 
             result = runner.invoke(
                 app,
-                ["title", "--data-dir", str(tmp_data_dir), "--force"],
+                ["title", str(tmp_data_dir), "--force"],
             )
 
         assert result.exit_code == 0
@@ -3420,7 +3643,7 @@ class TestTitleCommand:
 
             result = runner.invoke(
                 app,
-                ["title", "--data-dir", str(tmp_data_dir)],
+                ["title", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -3454,14 +3677,14 @@ class TestTitleCommand:
 
             result = runner.invoke(
                 app,
-                ["title", "--data-dir", str(tmp_data_dir)],
+                ["title", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
         assert "Found 1 file(s) to generate titles for." in result.output
 
     def test_title_file_flag_processes_specific_file(self, runner, valid_env, tmp_data_dir):
-        """Title --file should process only the specified file."""
+        """Title should process a specific file passed as positional arg."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data content")
         (tmp_data_dir / "doc.pdf.json").write_text(
             json.dumps(
@@ -3482,7 +3705,7 @@ class TestTitleCommand:
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "title": "",
+                    "title": {"filename": "other", "extracted": None, "generated": "Other Title"},
                     "description": "",
                     "filename": "other.pdf",
                     "filepath": "other.pdf",
@@ -3500,21 +3723,21 @@ class TestTitleCommand:
 
             result = runner.invoke(
                 app,
-                ["title", "--data-dir", str(tmp_data_dir), "--file", "doc.pdf"],
+                ["title", str(tmp_data_dir / "doc.pdf")],
             )
 
         assert result.exit_code == 0
-        # Only doc.pdf should be processed
+        # Only doc.pdf should be processed (other.pdf already has a generated title)
         assert "Found 1 file(s) to generate titles for." in result.output
 
     def test_title_file_not_found(self, runner, valid_env, tmp_data_dir):
-        """Title --file should error when file does not exist."""
+        """Title should error when file does not exist."""
         result = runner.invoke(
             app,
-            ["title", "--data-dir", str(tmp_data_dir), "--file", "nonexistent.pdf"],
+            ["title", str(tmp_data_dir / "nonexistent.pdf")],
         )
         assert result.exit_code != 0
-        assert "File not found" in result.output
+        assert "Path does not exist" in result.output
 
     def test_title_processes_files_with_filename_stem_title(self, runner, valid_env, tmp_data_dir):
         """Title should process files where title equals the filename stem (not a proper title)."""
@@ -3541,7 +3764,7 @@ class TestTitleCommand:
 
             result = runner.invoke(
                 app,
-                ["title", "--data-dir", str(tmp_data_dir)],
+                ["title", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -3554,7 +3777,7 @@ class TestTitleCommand:
 
         result = runner.invoke(
             app,
-            ["title", "--data-dir", str(tmp_data_dir)],
+            ["title", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
         assert "No files need title generation." in result.output
@@ -3584,7 +3807,7 @@ class TestTitleCommand:
 
             result = runner.invoke(
                 app,
-                ["title", "--data-dir", str(tmp_data_dir)],
+                ["title", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 1
@@ -3615,7 +3838,7 @@ class TestTitleCommand:
 
             result = runner.invoke(
                 app,
-                ["title", "--data-dir", str(tmp_data_dir)],
+                ["title", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
@@ -3763,8 +3986,94 @@ class TestFindFilesNeedingTitle:
         result = _find_files_needing_title(tmp_data_dir)
         assert len(result) == 0
 
+    def test_find_files_needing_title_paths_filters_to_specific_file(self, valid_env, tmp_data_dir):
+        """Should only return files matching the specified paths."""
+        # Create two files needing title generation
+        (tmp_data_dir / "doc1.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc1.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "",
+                    "description": "",
+                    "filename": "doc1.pdf",
+                    "filepath": "doc1.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                }
+            )
+        )
+        (tmp_data_dir / "doc2.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc2.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "",
+                    "description": "",
+                    "filename": "doc2.pdf",
+                    "filepath": "doc2.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                }
+            )
+        )
 
-class TestGetContentForTitle:
+        from local_feed_generator.cli import _find_files_needing_title
+
+        # Without paths filter: both files returned
+        result = _find_files_needing_title(tmp_data_dir)
+        assert len(result) == 2
+
+        # With paths filter for only doc1.pdf: only doc1.pdf returned
+        result = _find_files_needing_title(tmp_data_dir, paths=[tmp_data_dir / "doc1.pdf"])
+        assert len(result) == 1
+        assert result[0].name == "doc1.pdf"
+
+    def test_find_files_needing_title_paths_filters_to_directory(self, valid_env, tmp_data_dir):
+        """Should return files within the specified directory."""
+        # Create a subdirectory with a file
+        subdir = tmp_data_dir / "subdir"
+        subdir.mkdir()
+        (subdir / "doc1.pdf").write_bytes(b"pdf data")
+        (subdir / "doc1.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "",
+                    "description": "",
+                    "filename": "doc1.pdf",
+                    "filepath": "doc1.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                }
+            )
+        )
+        # Create a file in the parent directory
+        (tmp_data_dir / "doc2.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc2.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "",
+                    "description": "",
+                    "filename": "doc2.pdf",
+                    "filepath": "doc2.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                }
+            )
+        )
+
+        from local_feed_generator.cli import _find_files_needing_title
+
+        # With paths filter for subdir: only doc1.pdf returned
+        result = _find_files_needing_title(tmp_data_dir, paths=[subdir])
+        assert len(result) == 1
+        assert result[0].name == "doc1.pdf"
     """Tests for the _get_content_for_title helper function."""
 
     def test_get_content_for_title_mp4_uses_transcript(self, valid_env):

@@ -27,7 +27,6 @@ import pytest
 def _set_valid_env(monkeypatch):
     """Set valid environment variables for config."""
     monkeypatch.setenv("BASE_URL", "https://example.com/feeds")
-    monkeypatch.setenv("DATA_DIR", "./data")
     monkeypatch.setenv("LLM_ENDPOINT", "https://llm.example.com/v1")
     monkeypatch.setenv("LLM_API_KEY", "test-key")
     monkeypatch.setenv("LLM_MODEL", "test-model")
