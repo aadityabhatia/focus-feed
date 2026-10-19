@@ -73,7 +73,10 @@ def _markdown_to_html(text: str | None) -> str:
     If the entire output is a single ``<p>`` wrapper (i.e. the input was a
     plain paragraph with no other markdown elements), the outer ``<p>`` and
     ``</p>`` tags are stripped to avoid redundant wrappers.  Legitimate
-    ``<p>`` tags from actual multi-paragraph markdown are preserved.
+         ``<p>`` tags from actual multi-paragraph markdown are preserved.
+
+    The resulting HTML will be wrapped in CDATA sections in RSS feed output
+    to preserve HTML formatting for feed readers.
 
     Args:
         text: The markdown string to convert, or ``None``.
@@ -117,6 +120,22 @@ def _markdown_to_html(text: str | None) -> str:
             result = result[3:-4]
 
     return result
+
+
+def _sanitize_cdata_content(text: str) -> str:
+    """Sanitize content for safe CDATA wrapping.
+
+    CDATA sections cannot contain the sequence ``]]>`` which would prematurely
+    close the CDATA block. This function replaces any occurrence with ``]]&gt;``
+    to prevent CDATA termination.
+
+    Args:
+        text: The HTML string to sanitize for CDATA.
+
+    Returns:
+        The sanitized string safe for CDATA wrapping.
+    """
+    return text.replace("]]>", "]]&gt;")
 
 
 def _get_summarization_attribution(metadata: Metadata) -> str:
@@ -799,7 +818,7 @@ class FeedGenerator:
         fg.title(title)
         fg.link(href=self._absolute_url(feed_rel_path), rel="self")
         fg.link(href=link)
-        description = description or ""
+        description = description or title
         fg.description(description)
         if language:
             fg.language(language)
@@ -829,7 +848,10 @@ class FeedGenerator:
             attribution = _get_summarization_attribution(metadata)
             if attribution:
                 desc_text = f"{desc_text}\n\n{attribution}" if desc_text else attribution
-            entry.description(_markdown_to_html(desc_text))
+            entry.content(
+                content=_sanitize_cdata_content(_markdown_to_html(desc_text)),
+                type="CDATA",
+            )
 
             # Link to the source file.
             source_url = self._absolute_url(metadata.filepath)
@@ -943,7 +965,7 @@ class FeedGenerator:
         fg.title(title)
         fg.link(href=self._absolute_url(feed_rel_path), rel="self")
         fg.link(href=link)
-        description = description or ""
+        description = description or title
         fg.description(description)
         if language:
             fg.language(language)
@@ -973,7 +995,10 @@ class FeedGenerator:
             attribution = _get_summarization_attribution(metadata)
             if attribution:
                 desc_text = f"{desc_text}\n\n{attribution}" if desc_text else attribution
-            entry.description(_markdown_to_html(desc_text))
+            entry.content(
+                content=_sanitize_cdata_content(_markdown_to_html(desc_text)),
+                type="CDATA",
+            )
 
             # Link to the source file.
             source_url = self._absolute_url(metadata.filepath)
