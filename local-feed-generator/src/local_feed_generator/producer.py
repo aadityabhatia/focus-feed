@@ -199,6 +199,7 @@ class Producer:
         self.pdf_extractor: PDFExtractor = pdf_extractor or PDFExtractor()
         self.html_extractor: HTMLExtractor = html_extractor or HTMLExtractor()
         self.force: bool = force
+        _logger.info("Producer initialized (force=%s)", self.force)
 
     # ------------------------------------------------------------------
     # Public API
@@ -237,6 +238,9 @@ class Producer:
         if force is None:
             force = self.force
 
+        if force:
+            _logger.debug("Force mode active; processing all files regardless of status")
+
         filetype: str = scanned_file.filetype
         filepath: str = scanned_file.filepath
         filename: str = scanned_file.filename
@@ -265,6 +269,7 @@ class Producer:
         existing_extract: dict[str, Any] | None = None
         existing_content: str | None = None
         existing_hash: str | None = None
+        existing_error: str | None = None
         if json_path.exists() and not force:
             try:
                 existing_data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -274,8 +279,39 @@ class Producer:
                     existing_extract = existing_data.get("extract")
                     existing_content = existing_data.get("content")
                     existing_hash = existing_data.get("hash")
+                    existing_error = existing_data.get("error")
             except json.JSONDecodeError, OSError:
                 pass
+
+        # If the file is already feed-eligible and not forcing, skip processing.
+        if not force:
+            is_feed_eligible = False
+            if filetype == "mp4":
+                is_feed_eligible = (
+                    existing_transcribe is not None
+                    and existing_transcribe.get("status") == "complete"
+                    and existing_summarize is not None
+                    and existing_summarize.get("status") == "complete"
+                )
+            elif filetype in ("pdf", "html"):
+                is_feed_eligible = (
+                    existing_extract is not None
+                    and existing_extract.get("status") == "complete"
+                    and existing_summarize is not None
+                    and existing_summarize.get("status") == "complete"
+                )
+            if is_feed_eligible:
+                _logger.debug("Skipping %s: already feed-eligible", filepath)
+                return None
+
+            # If the file has an existing error state and we're not forcing,
+            # skip it — the user needs --force to retry.
+            if existing_error:
+                _logger.warning(
+                    "File %s has existing error; skipping (use --force to retry)",
+                    filepath,
+                )
+                return None
 
         # Compute SHA256 hash of the source file when processing for the first
         # time (no existing JSON) or when the hash field is not yet present
@@ -285,6 +321,7 @@ class Producer:
             file_hash = _compute_file_hash(absolute_path)
         else:
             file_hash = existing_hash
+            _logger.debug("Reusing existing hash for %s", filepath)
 
         partial_metadata: dict[str, Any] = {
             "filename": filename,
@@ -349,6 +386,14 @@ class Producer:
                 if existing_summarize and existing_summarize.get("status") == "complete":
                     partial_metadata["summarize"] = existing_summarize
 
+            _logger.debug(
+                "Resuming %s: transcribe=%s, summarize=%s, extract=%s",
+                filepath,
+                existing_transcribe.get("status") if existing_transcribe else None,
+                existing_summarize.get("status") if existing_summarize else None,
+                existing_extract.get("status") if existing_extract else None,
+            )
+
         # Preserve existing content (transcript for MP4, only when not forcing).
         if existing_content and not force:
             partial_metadata["content"] = existing_content
@@ -386,10 +431,10 @@ class Producer:
                 return None
 
             _logger.info("Successfully processed %s", filepath)
+            _logger.info("Metadata written for %s", filepath)
             return metadata
 
         except Exception as exc:
-            _logger.error("Error processing %s: %s", filepath, exc)
             self._handle_error(exc, filepath, filename, filetype, absolute_path)
             return None
 
@@ -665,6 +710,12 @@ class Producer:
                         creation_time_str,
                         absolute_path,
                     )
+        else:
+            log_error(
+                RuntimeError("Audio metadata extraction failed"),
+                filepath=absolute_path,
+                stage="audio_metadata_extraction",
+            )
 
         # Step 4: Generate a title.  For MP4 files the transcript is the
         # best available content for title generation.  Pass the filename
@@ -1260,11 +1311,16 @@ class Producer:
 
         # Write to a temporary file first, then rename for atomicity.
         tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
-        tmp_path.write_text(
-            json.dumps(metadata_dict, indent=2),
-            encoding="utf-8",
-        )
-        tmp_path.replace(json_path)
+        try:
+            tmp_path.write_text(
+                json.dumps(metadata_dict, indent=2),
+                encoding="utf-8",
+            )
+            tmp_path.replace(json_path)
+        except OSError as exc:
+            _logger.warning("Failed to write JSON metadata to %s: %s", json_path, exc)
+            log_error(exc, filepath=str(json_path), stage="partial_metadata_write")
+            raise
         _logger.debug("Wrote metadata to %s", json_path)
 
     def _handle_error(
@@ -1333,4 +1389,4 @@ class Producer:
         # Write the error metadata file atomically.
         self._write_metadata_partial(error_metadata, str(source_path))
 
-        log_error(exc, filepath=filepath, logger=_logger)
+        log_error(exc, filepath=filepath, logger=_logger, stage="processing")

@@ -61,6 +61,51 @@ _IGNORE_FILENAMES = frozenset(
 
 
 # ---------------------------------------------------------------------------
+# Logging configuration
+# ---------------------------------------------------------------------------
+
+# Mapping from uppercase level strings to ``logging`` constants.
+_LOG_LEVEL_MAP: dict[str, int] = {
+    "DEBUG": logging.DEBUG,
+    "INFO": logging.INFO,
+    "WARNING": logging.WARNING,
+    "ERROR": logging.ERROR,
+    "CRITICAL": logging.CRITICAL,
+}
+
+# Valid log-level choices for the CLI option.
+_LOG_LEVEL_CHOICES: tuple[str, ...] = tuple(_LOG_LEVEL_MAP.keys())
+
+
+def _configure_logging_level(log_level: str) -> None:
+    """Reconfigure the application loggers to the given level.
+
+    Maps a string such as ``"DEBUG"`` or ``"INFO"`` to the corresponding
+    :mod:`logging` constant and applies it to both the main application
+    logger (``local_feed_generator``) and the dedicated error-log logger
+    (``local_feed_generator.error_log``).
+
+    This is called at application startup so that the level chosen via the
+    ``--log-level`` CLI option or ``LOG_LEVEL`` environment variable takes
+    effect before any other logging occurs.
+
+    Args:
+        log_level: Uppercase log level string.  Must be one of
+            :data:`_LOG_LEVEL_CHOICES`.  An unrecognised value falls back
+            to ``INFO``.
+    """
+    level = _LOG_LEVEL_MAP.get(log_level.upper(), logging.INFO)
+
+    # Reconfigure the main application logger (stderr StreamHandler).
+    _logger.setLevel(level)
+
+    # Error log logger always stays at ERROR level to ensure errors are
+    # always written to error.log regardless of the user's log level.
+    error_log_logger = logging.getLogger("local_feed_generator.error_log")
+    error_log_logger.setLevel(logging.ERROR)
+
+
+# ---------------------------------------------------------------------------
 # Helper functions
 # ---------------------------------------------------------------------------
 
@@ -77,20 +122,31 @@ def _load_config(config_file: str | None) -> None:
     Raises:
         click.ClickException: If the configuration cannot be loaded.
     """
-    if config_file:
-        try:
-            from dotenv import load_dotenv
+    try:
+        from dotenv import load_dotenv
+    except ImportError:
+        load_dotenv = None  # type: ignore[assignment]
 
+    if config_file:
+        if load_dotenv is not None:
             load_dotenv(config_file, override=False)
-        except ImportError:
+        else:
             _logger.warning(
                 "python-dotenv not available; cannot load config file %s",
                 config_file,
             )
+    elif load_dotenv is not None:
+        # Load .env from the current directory so that env vars are
+        # available before _check_required_env_vars() runs.
+        load_dotenv(override=False)
+
     try:
         reload_config()
     except Exception as exc:
+        log_error(exc, stage="config_load")
         raise click.ClickException(f"Configuration error: {exc}") from exc
+
+    _logger.debug("Configuration loaded from %s", config_file or "environment")
 
 
 def _resolve_paths(paths: tuple[str, ...]) -> list[Path]:
@@ -338,7 +394,8 @@ def _get_json_metadata(json_path: Path) -> dict[str, Any] | None:
     try:
         data: dict[str, Any] = json.loads(json_path.read_text(encoding="utf-8"))
         return data
-    except json.JSONDecodeError, OSError, TypeError:
+    except (json.JSONDecodeError, OSError, TypeError) as exc:
+        log_error(exc, filepath=str(json_path), stage="metadata_parse")
         return None
 
 
@@ -352,8 +409,12 @@ def _write_json_metadata(data: dict[str, Any], source_path: Path) -> None:
     json_path = source_path.with_name(source_path.name + ".json")
     json_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
-    tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    tmp_path.replace(json_path)
+    try:
+        tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        tmp_path.replace(json_path)
+    except OSError as exc:
+        log_error(exc, filepath=str(json_path), stage="metadata_write")
+        raise
 
 
 def _find_files_needing_transcription(
@@ -381,6 +442,7 @@ def _find_files_needing_transcription(
         metadata = _get_json_metadata(json_path)
         if force or metadata is None or not _is_step_complete(metadata, "transcribe"):
             needs.append(mp4_file)
+    _logger.info("Found %d files needing transcription", len(needs))
     return needs
 
 
@@ -415,6 +477,7 @@ def _find_files_needing_summary(
             continue
         if force or not _is_step_complete(metadata, "summarize"):
             needs.append(source_file)
+    _logger.info("Found %d files needing summary", len(needs))
     return needs
 
 
@@ -448,6 +511,7 @@ def _find_files_needing_metadata_extraction(
             or not metadata.get("title")
         ):
             needs.append(doc_file)
+    _logger.info("Found %d files needing extraction", len(needs))
     return needs
 
 
@@ -652,12 +716,25 @@ def _dry_run_option(func: Any) -> Any:
 
 @click.group()
 @click.version_option()
-def app() -> None:
+@click.option(
+    "--log-level",
+    "-l",
+    type=click.Choice(_LOG_LEVEL_CHOICES, case_sensitive=False),
+    default=None,
+    envvar="LOG_LEVEL",
+    help="Set the logging level (default: INFO). "
+    "Can also be set via the LOG_LEVEL environment variable.",
+)
+def app(log_level: str | None) -> None:
     """Local Feed Generator — Privacy-first RSS/Atom feed generator.
 
     Processes PDF, HTML, and MP4 files in a data directory and generates
     RSS feeds for personal consumption through mobile applications.
     """
+    # Configure logging level early, before any subcommand logging occurs.
+    # Precedence: CLI option > LOG_LEVEL env var > default INFO.
+    effective_level = log_level or os.environ.get("LOG_LEVEL", "INFO")
+    _configure_logging_level(effective_level)
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +764,7 @@ def process(
     provided, the current directory (``.``) is used.
     """
     _load_config(config_file)
+    _logger.info("Starting process command")
 
     # Default to current directory if no paths provided.
     if not paths:
@@ -723,6 +801,7 @@ def process(
         return
 
     click.echo(f"Found {len(files)} file(s) to process.")
+    _logger.info("Found %d file(s) to process", len(files))
 
     # --- Process --------------------------------------------------------
     from local_feed_generator.producer import Producer
@@ -742,15 +821,17 @@ def process(
                 error_count += 1
         except Exception as exc:
             error_count += 1
-            log_error(exc, filepath=file.filepath)
+            log_error(exc, filepath=file.filepath, stage="processing")
 
     click.echo(f"\nProcessing complete: {success_count} succeeded, {error_count} failed.")
+    _logger.info("Process complete: %d succeeded, %d failed", success_count, error_count)
 
     # --- Generate feeds -------------------------------------------------
     counts = _generate_feeds(data_dir_path)
     _print_feed_summary(counts)
 
     if error_count > 0:
+        _logger.warning("Exiting with code 1 due to %d error(s)", error_count)
         sys.exit(1)
 
 
@@ -796,6 +877,7 @@ class _WatchHandler(FileSystemEventHandler):
     def __init__(self, data_dir: Path, producer: Any) -> None:
         self.data_dir = data_dir
         self.producer = producer
+        _logger.info("Watch handler initialized for %s", str(self.data_dir))
         # Last event timestamp per file path, for debouncing (T6.2).
         self._last_event: dict[str, float] = {}
         # Lock protecting _last_event, since watchdog dispatches events
@@ -815,7 +897,9 @@ class _WatchHandler(FileSystemEventHandler):
 
     def on_modified(self, event: Any) -> None:
         if not event.is_directory:
-            self._handle_event(event.src_path)
+            path = event.src_path
+            _logger.info("Detected changes in %s", str(path))
+            self._handle_event(path)
 
     # internal helpers ----------------------------------------------------
 
@@ -888,6 +972,25 @@ class _WatchHandler(FileSystemEventHandler):
         # --- Source files: process and regenerate feeds -----------------
         if source_path.suffix.lower() not in SOURCE_EXTENSIONS:
             return
+
+        # Check if the file has an error state in its JSON metadata and the
+        # source file is not newer than the JSON.  In watch mode, a file
+        # modification event may fire even when the source content hasn't
+        # actually changed (e.g. metadata touch).  If the JSON already has
+        # an error and the source isn't newer, there's no point retrying
+        # without --force.
+        json_path = source_path.with_name(source_path.name + ".json")
+        if json_path.exists():
+            existing_metadata = _get_json_metadata(json_path)
+            if existing_metadata and existing_metadata.get("error"):
+                source_mtime = source_path.stat().st_mtime
+                json_mtime = json_path.stat().st_mtime
+                if source_mtime <= json_mtime:
+                    _logger.warning(
+                        "File %s has error state but source not modified; use --force to retry",
+                        filepath,
+                    )
+                    return
 
         try:
             relative_path = os.path.relpath(source_path, Path.cwd())
@@ -1006,6 +1109,7 @@ def watch(
     the current directory (``.``) is used.
     """
     _load_config(config_file)
+    _logger.info("Starting watch command")
 
     # Default to current directory if no paths provided.
     if not paths:
@@ -1015,6 +1119,7 @@ def watch(
     data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
 
     if not data_dir_path.exists():
+        _logger.critical("Data directory does not exist: %s", data_dir_path)
         click.echo(
             f"Error: Data directory does not exist: {data_dir_path}",
             err=True,
@@ -1053,7 +1158,7 @@ def watch(
             try:
                 producer.process_file(file)
             except Exception as exc:
-                log_error(exc, filepath=file.filepath)
+                log_error(exc, filepath=file.filepath, stage="processing")
 
         counts = _generate_feeds(data_dir_path)
         _print_feed_summary(counts)
@@ -1071,6 +1176,7 @@ def watch(
     observer = Observer()
     observer.schedule(event_handler, str(data_dir_path), recursive=True)
     observer.start()
+    _logger.info("Watching %s for changes", str(data_dir_path))
 
     # --- Start periodic rescan thread (T6.3) ----------------------------
     # Fallback for file systems (NFS, network drives, etc.) that may not
@@ -1084,7 +1190,7 @@ def watch(
             try:
                 event_handler._periodic_rescan()
             except Exception as exc:
-                _logger.error("Periodic rescan failed: %s", exc, exc_info=True)
+                log_error(exc, stage="periodic_rescan")
 
     if rescan_interval > 0:
         rescan_thread = threading.Thread(target=_rescan_loop, daemon=True, name="periodic-rescan")
@@ -1121,6 +1227,7 @@ def watch(
             if rescan_thread.is_alive():
                 _logger.warning("Rescan thread did not shut down within timeout.")
         click.echo("\nWatcher stopped.")
+        _logger.info("Watcher stopped")
 
 
 # ---------------------------------------------------------------------------
@@ -1148,12 +1255,18 @@ def feeds(
     At least one path (file or directory) is required.
     """
     _load_config(config_file)
+    _logger.info("Starting feeds command")
 
     resolved_paths = _resolve_paths(paths)
     data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
 
     # Finalize incomplete JSON metadata before generating feeds.
     _finalize_incomplete_json(data_dir_path, paths=resolved_paths, force=force)
+
+    # Warn if no feed.json is found anywhere in the data directory.
+    feed_json_files = list(data_dir_path.glob("**/feed.json"))
+    if not feed_json_files:
+        _logger.warning("No feed.json found at %s; feeds not generated", str(data_dir_path))
 
     from local_feed_generator.feeds import FeedGenerator
 
@@ -1178,6 +1291,7 @@ def feeds(
     click.echo("Feeds generated successfully.")
     click.echo(f"  Podcast feed: {podcast_count} item(s)")
     click.echo(f"  Articles feed: {article_count} item(s)")
+    _logger.info("Feeds generated: %d podcast, %d articles", podcast_count, article_count)
 
 
 # ---------------------------------------------------------------------------
@@ -1210,6 +1324,7 @@ def validate(
     At least one path (file or directory) is required.
     """
     _load_config(config_file)
+    _logger.info("Starting validate command")
 
     resolved_paths = _resolve_paths(paths)
     data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
@@ -1230,6 +1345,7 @@ def validate(
         try:
             Metadata.from_json_file(json_path)
         except Exception as exc:
+            log_error(exc, filepath=str(json_path), stage="validation")
             errors.append(f"{json_path}: Schema validation failed - {exc}")
 
     # --- Check for orphaned JSON files ---------------------------------
@@ -1267,6 +1383,8 @@ def validate(
     if not errors and not warnings:
         click.echo("\nAll files are valid. No errors or warnings found.")
 
+    _logger.info("Validation complete: %d errors, %d warnings", len(errors), len(warnings))
+
     if errors:
         sys.exit(1)
 
@@ -1300,6 +1418,7 @@ def transcribe(
     At least one path (file or directory) is required.
     """
     _load_config(config_file)
+    _logger.info("Starting transcribe command")
 
     from local_feed_generator.config import get_config
     from local_feed_generator.services.transcriber import Transcriber
@@ -1316,6 +1435,8 @@ def transcribe(
     click.echo(f"Found {len(files)} MP4 file(s) to transcribe.")
 
     if dry_run:
+        _logger.warning("Dry-run mode active; no files will be modified")
+        _logger.info("Dry run: %d files would be transcribed", len(files))
         click.echo("[Dry run] Files that would be transcribed:")
         for f in files:
             relative = os.path.relpath(f, Path.cwd())
@@ -1330,6 +1451,11 @@ def transcribe(
 
     config = get_config()
     if config.transcription_device == "cuda" and not check_cuda_available():
+        _logger.critical(
+            "CUDA is not available but TRANSCRIPTION_DEVICE=cuda is configured. "
+            "Transcription cannot proceed. %s",
+            CUDA_ERROR_MESSAGE,
+        )
         click.echo(f"Error: {CUDA_ERROR_MESSAGE}", err=True)
         sys.exit(1)
 
@@ -1383,6 +1509,7 @@ def transcribe(
             log_error(exc, filepath=str(relative_path), stage="transcription")
 
     click.echo(f"\nTranscription complete: {success_count} succeeded, {error_count} failed.")
+    _logger.info("Transcribe complete: %d succeeded, %d failed", success_count, error_count)
 
     if error_count > 0:
         sys.exit(1)
@@ -1418,6 +1545,7 @@ def summarize(
     At least one path (file or directory) is required.
     """
     _load_config(config_file)
+    _logger.info("Starting summarize command")
 
     from local_feed_generator.config import get_config
     from local_feed_generator.services.summarizer import Summarizer
@@ -1434,6 +1562,8 @@ def summarize(
     click.echo(f"Found {len(files)} file(s) to summarize.")
 
     if dry_run:
+        _logger.warning("Dry-run mode active; no files will be modified")
+        _logger.info("Dry run: %d files would be summarized", len(files))
         click.echo("[Dry run] Files that would be summarized:")
         for f in files:
             relative = os.path.relpath(f, Path.cwd())
@@ -1506,6 +1636,7 @@ def summarize(
             log_error(exc, filepath=str(relative_path), stage="summarization")
 
     click.echo(f"\nSummarization complete: {success_count} succeeded, {error_count} failed.")
+    _logger.info("Summarize complete: %d succeeded, %d failed", success_count, error_count)
 
     if error_count > 0:
         sys.exit(1)
@@ -1541,6 +1672,7 @@ def extract(
     At least one path (file or directory) is required.
     """
     _load_config(config_file)
+    _logger.info("Starting extract command")
 
     from local_feed_generator.services.extractors import HTMLExtractor, PDFExtractor
 
@@ -1558,6 +1690,8 @@ def extract(
     click.echo(f"Found {len(files)} PDF/HTML file(s) to extract metadata from.")
 
     if dry_run:
+        _logger.warning("Dry-run mode active; no files will be modified")
+        _logger.info("Dry run: %d files would be processed", len(files))
         click.echo("[Dry run] Files that would be processed:")
         for f in files:
             relative = os.path.relpath(f, Path.cwd())
@@ -1630,6 +1764,7 @@ def extract(
             log_error(exc, filepath=str(relative_path), stage="metadata_extraction")
 
     click.echo(f"\nMetadata extraction complete: {success_count} succeeded, {error_count} failed.")
+    _logger.info("Extract complete: %d succeeded, %d failed", success_count, error_count)
 
     if error_count > 0:
         sys.exit(1)
@@ -1664,6 +1799,7 @@ def title(
     At least one path (file or directory) is required.
     """
     _load_config(config_file)
+    _logger.info("Starting title command")
 
     from local_feed_generator.services.summarizer import Summarizer
 
@@ -1679,6 +1815,8 @@ def title(
     click.echo(f"Found {len(files)} file(s) to generate titles for.")
 
     if dry_run:
+        _logger.warning("Dry-run mode active; no files will be modified")
+        _logger.info("Dry run: %d files would be processed", len(files))
         click.echo("[Dry run] Files that would be processed:")
         for f in files:
             relative = os.path.relpath(f, Path.cwd())
@@ -1750,6 +1888,7 @@ def title(
             log_error(exc, filepath=str(relative_path), stage="title_generation")
 
     click.echo(f"\nTitle generation complete: {success_count} succeeded, {error_count} failed.")
+    _logger.info("Title complete: %d succeeded, %d failed", success_count, error_count)
 
     if error_count > 0:
         sys.exit(1)
@@ -1810,6 +1949,19 @@ def _finalize_incomplete_json(
         files = _find_files_needing_json_generation(data_dir_path, force=force)
 
     if not files:
+        all_source_files = _find_source_files(data_dir_path, ("mp4", "pdf", "html"))
+        if not all_source_files:
+            _logger.warning(
+                "No supported source files found in %s for JSON generation. "
+                "Expected .mp4, .pdf, or .html files.",
+                data_dir_path,
+            )
+        else:
+            _logger.debug(
+                "All %d source files in %s are already feed-eligible; no JSON generation needed.",
+                len(all_source_files),
+                data_dir_path,
+            )
         return 0, 0
 
     summarizer = Summarizer()
@@ -1984,30 +2136,28 @@ _FEED_JSON_TEMPLATE: dict[str, str] = {
 
 
 @app.command("create-feed")
-@click.option(
-    "--dir",
-    "--directory",
+@_config_file_option
+@click.argument(
     "directory",
-    required=True,
     type=click.Path(file_okay=False, dir_okay=True),
-    help="Target directory where feed.json will be created.",
 )
-def create_feed(directory: str) -> None:
-    """Create a template ``feed.json`` file in the specified directory.
-
-    Generates a ``feed.json`` with placeholder ``title`` and ``description``
-    values that you can edit.  The ``link`` field is intentionally omitted;
-    feed links are derived from ``BASE_URL`` + relative path at generation
-    time, so no hardcoded URLs are needed in the template.
-
-    After creating the template, you can edit it and then run the ``feeds``
-    command to generate ``podcast.xml`` and ``articles.xml`` in that folder.
-    """
+def create_feed(config_file: str | None, directory: str) -> None:
+    _logger.info("Starting create-feed command")
     target_dir = Path(directory)
-    target_dir.mkdir(parents=True, exist_ok=True)
     feed_json_path = target_dir / "feed.json"
 
-    feed_json_path.write_text(json.dumps(_FEED_JSON_TEMPLATE, indent=2), encoding="utf-8")
+    try:
+        target_dir.mkdir(parents=True, exist_ok=True)
+        feed_json_path.write_text(json.dumps(_FEED_JSON_TEMPLATE, indent=2), encoding="utf-8")
+        _logger.info("Created feed.json at %s", str(feed_json_path))
+    except (OSError, PermissionError) as exc:
+        log_error(
+            exc,
+            filepath=str(feed_json_path),
+            stage="feed_json_creation",
+        )
+        raise click.ClickException(f"Failed to create feed.json: {exc}") from exc
+
     click.echo(f"Created feed.json at {feed_json_path}")
 
 

@@ -193,6 +193,8 @@ class LocalTranscriber:
                 compute_type=compute_type,
             )
         except Exception as exc:
+            # Log the error before re-raising with a more helpful message.
+            log_error(exc, stage="model_load")
             # Catch the specific case where faster-whisper fails because the
             # cuBLAS shared library cannot be loaded, and re-raise with the
             # helpful message instead of letting the opaque error bubble up.
@@ -324,7 +326,7 @@ class LocalTranscriber:
                 f"Transcription failed for '{filepath}': {exc}",
                 filepath=str(filepath),
             )
-            log_error(error, filepath=str(filepath), logger=_logger)
+            log_error(error, filepath=str(filepath), logger=_logger, stage="transcription")
             raise error from exc
 
     @staticmethod
@@ -412,6 +414,15 @@ class Transcriber(LocalTranscriber):
             self._remote_transcriber: RemoteTranscriber | None = RemoteTranscriber(config=config)
         else:
             self._remote_transcriber = None
+            # Local mode: check that faster-whisper is installed before
+            # proceeding.  If it is missing, log CRITICAL so the user sees
+            # the issue clearly on stderr.
+            if WhisperModel is None:
+                _logger.critical(
+                    "faster-whisper is not installed but local transcription "
+                    "mode is active (TRANSCRIPTION_ENDPOINT is not set). "
+                    "Install with: pip install local-feed-generator[local-transcription]"
+                )
         super().__init__()
 
     @property

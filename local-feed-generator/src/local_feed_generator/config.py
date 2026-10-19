@@ -4,11 +4,25 @@ Uses pydantic-settings to load configuration from environment variables
 and optional .env file. Provides a singleton accessor for global config.
 """
 
+import logging
 import os
 from typing import Any
 
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_logger = logging.getLogger("local_feed_generator")
+
+# Required configuration fields that must be non-empty.
+_REQUIRED_FIELDS: tuple[str, ...] = (
+    "BASE_URL",
+    "LLM_ENDPOINT",
+    "LLM_API_KEY",
+    "LLM_MODEL",
+    "PROMPT_ARTICLE",
+    "PROMPT_PODCAST",
+    "PROMPT_TITLE",
+)
 
 
 class Settings(BaseSettings):
@@ -101,7 +115,16 @@ def get_config() -> Settings:
     """
     global _config_instance
     if _config_instance is None:
+        _check_required_env_vars()
         _config_instance = Settings()  # type: ignore[call-arg]
+        # Warn about important optional fields that are not set.
+        _optional_fields: tuple[str, ...] = (
+            "prompt_article_reflection",
+            "prompt_podcast_reflection",
+        )
+        for field_name in _optional_fields:
+            if getattr(_config_instance, field_name) is None:
+                _logger.warning("Optional config field %s is not set", field_name)
     return _config_instance
 
 
@@ -111,5 +134,24 @@ def reload_config() -> Settings:
     Useful in tests or when environment variables change at runtime.
     """
     global _config_instance
+    _check_required_env_vars()
     _config_instance = Settings()  # type: ignore[call-arg]
     return _config_instance
+
+
+def _check_required_env_vars() -> None:
+    """Log a CRITICAL message if any required configuration is missing.
+
+    Checks the environment variables for all required fields before the
+    pydantic Settings model is instantiated.  This ensures a clear,
+    actionable CRITICAL-level log message is emitted (to stderr) before
+    the :class:`ValidationError` is raised, so the user sees exactly which
+    fields are missing.
+    """
+    missing = [field_name for field_name in _REQUIRED_FIELDS if not os.environ.get(field_name)]
+    if missing:
+        _logger.critical(
+            "Missing required configuration environment variables: %s. "
+            "Please set these before running local-feed-generator.",
+            ", ".join(missing),
+        )

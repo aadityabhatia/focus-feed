@@ -138,6 +138,7 @@ class Summarizer:
                 api_key=self._config.llm_api_key,
             )
         except Exception as exc:
+            log_error(exc, stage="summarizer_init")
             raise SummarizationError(f"Failed to initialize OpenAI client: {exc}") from exc
 
     # ------------------------------------------------------------------
@@ -399,7 +400,7 @@ class Summarizer:
                             model=model,
                             print_stdout=True,
                         )
-                    _logger.warning(
+                    _logger.debug(
                         "LLM request failed (attempt %d/%d), retrying in %.2fs: %s",
                         attempt + 1,
                         self._max_retries + 1,
@@ -419,11 +420,6 @@ class Summarizer:
                         endpoint=endpoint,
                         model=model,
                         print_stdout=is_connection_error,
-                    )
-                    _logger.error(
-                        "LLM request failed after %d attempts: %s",
-                        self._max_retries + 1,
-                        exc,
                     )
 
             except Exception as exc:

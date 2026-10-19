@@ -21,6 +21,8 @@ from pathlib import Path
 import sys
 from urllib.parse import urlparse
 
+import click
+
 # ---------------------------------------------------------------------------
 # Module-level loggers
 # ---------------------------------------------------------------------------
@@ -31,6 +33,7 @@ _logger = logging.getLogger("local_feed_generator")
 # records do not also appear on stderr via the parent logger.
 _error_log_logger = logging.getLogger("local_feed_generator.error_log")
 _error_log_logger.propagate = False
+_error_log_logger.setLevel(logging.ERROR)
 _error_log_logger.addHandler(logging.NullHandler())
 
 # Module-level error log file handler (set by _configure_error_log).
@@ -105,17 +108,14 @@ def _configure_error_log(
     """Configure a FileHandler for the dedicated ``error.log`` file.
 
     Creates or appends to an ``error.log`` file in the specified *data_dir*
-    or the project root directory (when *data_dir* is ``None``).  The handler
-    captures ``ERROR``-level messages with full details including timestamp,
-    error type, message, file path, stage, retry info, and endpoint.
-
-    The project root is determined as the parent directory of the
-    ``local-feed-generator`` package, i.e. four levels up from this file:
-    ``Path(__file__).parent.parent.parent.parent``.
+    or the current working directory (when *data_dir* is ``None``).  The
+    handler captures ``ERROR``-level messages with full details including
+    timestamp, error type, message, file path, stage, retry info, and
+    endpoint.
 
     Args:
         data_dir: Directory in which to create ``error.log``.  When
-            ``None``, uses the project root directory.
+            ``None``, uses the current working directory.
         force: If ``True``, reconfigure even when a handler is already
             attached (useful in tests).
 
@@ -133,12 +133,9 @@ def _configure_error_log(
         _error_log_logger.removeHandler(_error_log_handler)
         _error_log_handler = None
 
-    # Determine log directory — always use the project root (parent of the
-    # local-feed-generator package), not the data directory.
-    if data_dir is not None:
-        log_dir = Path(data_dir).resolve()
-    else:
-        log_dir = Path(__file__).parent.parent.parent.parent.resolve()
+    # Determine log directory — use the current working directory when no
+    # data_dir is provided, otherwise use the specified data_dir.
+    log_dir = Path(data_dir).resolve() if data_dir is not None else Path.cwd()
 
     try:
         log_dir.mkdir(parents=True, exist_ok=True)
@@ -155,8 +152,16 @@ def _configure_error_log(
 
         _error_log_logger.addHandler(handler)
         _error_log_handler = handler
-    except OSError, PermissionError:
-        pass
+    except (OSError, PermissionError) as exc:
+        # The _logger already has a stderr StreamHandler attached by
+        # _configure_logger(), so we can use it to surface this critical
+        # issue.  The _error_log_logger itself cannot be used because it
+        # has propagate=False and its handler is what just failed.
+        _logger.critical(
+            "Failed to create error.log at %s: %s. Error logging to file will be unavailable.",
+            log_dir / "error.log",
+            exc,
+        )
 
     return _error_log_handler
 
@@ -383,4 +388,4 @@ def _print_error_to_stdout(
         lines.append(f"Stage: {stage}")
     if model:
         lines.append(f"Model: {model}")
-    print("\n".join(lines))
+    click.echo("\n".join(lines))

@@ -177,11 +177,16 @@ class RemoteTranscriber:
         audio_length = self._get_audio_duration(path)
 
         if audio_length is not None and file_size is not None:
-            print(f"Transcribing {path.name}: {audio_length:.1f}s, {file_size:,} bytes")
+            _logger.info(
+                "Transcribing %s: %.1fs, %s bytes",
+                path.name,
+                audio_length,
+                f"{file_size:,}",
+            )
         elif file_size is not None:
-            print(f"Transcribing {path.name}: {file_size:,} bytes")
+            _logger.info("Transcribing %s: %s bytes", path.name, f"{file_size:,}")
         else:
-            print(f"Transcribing {path.name}")
+            _logger.info("Transcribing %s", path.name)
 
         start_time = time.time()
 
@@ -190,7 +195,12 @@ class RemoteTranscriber:
 
             elapsed = time.time() - start_time
             word_count = len(transcript.split())
-            print(f"Completed in {elapsed:.2f}s ({word_count} words)")
+            _logger.info(
+                "Completed transcription for %s in %.2fs (%d words)",
+                path.name,
+                elapsed,
+                word_count,
+            )
 
             return transcript
 
@@ -201,7 +211,7 @@ class RemoteTranscriber:
                 f"Transcription failed for '{filepath}': {exc}",
                 filepath=str(filepath),
             )
-            log_error(error, filepath=str(filepath), logger=_logger)
+            log_error(error, filepath=str(filepath), logger=_logger, stage="transcription")
             raise error from exc
 
     # ------------------------------------------------------------------
@@ -268,16 +278,18 @@ class RemoteTranscriber:
 
             except _NON_RETRYABLE_ERRORS as exc:
                 # Permanent failures — do not retry.
-                raise TranscriptionError(
+                error = TranscriptionError(
                     f"Transcription API request failed (non-retryable): {exc}",
                     filepath=filepath,
-                ) from exc
+                )
+                log_error(exc, filepath=filepath, logger=_logger, stage="transcription")
+                raise error from exc
 
             except _RETRYABLE_ERRORS as exc:
                 last_exc = exc
                 if attempt < self._max_retries:
                     delay = self._calculate_backoff(attempt)
-                    _logger.warning(
+                    _logger.debug(
                         "Transcription API request failed (attempt %d/%d), retrying in %.2fs: %s",
                         attempt + 1,
                         self._max_retries + 1,
@@ -286,18 +298,23 @@ class RemoteTranscriber:
                     )
                     time.sleep(delay)
                 else:
-                    _logger.error(
-                        "Transcription API request failed after %d attempts: %s",
-                        self._max_retries + 1,
+                    retry_info = f"attempt={attempt + 1}/{self._max_retries + 1}"
+                    log_error(
                         exc,
+                        filepath=filepath,
+                        logger=_logger,
+                        stage="transcription",
+                        retry_info=retry_info,
                     )
 
             except Exception as exc:
                 # Unexpected errors — do not retry.
-                raise TranscriptionError(
+                error = TranscriptionError(
                     f"Unexpected error during transcription API request: {exc}",
                     filepath=filepath,
-                ) from exc
+                )
+                log_error(exc, filepath=filepath, logger=_logger, stage="transcription")
+                raise error from exc
 
         # All retries exhausted.
         raise TranscriptionError(

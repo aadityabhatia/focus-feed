@@ -34,6 +34,7 @@ from feedgen.feed import FeedGenerator as _FeedGenerator
 import markdown as _md
 
 from local_feed_generator.config import get_config
+from local_feed_generator.errors import log_error
 from local_feed_generator.metadata import Metadata
 from local_feed_generator.producer import _compute_file_hash
 
@@ -366,6 +367,9 @@ class FeedGenerator:
         self.base_url: str = base_url.rstrip("/")
         self.data_dir_basename: str = self.data_dir.name
 
+        if not self.data_dir.exists():
+            _logger.critical("Data directory does not exist: %s", self.data_dir)
+
     # ------------------------------------------------------------------
     # Metadata discovery
     # ------------------------------------------------------------------
@@ -378,13 +382,16 @@ class FeedGenerator:
         out entries where ``feed_eligible`` is ``False`` (i.e. incomplete
         processing or error state).
 
+        ``feed.json`` is a feed configuration file, not a per-source metadata
+        file, and is explicitly excluded from discovery.
+
         Files that cannot be parsed as valid metadata are logged as warnings
         and skipped, so a single corrupt JSON file does not abort feed
         generation.
 
         Returns:
-            A list of :class:`Metadata` instances with ``feed_eligible == True``,
-            sorted by folder name (ascending) then filename (ascending).
+            A list of :class:`~local_feed_generator.metadata.Metadata` objects
+            for all feed-eligible files, sorted by folder name then filename.
         """
         if not self.data_dir.exists():
             _logger.warning("Data directory does not exist: %s", self.data_dir)
@@ -403,6 +410,11 @@ class FeedGenerator:
             root_path = Path(root)
             for filename in files:
                 if not filename.lower().endswith(".json"):
+                    continue
+
+                # feed.json is a feed configuration file, not a per-source
+                # metadata file — skip it before any parsing attempts.
+                if filename == "feed.json":
                     continue
 
                 total_count += 1
@@ -494,6 +506,7 @@ class FeedGenerator:
 
                 # Skip if hash is already present and non-empty.
                 if data.get("hash"):
+                    _logger.debug("Hash already present in %s, skipping", json_path)
                     continue
 
                 # Determine the source file path (strip .json suffix).
@@ -657,6 +670,7 @@ class FeedGenerator:
         results: list[tuple[Path, dict[str, str]]] = []
 
         for feed_json_path in self.data_dir.rglob("feed.json"):
+            _logger.debug("Found feed.json at %s", feed_json_path)
             try:
                 config: dict[str, str] = json.loads(feed_json_path.read_text(encoding="utf-8"))
                 results.append((feed_json_path.parent, config))
@@ -816,7 +830,13 @@ class FeedGenerator:
             entry.pubDate(pub_date)
 
         output_path = output_dir / "podcast.xml"
-        fg.rss_file(str(output_path), pretty=True)
+        try:
+            fg.rss_file(str(output_path), pretty=True)
+        except OSError as exc:
+            _logger.warning("Failed to write feed file %s: %s", output_path, exc)
+            log_error(exc, filepath=str(output_path), stage="feed_write")
+            raise
+        _logger.debug("Wrote feed file: %s", output_path)
         _logger.info("Generated podcast feed: %s (%d items)", output_path, len(mp4_items))
 
         return mp4_items
@@ -937,7 +957,13 @@ class FeedGenerator:
             entry.pubDate(pub_date)
 
         output_path = output_dir / "articles.xml"
-        fg.rss_file(str(output_path), pretty=True)
+        try:
+            fg.rss_file(str(output_path), pretty=True)
+        except OSError as exc:
+            _logger.warning("Failed to write feed file %s: %s", output_path, exc)
+            log_error(exc, filepath=str(output_path), stage="feed_write")
+            raise
+        _logger.debug("Wrote feed file: %s", output_path)
         _logger.info(
             "Generated articles feed: %s (%d items)",
             output_path,
@@ -1010,10 +1036,10 @@ class FeedGenerator:
                     metadata_items=metadata_items,
                 )
             except Exception as exc:
-                _logger.error(
-                    "Failed to generate podcast feed for %s: %s",
-                    folder,
+                log_error(
                     exc,
+                    filepath=str(folder),
+                    stage="podcast_feed_generation",
                 )
         else:
             _logger.debug("Skipping podcast feed for %s: no MP4 items", folder)
@@ -1029,13 +1055,18 @@ class FeedGenerator:
                     metadata_items=metadata_items,
                 )
             except Exception as exc:
-                _logger.error(
-                    "Failed to generate articles feed for %s: %s",
-                    folder,
+                log_error(
                     exc,
+                    filepath=str(folder),
+                    stage="articles_feed_generation",
                 )
         else:
             _logger.debug("Skipping articles feed for %s: no PDF/HTML items", folder)
+
+        # Warn if no feed-eligible files were found in this folder despite
+        # having a feed.json configuration file.
+        if not mp4_items and not article_items:
+            _logger.warning("No feed-eligible files found in %s", str(folder))
 
         _logger.info(
             "Feed generation for %s complete: %d podcast, %d articles",
@@ -1091,6 +1122,8 @@ class FeedGenerator:
             respective root-level feed.  If a feed generation failed, its
             value will be an empty list.
         """
+        _logger.info("Starting feed generation")
+
         results: dict[str, list[Metadata]] = {
             "podcast": [],
             "articles": [],
@@ -1142,7 +1175,7 @@ class FeedGenerator:
                     link=root_link,
                 )
             except Exception as exc:
-                _logger.error("Failed to generate podcast feed: %s", exc)
+                log_error(exc, filepath=str(self.data_dir), stage="podcast_feed_generation")
 
             # Generate articles feed (only if PDF/HTML files exist)
             try:
@@ -1153,7 +1186,7 @@ class FeedGenerator:
                     link=root_link,
                 )
             except Exception as exc:
-                _logger.error("Failed to generate articles feed: %s", exc)
+                log_error(exc, filepath=str(self.data_dir), stage="articles_feed_generation")
         else:
             _logger.info("No feed.json at %s; skipping root-level feed generation", self.data_dir)
             # Clean up any stale root-level feed files from a previous run
@@ -1199,7 +1232,7 @@ class FeedGenerator:
         try:
             self._generate_index_html()
         except Exception as exc:
-            _logger.error("Failed to generate index.html: %s", exc)
+            log_error(exc, stage="index_html_generation")
 
         # Optionally validate the generated feeds.
         if validate:
@@ -1230,6 +1263,8 @@ class FeedGenerator:
             the missing file.
         """
         results: dict[str, FeedValidationResult] = {}
+
+        _logger.info("Validating feeds")
 
         # --- podcast.xml ---
         podcast_path = self.data_dir / "podcast.xml"
@@ -1276,7 +1311,7 @@ class FeedGenerator:
         """
         for name, result in results.items():
             for error in result.errors:
-                _logger.error("Feed validation error [%s]: %s", name, error)
+                log_error(ValueError(error), filepath=name, stage="feed_validation")
             for warning in result.warnings:
                 _logger.warning("Feed validation warning [%s]: %s", name, warning)
             if result.is_valid:
@@ -1313,6 +1348,8 @@ class FeedGenerator:
                 self.data_dir,
             )
             return
+
+        _logger.info("Generating index.html")
 
         # Discover all XML feed files in the data directory tree.
         xml_files = sorted(self.data_dir.rglob("*.xml"))
@@ -1390,7 +1427,11 @@ class FeedGenerator:
 
         html_content = "\n".join(lines)
         index_path = self.data_dir / "index.html"
-        index_path.write_text(html_content, encoding="utf-8")
+        try:
+            index_path.write_text(html_content, encoding="utf-8")
+        except OSError as exc:
+            log_error(exc, filepath=str(index_path), stage="index_html_write")
+            raise
         _logger.info(
             "Generated index.html: %s (%d feeds)",
             index_path,

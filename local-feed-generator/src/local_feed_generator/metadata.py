@@ -86,7 +86,16 @@ import logging
 from pathlib import Path
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
+
+from local_feed_generator.errors import log_error
 
 # Step status values.
 _STEP_STATUS_IN_PROGRESS = "in_progress"
@@ -376,18 +385,15 @@ class Metadata(BaseModel):
     def _validate_title(cls, v: Any) -> Any:
         """Validate the title field.
 
-        - If *v* is a plain string, emit a deprecation warning (backward
-          compatibility) and return it unchanged.
+        - If *v* is a plain string, return it unchanged (backward
+          compatibility).  A deprecation warning including the filepath is
+          emitted by :meth:`_warn_string_title` after model construction.
         - If *v* is a dict, ensure it has all three required keys
           (``filename``, ``extracted``, ``generated``).  Missing keys are
           added with empty-string values so that downstream code can rely
           on the dict always having exactly those keys.
         """
         if isinstance(v, str):
-            _logger.warning(
-                "Title is a plain string; string titles are deprecated. "
-                "Use a dict with 'filename', 'extracted', 'generated' keys.",
-            )
             return v
 
         if isinstance(v, dict):
@@ -402,6 +408,22 @@ class Metadata(BaseModel):
             return v
 
         return v
+
+    @model_validator(mode="after")
+    def _warn_string_title(self) -> Metadata:
+        """Emit a deprecation warning if title is a plain string.
+
+        Unlike the field validator, this runs after model construction so
+        that ``self.filepath`` is available for inclusion in the warning
+        message.
+        """
+        if isinstance(self.title, str):
+            _logger.warning(
+                "Title is a plain string; string titles are deprecated for file %s. "
+                "Use a dict with 'filename', 'extracted', 'generated' keys.",
+                self.filepath,
+            )
+        return self
 
     # ------------------------------------------------------------------
     # Computed properties
@@ -549,7 +571,17 @@ class Metadata(BaseModel):
 
         Returns:
             A validated Metadata instance.
+
+        Raises:
+            json.JSONDecodeError: If the file contains invalid JSON.
+            ValidationError: If the data does not match the Metadata schema.
+            OSError: If the file cannot be read.
         """
         path = Path(path)
-        data = json.loads(path.read_text(encoding="utf-8"))
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            _logger.warning("Failed to parse metadata file %s: %s", path, exc)
+            log_error(exc, filepath=str(path), stage="metadata_parse")
+            raise
         return cls.model_validate(data)
