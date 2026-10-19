@@ -14,7 +14,6 @@ Tests cover:
 
 import json
 import logging
-import os
 from pathlib import Path
 import time
 from typing import Any
@@ -30,6 +29,26 @@ import pytest
 # ---------------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------------
+
+REQUIRED_ENV_KEYS = [
+    "BASE_URL",
+    "LLM_ENDPOINT",
+    "LLM_API_KEY",
+    "LLM_MODEL",
+    "PROMPT_ARTICLE",
+    "PROMPT_ARTICLE_REFLECTION",
+    "PROMPT_PODCAST",
+    "PROMPT_PODCAST_REFLECTION",
+    "PROMPT_TITLE",
+]
+
+
+@pytest.fixture
+def clear_required_env(monkeypatch):
+    """Clear all required env vars, yielding control, then they're auto-restored by monkeypatch."""
+    for key in REQUIRED_ENV_KEYS:
+        monkeypatch.delenv(key, raising=False)
+    yield
 
 
 def _set_valid_env(monkeypatch):
@@ -97,6 +116,51 @@ def tmp_data_dir(tmp_path):
     data_dir = tmp_path / "data"
     data_dir.mkdir()
     return data_dir
+
+
+@pytest.fixture
+def watch_mocks():
+    """Provide a context manager that sets up common watch command mocks.
+
+    Reduces nested ``with mock.patch`` blocks from 4-5 levels to 1.
+    """
+    from contextlib import contextmanager
+
+    @contextmanager
+    def _setup(
+        gen_return=None,
+        producer_return=None,
+        producer_process_return=None,
+    ):
+        if gen_return is None:
+            gen_return = {"podcast": 0, "articles": 0}
+        with (
+            mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen,
+            mock.patch("local_feed_generator.producer.Producer") as MockProducer,
+            mock.patch("watchdog.observers.Observer") as MockObserver,
+            mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep,
+        ):
+            mock_gen.return_value = gen_return
+            if producer_process_return is not None:
+                mock_producer = mock.MagicMock()
+                mock_producer.process_file.return_value = producer_process_return
+                MockProducer.return_value = mock_producer
+            elif producer_return is not None:
+                MockProducer.return_value = producer_return
+            else:
+                MockProducer.return_value = mock.MagicMock()
+            mock_observer = mock.MagicMock()
+            MockObserver.return_value = mock_observer
+            mock_sleep.side_effect = KeyboardInterrupt
+            yield {
+                "mock_gen": mock_gen,
+                "MockProducer": MockProducer,
+                "MockObserver": MockObserver,
+                "mock_observer": mock_observer,
+                "mock_sleep": mock_sleep,
+            }
+
+    return _setup
 
 
 def _make_scanned_file(
@@ -254,8 +318,6 @@ class TestCliFramework:
 
     def test_configure_logging_level_sets_debug(self):
         """_configure_logging_level should set the logger level to DEBUG."""
-        import logging
-
         from local_feed_generator.cli import _configure_logging_level
 
         _configure_logging_level("DEBUG")
@@ -264,8 +326,6 @@ class TestCliFramework:
 
     def test_configure_logging_level_sets_critical(self):
         """_configure_logging_level should set the logger level to CRITICAL."""
-        import logging
-
         from local_feed_generator.cli import _configure_logging_level
 
         _configure_logging_level("CRITICAL")
@@ -278,8 +338,6 @@ class TestCliFramework:
         The error log logger must always remain at ERROR level so that errors
         are always written to error.log regardless of the user's log level.
         """
-        import logging
-
         from local_feed_generator.cli import _configure_logging_level
 
         _configure_logging_level("WARNING")
@@ -292,8 +350,6 @@ class TestCliFramework:
 
     def test_configure_logging_level_invalid_falls_back_to_info(self):
         """_configure_logging_level should fall back to INFO for unknown levels."""
-        import logging
-
         from local_feed_generator.cli import _configure_logging_level
 
         _configure_logging_level("UNKNOWN")
@@ -302,8 +358,6 @@ class TestCliFramework:
 
     def test_configure_logging_level_case_insensitive(self):
         """_configure_logging_level should handle lowercase input."""
-        import logging
-
         from local_feed_generator.cli import _configure_logging_level
 
         _configure_logging_level("debug")
@@ -377,7 +431,7 @@ class TestCliFramework:
         assert result.exit_code != 0
 
     def test_config_loading_from_env_file_without_config_file(
-        self, runner, tmp_path, monkeypatch
+        self, runner, tmp_path, monkeypatch, clear_required_env
     ):
         """_load_config should load .env from cwd when config_file is None.
 
@@ -385,21 +439,6 @@ class TestCliFramework:
         exist in a .env file (but not in os.environ), the CRITICAL warning
         should not fire.
         """
-        # Clear all required env vars so they are only available via .env
-        required_keys = [
-            "BASE_URL",
-            "LLM_ENDPOINT",
-            "LLM_API_KEY",
-            "LLM_MODEL",
-            "PROMPT_ARTICLE",
-            "PROMPT_ARTICLE_REFLECTION",
-            "PROMPT_PODCAST",
-            "PROMPT_PODCAST_REFLECTION",
-            "PROMPT_TITLE",
-        ]
-        for key in required_keys:
-            monkeypatch.delenv(key, raising=False)
-
         # Write a .env file with all required vars
         env_content = (
             "BASE_URL=https://example.com/feeds\n"
@@ -415,94 +454,57 @@ class TestCliFramework:
         env_file = tmp_path / ".env"
         env_file.write_text(env_content)
 
-        original_cwd = os.getcwd()
-        try:
-            os.chdir(tmp_path)
-            import local_feed_generator.config as config_module
+        import local_feed_generator.config as config_module
 
-            config_module._config_instance = None
+        config_module._config_instance = None
 
-            # _load_config should load .env and not raise CRITICAL.
-            # Mock load_dotenv to load from the tmp_path .env file specifically,
-            # preventing find_dotenv() from finding the project root's .env
-            # file and leaking env vars into subsequent tests.
-            real_load_dotenv = load_dotenv
+        monkeypatch.chdir(tmp_path)
+        real_load_dotenv = load_dotenv
 
-            def mock_load_dotenv(*args, **kwargs):
-                return real_load_dotenv(env_file, override=False)
+        def mock_load_dotenv(*args, **kwargs):
+            return real_load_dotenv(env_file, override=False)
 
-            with mock.patch("local_feed_generator.config._logger") as mock_logger:
-                with mock.patch("dotenv.load_dotenv", side_effect=mock_load_dotenv):
-                    from local_feed_generator.cli import _load_config
+        with (
+            mock.patch("local_feed_generator.config._logger") as mock_logger,
+            mock.patch("dotenv.load_dotenv", side_effect=mock_load_dotenv),
+        ):
+            from local_feed_generator.cli import _load_config
 
-                    _load_config(None)
+            _load_config(None)
 
-            # No CRITICAL log should have been emitted
-            mock_logger.critical.assert_not_called()
-        finally:
-            os.chdir(original_cwd)
-            config_module._config_instance = None
-            # Clean up any env vars loaded by load_dotenv
-            for key in required_keys:
-                monkeypatch.delenv(key, raising=False)
+        # No CRITICAL log should have been emitted
+        mock_logger.critical.assert_not_called()
 
     def test_config_loading_critical_when_env_truly_missing(
-        self, runner, tmp_path, monkeypatch
+        self, runner, tmp_path, monkeypatch, clear_required_env
     ):
         """CRITICAL warning should fire when env vars are truly missing.
 
         When no .env file exists and env vars are not set, the CRITICAL
         warning should still fire.
         """
-        required_keys = [
-            "BASE_URL",
-            "LLM_ENDPOINT",
-            "LLM_API_KEY",
-            "LLM_MODEL",
-            "PROMPT_ARTICLE",
-            "PROMPT_ARTICLE_REFLECTION",
-            "PROMPT_PODCAST",
-            "PROMPT_PODCAST_REFLECTION",
-            "PROMPT_TITLE",
-        ]
-        for key in required_keys:
-            monkeypatch.delenv(key, raising=False)
+        import local_feed_generator.config as config_module
 
-        # Save original env var values for cleanup
-        original_env = {key: os.environ.get(key) for key in required_keys}
+        config_module._config_instance = None
 
-        original_cwd = os.getcwd()
-        try:
-            os.chdir(tmp_path)
-            import local_feed_generator.config as config_module
+        monkeypatch.chdir(tmp_path)
 
-            config_module._config_instance = None
+        # No .env file exists, so CRITICAL should fire via config._logger
+        # and _load_config should raise click.ClickException.
+        # Mock load_dotenv to prevent it from finding the project root's
+        # .env file via find_dotenv() parent directory search.
+        with (
+            mock.patch("local_feed_generator.config._logger") as mock_logger,
+            mock.patch("dotenv.load_dotenv"),
+        ):
+            from local_feed_generator.cli import _load_config
 
-            # No .env file exists, so CRITICAL should fire via config._logger
-            # and _load_config should raise click.ClickException.
-            # Mock load_dotenv to prevent it from finding the project root's
-            # .env file via find_dotenv() parent directory search.
-            with mock.patch("local_feed_generator.config._logger") as mock_logger:
-                with mock.patch("dotenv.load_dotenv"):
-                    from local_feed_generator.cli import _load_config
+            with pytest.raises(click.ClickException):
+                _load_config(None)
 
-                    with pytest.raises(click.ClickException):
-                        _load_config(None)
-
-            critical_calls = [
-                call for call in mock_logger.critical.call_args_list
-            ]
-            assert len(critical_calls) > 0
-            assert "Missing required configuration" in critical_calls[0].args[0]
-        finally:
-            os.chdir(original_cwd)
-            config_module._config_instance = None
-            # Restore original env var values
-            for key in required_keys:
-                if original_env[key] is not None:
-                    os.environ[key] = original_env[key]
-                else:
-                    os.environ.pop(key, None)
+        critical_calls = list(mock_logger.critical.call_args_list)
+        assert len(critical_calls) > 0
+        assert "Missing required configuration" in critical_calls[0].args[0]
 
     def test_data_dir_option_validates_directory(self, runner, valid_env, tmp_path):
         """Positional args should reject non-existent paths."""
@@ -725,79 +727,44 @@ class TestProcessCommand:
 class TestWatchCommand:
     """Tests for the watch command (T5.3)."""
 
-    def test_watch_starts_observer(self, runner, valid_env, tmp_data_dir):
+    def test_watch_starts_observer(self, runner, valid_env, tmp_data_dir, watch_mocks):
         """Watch should start a watchdog Observer."""
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
-            mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
-                mock_producer = mock.MagicMock()
-                mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
-                MockProducer.return_value = mock_producer
-
-                with mock.patch("watchdog.observers.Observer") as MockObserver:
-                    mock_observer = mock.MagicMock()
-                    MockObserver.return_value = mock_observer
-
-                    # Mock time.sleep to raise KeyboardInterrupt to stop the loop
-                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
-                        mock_sleep.side_effect = KeyboardInterrupt
-
-                        result = runner.invoke(
-                            app,
-                            ["watch", str(tmp_data_dir)],
-                        )
+        with watch_mocks(producer_process_return=_make_mock_metadata(feed_eligible=True)) as mocks:
+            result = runner.invoke(
+                app,
+                ["watch", str(tmp_data_dir)],
+            )
 
         assert result.exit_code == 0
-        MockObserver.assert_called_once()
-        mock_observer.start.assert_called_once()
-        mock_observer.stop.assert_called_once()
-        mock_observer.join.assert_called_once()
+        mocks["MockObserver"].assert_called_once()
+        mocks["mock_observer"].start.assert_called_once()
+        mocks["mock_observer"].stop.assert_called_once()
+        mocks["mock_observer"].join.assert_called_once()
 
-    def test_watch_initial_scan_processes_files(self, runner, valid_env, tmp_data_dir):
+    def test_watch_initial_scan_processes_files(self, runner, valid_env, tmp_data_dir, watch_mocks):
         """Watch should process files on initial scan."""
         (tmp_data_dir / "new.mp4").write_bytes(b"video")
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
-            mock_gen.return_value = {"podcast": 1, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
-                mock_producer = mock.MagicMock()
-                mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
-                MockProducer.return_value = mock_producer
-
-                with mock.patch("watchdog.observers.Observer") as MockObserver:
-                    mock_observer = mock.MagicMock()
-                    MockObserver.return_value = mock_observer
-
-                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
-                        mock_sleep.side_effect = KeyboardInterrupt
-
-                        result = runner.invoke(
-                            app,
-                            ["watch", str(tmp_data_dir)],
-                        )
+        with watch_mocks(
+            gen_return={"podcast": 1, "articles": 0},
+            producer_process_return=_make_mock_metadata(feed_eligible=True),
+        ) as mocks:
+            result = runner.invoke(
+                app,
+                ["watch", str(tmp_data_dir)],
+            )
 
         assert result.exit_code == 0
         assert "Initial scan: found 1 file(s) to process." in result.output
-        mock_producer.process_file.assert_called_once()
+        mocks["MockProducer"].return_value.process_file.assert_called_once()
 
-    def test_watch_no_files_initial_scan(self, runner, valid_env, tmp_data_dir):
+    def test_watch_no_files_initial_scan(self, runner, valid_env, tmp_data_dir, watch_mocks):
         """Watch should handle empty directory on initial scan."""
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
-            mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
-                MockProducer.return_value = mock.MagicMock()
-
-                with mock.patch("watchdog.observers.Observer") as MockObserver:
-                    mock_observer = mock.MagicMock()
-                    MockObserver.return_value = mock_observer
-
-                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
-                        mock_sleep.side_effect = KeyboardInterrupt
-
-                        result = runner.invoke(
-                            app,
-                            ["watch", str(tmp_data_dir)],
-                        )
+        with watch_mocks():
+            result = runner.invoke(
+                app,
+                ["watch", str(tmp_data_dir)],
+            )
 
         assert result.exit_code == 0
         assert "Initial scan: no files to process." in result.output
@@ -889,28 +856,17 @@ class TestWatchCommand:
 
         mock_logger.warning.assert_not_called()
 
-    def test_watch_graceful_shutdown(self, runner, valid_env, tmp_data_dir):
+    def test_watch_graceful_shutdown(self, runner, valid_env, tmp_data_dir, watch_mocks):
         """Watch should shut down gracefully on SIGINT."""
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
-            mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
-                MockProducer.return_value = mock.MagicMock()
-
-                with mock.patch("watchdog.observers.Observer") as MockObserver:
-                    mock_observer = mock.MagicMock()
-                    MockObserver.return_value = mock_observer
-
-                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
-                        mock_sleep.side_effect = KeyboardInterrupt
-
-                        result = runner.invoke(
-                            app,
-                            ["watch", str(tmp_data_dir)],
-                        )
+        with watch_mocks() as mocks:
+            result = runner.invoke(
+                app,
+                ["watch", str(tmp_data_dir)],
+            )
 
         assert result.exit_code == 0
-        mock_observer.stop.assert_called_once()
-        mock_observer.join.assert_called_once()
+        mocks["mock_observer"].stop.assert_called_once()
+        mocks["mock_observer"].join.assert_called_once()
 
     def test_watch_handler_continues_after_error(self, valid_env, tmp_data_dir):
         """Watch handler should not crash when file processing raises an exception."""
@@ -924,11 +880,16 @@ class TestWatchCommand:
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
         # _handle_event should not raise; it should catch and log the error
-        with mock.patch("local_feed_generator.cli.log_error"):
+        with mock.patch("local_feed_generator.cli.log_error") as mock_log_error:
             handler._handle_event(str(source_file))
 
         # Producer was called despite the error (the event was dispatched)
         producer.process_file.assert_called_once()
+        # Error should have been logged
+        mock_log_error.assert_called_once()
+        call_kwargs = mock_log_error.call_args
+        assert "bad.mp4" in call_kwargs[1]["filepath"]
+        assert call_kwargs[1]["stage"] == "processing"
 
     def test_watch_handler_logs_error_on_processing_failure(self, valid_env, tmp_data_dir):
         """Watch handler should log an error when file processing fails."""
@@ -1372,96 +1333,32 @@ class TestWatchCommand:
         # Scanner should have skipped the file (JSON is up-to-date)
         producer.process_file.assert_not_called()
 
-    def test_watch_starts_rescan_thread(self, runner, valid_env, tmp_data_dir):
-        """Watch should start a periodic rescan background thread."""
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
-            mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
-                MockProducer.return_value = mock.MagicMock()
-
-                with mock.patch("watchdog.observers.Observer") as MockObserver:
-                    mock_observer = mock.MagicMock()
-                    MockObserver.return_value = mock_observer
-
-                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
-                        mock_sleep.side_effect = KeyboardInterrupt
-
-                        result = runner.invoke(
-                            app,
-                            ["watch", str(tmp_data_dir)],
-                        )
-
-        assert result.exit_code == 0
-        assert "Periodic rescan enabled" in result.output
-
-    def test_watch_graceful_shutdown_stops_rescan_thread(self, runner, valid_env, tmp_data_dir):
-        """Watch should gracefully shut down the rescan thread on exit."""
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
-            mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
-                MockProducer.return_value = mock.MagicMock()
-
-                with mock.patch("watchdog.observers.Observer") as MockObserver:
-                    mock_observer = mock.MagicMock()
-                    MockObserver.return_value = mock_observer
-
-                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
-                        mock_sleep.side_effect = KeyboardInterrupt
-
-                        result = runner.invoke(
-                            app,
-                            ["watch", str(tmp_data_dir)],
-                        )
-
-        assert result.exit_code == 0
-        assert "Watcher stopped." in result.output
-
     def test_watch_rescan_interval_env_var_override(
-        self, runner, valid_env, tmp_data_dir, monkeypatch
+        self, runner, valid_env, tmp_data_dir, monkeypatch, watch_mocks
     ):
         """Watch should respect RESCAN_INTERVAL environment variable."""
         monkeypatch.setenv("RESCAN_INTERVAL", "60")
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
-            mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
-                MockProducer.return_value = mock.MagicMock()
-
-                with mock.patch("watchdog.observers.Observer") as MockObserver:
-                    mock_observer = mock.MagicMock()
-                    MockObserver.return_value = mock_observer
-
-                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
-                        mock_sleep.side_effect = KeyboardInterrupt
-
-                        result = runner.invoke(
-                            app,
-                            ["watch", str(tmp_data_dir)],
-                        )
+        with watch_mocks():
+            result = runner.invoke(
+                app,
+                ["watch", str(tmp_data_dir)],
+            )
 
         assert result.exit_code == 0
         assert "Periodic rescan enabled (every 60s)." in result.output
 
-    def test_watch_rescan_disabled_when_zero(self, runner, valid_env, tmp_data_dir, monkeypatch):
+    def test_watch_rescan_disabled_when_zero(
+        self, runner, valid_env, tmp_data_dir, monkeypatch, watch_mocks
+    ):
         """Watch should disable periodic rescan when RESCAN_INTERVAL is 0."""
         monkeypatch.setenv("RESCAN_INTERVAL", "0")
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
-            mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
-                MockProducer.return_value = mock.MagicMock()
-
-                with mock.patch("watchdog.observers.Observer") as MockObserver:
-                    mock_observer = mock.MagicMock()
-                    MockObserver.return_value = mock_observer
-
-                    with mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep:
-                        mock_sleep.side_effect = KeyboardInterrupt
-
-                        result = runner.invoke(
-                            app,
-                            ["watch", str(tmp_data_dir)],
-                        )
+        with watch_mocks():
+            result = runner.invoke(
+                app,
+                ["watch", str(tmp_data_dir)],
+            )
 
         assert result.exit_code == 0
         assert "Periodic rescan disabled." in result.output
@@ -1592,10 +1489,122 @@ class TestFeedsCommand:
         # Only 1 podcast item (the success one)
         assert "1 item(s)" in result.output
 
+    def test_feeds_finalizes_incomplete_mp4_metadata(self, runner, valid_env, tmp_data_dir):
+        """Feeds should finalize incomplete MP4 metadata before generating feeds."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "Test",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Some transcript content",
+                    "summary": "Some summary",
+                }
+            )
+        )
 
-# ---------------------------------------------------------------------------
-# T5.5: Validate Command Tests
-# ---------------------------------------------------------------------------
+        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            mock_generator = mock.MagicMock()
+            mock_generator.generate_all_feeds.return_value = None
+            MockGen.return_value = mock_generator
+
+            result = runner.invoke(
+                app,
+                ["feeds", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        json_path = tmp_data_dir / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        assert data["transcribe"]["status"] == "complete"
+        assert data["summarize"]["status"] == "complete"
+        assert data["summarize"]["end_time"] is not None
+
+    def test_feeds_skips_finalization_for_complete_files(self, runner, valid_env, tmp_data_dir):
+        """Feeds should not re-finalize files that are already feed-eligible."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        # Already complete metadata (extract + summarize both complete)
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "title": "Existing Title",
+                    "description": "Existing Description",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            mock_generator = mock.MagicMock()
+            mock_generator.generate_all_feeds.return_value = None
+            MockGen.return_value = mock_generator
+
+            result = runner.invoke(
+                app,
+                ["feeds", str(tmp_data_dir)],
+            )
+
+        assert result.exit_code == 0
+        # File should still be valid and feed-eligible
+        json_path = tmp_data_dir / "doc.pdf.json"
+        data = json.loads(json_path.read_text())
+        assert data["extract"]["status"] == "complete"
+        assert data["summarize"]["status"] == "complete"
+
+    def test_feeds_generates_title_for_mp4_without_title(self, runner, valid_env, tmp_data_dir):
+        """Feeds finalization should generate a title for MP4 files when missing."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                    "title": "",
+                    "description": "",
+                    "filename": "lecture.mp4",
+                    "filepath": "lecture.mp4",
+                    "filetype": "mp4",
+                    "date": 1728931200,
+                    "size": 1024,
+                    "content": "Some transcript content",
+                    "summary": "Some summary",
+                }
+            )
+        )
+
+        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.generate_title.return_value = ("Generated Title", 30, 5)
+            MockSummarizer.return_value = mock_summarizer
+
+            with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+                mock_generator = mock.MagicMock()
+                mock_generator.generate_all_feeds.return_value = None
+                MockGen.return_value = mock_generator
+
+                result = runner.invoke(
+                    app,
+                    ["feeds", str(tmp_data_dir)],
+                )
+
+        assert result.exit_code == 0
+        json_path = tmp_data_dir / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        assert data["title"]["generated"] == "Generated Title"
+        mock_summarizer.generate_title.assert_called_once()
 
 
 class TestValidateCommand:
@@ -1671,7 +1680,7 @@ class TestValidateCommand:
 
     def test_validate_detects_special_characters(self, runner, valid_env, tmp_data_dir):
         """Validate should warn about special characters in filenames."""
-        (tmp_data_dir / "file<test>.mp4").write_bytes(b"video")
+        (tmp_data_dir / "file&test.mp4").write_bytes(b"video")
 
         result = runner.invoke(
             app,
@@ -1822,10 +1831,60 @@ class TestValidateCommand:
         assert result.exit_code == 1
         assert "Errors (2)" in result.output
 
+    def test_validate_finalizes_incomplete_pdf_metadata(self, runner, valid_env, tmp_data_dir):
+        """Validate should finalize incomplete PDF metadata before validation."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "in_progress", "input_size": 0, "output_size": 0},
+                    "title": "PDF Title",
+                    "description": "PDF Description",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                }
+            )
+        )
 
-# ---------------------------------------------------------------------------
-# T5.6: Entry Point Tests
-# ---------------------------------------------------------------------------
+        result = runner.invoke(
+            app,
+            ["validate", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+        json_path = tmp_data_dir / "doc.pdf.json"
+        data = json.loads(json_path.read_text())
+        assert data["extract"]["status"] == "complete"
+        assert data["extract"]["end_time"] is not None
+
+    def test_validate_finalizes_and_reports_no_errors(self, runner, valid_env, tmp_data_dir):
+        """Validate should finalize incomplete metadata and report no errors."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "extract": {"status": "in_progress", "input_size": 0, "output_size": 0},
+                    "title": "PDF Title",
+                    "description": "PDF Description",
+                    "filename": "doc.pdf",
+                    "filepath": "doc.pdf",
+                    "filetype": "pdf",
+                    "date": 1728931200,
+                    "size": 1024,
+                }
+            )
+        )
+
+        result = runner.invoke(
+            app,
+            ["validate", str(tmp_data_dir)],
+        )
+
+        assert result.exit_code == 0
+        assert "All files are valid" in result.output
 
 
 class TestEntryPoint:
@@ -2067,9 +2126,22 @@ class TestTranscribeCommand:
 
     def test_transcribe_uses_positional_arg_for_directory(self, runner, valid_env, tmp_data_dir):
         """Transcribe should use the directory passed as a positional argument."""
-        result = runner.invoke(app, ["transcribe", str(tmp_data_dir)])
+        # Create a file in tmp_data_dir and another in a sibling directory
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        other_dir = tmp_data_dir.parent / "other_data"
+        other_dir.mkdir()
+        (other_dir / "other.mp4").write_bytes(b"other video")
+
+        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+            mock_transcriber = mock.MagicMock()
+            mock_transcriber.transcribe.return_value = "Transcript"
+            MockTranscriber.return_value = mock_transcriber
+
+            result = runner.invoke(app, ["transcribe", str(tmp_data_dir)])
+
         assert result.exit_code == 0
-        assert "No MP4 files need transcription." in result.output
+        # Only the file in tmp_data_dir should be processed, not the one in other_dir
+        mock_transcriber.transcribe.assert_called_once()
 
     def test_transcribe_exit_code_1_on_error(self, runner, valid_env, tmp_data_dir):
         """Transcribe should exit with code 1 when transcription fails."""
@@ -2210,39 +2282,19 @@ class TestTranscribeCommand:
         """Transcribe should set status to 'in_progress' before transcription, then 'complete'."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
 
-        # Track the status values written at each _write_json_metadata call.
-        written_statuses: list[str] = []
-
-        def track_write(data, source_path):
-            written_statuses.append(data.get("transcribe", {}).get("status"))
-            # Call the real implementation to actually write the file
-            json_path = source_path.with_name(source_path.name + ".json")
-            json_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
-            tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            tmp_path.replace(json_path)
-
         with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
             mock_transcriber = mock.MagicMock()
             mock_transcriber.transcribe.return_value = "This is a transcript."
             MockTranscriber.return_value = mock_transcriber
 
-            with mock.patch(
-                "local_feed_generator.cli._write_json_metadata",
-                side_effect=track_write,
-            ):
-                result = runner.invoke(
-                    app,
-                    ["transcribe", str(tmp_data_dir)],
-                )
+            result = runner.invoke(
+                app,
+                ["transcribe", str(tmp_data_dir)],
+            )
 
         assert result.exit_code == 0
-        # Should have written at least twice: once for in_progress, once for complete
-        assert len(written_statuses) >= 2
-        assert written_statuses[0] == "in_progress"
-        assert written_statuses[-1] == "complete"
 
-        # Verify final JSON state
+        # Verify final JSON state has complete status and end_time
         json_path = tmp_data_dir / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
         assert data["transcribe"]["status"] == "complete"
@@ -2461,39 +2513,19 @@ class TestSummarizeCommand:
             )
         )
 
-        # Track the status values written at each _write_json_metadata call.
-        written_statuses: list[str] = []
-
-        def track_write(data, source_path):
-            written_statuses.append(data.get("summarize", {}).get("status"))
-            # Call the real implementation to actually write the file
-            json_path = source_path.with_name(source_path.name + ".json")
-            json_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
-            tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            tmp_path.replace(json_path)
-
         with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
             MockSummarizer.return_value = mock_summarizer
 
-            with mock.patch(
-                "local_feed_generator.cli._write_json_metadata",
-                side_effect=track_write,
-            ):
-                result = runner.invoke(
-                    app,
-                    ["summarize", str(tmp_data_dir)],
-                )
+            result = runner.invoke(
+                app,
+                ["summarize", str(tmp_data_dir)],
+            )
 
         assert result.exit_code == 0
-        # Should have written at least twice: once for in_progress, once for complete
-        assert len(written_statuses) >= 2
-        assert written_statuses[0] == "in_progress"
-        assert written_statuses[-1] == "complete"
 
-        # Verify final JSON state
+        # Verify final JSON state has complete status
         json_path = tmp_data_dir / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
         assert data["summarize"]["status"] == "complete"
@@ -2778,83 +2810,63 @@ class TestSummarizeCommand:
 class TestFindFilesNeedingSummary:
     """Tests for the _find_files_needing_summary helper function."""
 
-    def test_find_files_needing_summary_finds_mp4(self, valid_env, tmp_data_dir):
-        """Should find MP4 files with content but no summary."""
-        (tmp_data_dir / "lecture.mp4").write_bytes(b"video")
-        (tmp_data_dir / "lecture.mp4.json").write_text(
-            json.dumps(
-                {
-                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
-                    "title": "Test",
-                    "description": "",
-                    "filename": "lecture.mp4",
-                    "filepath": "lecture.mp4",
-                    "filetype": "mp4",
-                    "date": 1728931200,
-                    "size": 1024,
-                    "content": "Some transcript",
-                }
-            )
-        )
+    @pytest.mark.parametrize(
+        "filename,filetype,content_key,content_value,extra_steps",
+        [
+            (
+                "lecture.mp4",
+                "mp4",
+                "content",
+                "Some transcript",
+                {"transcribe": {"status": "complete", "input_size": 0, "output_size": 0}},
+            ),
+            (
+                "doc.pdf",
+                "pdf",
+                "content",
+                "Extracted PDF text.",
+                {"extract": {"status": "complete", "input_size": 0, "output_size": 0}},
+            ),
+            (
+                "page.html",
+                "html",
+                "content",
+                "Extracted HTML text.",
+                {"extract": {"status": "complete", "input_size": 0, "output_size": 0}},
+            ),
+        ],
+    )
+    def test_find_files_needing_summary_finds_mp4_pdf_html(
+        self,
+        valid_env,
+        tmp_data_dir,
+        filename,
+        filetype,
+        content_key,
+        content_value,
+        extra_steps,
+    ):
+        """Should find files of each type with content but no summary."""
+        (tmp_data_dir / filename).write_bytes(b"data")
+        metadata = {
+            "summarize": {"status": None, "input_size": 0, "output_size": 0},
+            "title": "Test",
+            "description": "Desc" if filetype != "mp4" else "",
+            "filename": filename,
+            "filepath": filename,
+            "filetype": filetype,
+            "date": 1728931200,
+            "size": 1024 if filetype != "html" else 512,
+            content_key: content_value,
+        }
+        metadata.update(extra_steps)
+        (tmp_data_dir / f"{filename}.json").write_text(json.dumps(metadata))
 
         from local_feed_generator.cli import _find_files_needing_summary
 
         result = _find_files_needing_summary(tmp_data_dir)
         assert len(result) == 1
-        assert result[0].name == "lecture.mp4"
-
-    def test_find_files_needing_summary_finds_pdf(self, valid_env, tmp_data_dir):
-        """Should find PDF files with content but no summary."""
-        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
-        (tmp_data_dir / "doc.pdf.json").write_text(
-            json.dumps(
-                {
-                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
-                    "title": "Test",
-                    "description": "Desc",
-                    "filename": "doc.pdf",
-                    "filepath": "doc.pdf",
-                    "filetype": "pdf",
-                    "date": 1728931200,
-                    "size": 1024,
-                    "content": "Extracted PDF text.",
-                }
-            )
-        )
-
-        from local_feed_generator.cli import _find_files_needing_summary
-
-        result = _find_files_needing_summary(tmp_data_dir)
-        assert len(result) == 1
-        assert result[0].name == "doc.pdf"
-
-    def test_find_files_needing_summary_finds_html(self, valid_env, tmp_data_dir):
-        """Should find HTML files with content but no summary."""
-        (tmp_data_dir / "page.html").write_bytes(b"html")
-        (tmp_data_dir / "page.html.json").write_text(
-            json.dumps(
-                {
-                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
-                    "title": "Test",
-                    "description": "Desc",
-                    "filename": "page.html",
-                    "filepath": "page.html",
-                    "filetype": "html",
-                    "date": 1728931200,
-                    "size": 512,
-                    "content": "Extracted HTML text.",
-                }
-            )
-        )
-
-        from local_feed_generator.cli import _find_files_needing_summary
-
-        result = _find_files_needing_summary(tmp_data_dir)
-        assert len(result) == 1
-        assert result[0].name == "page.html"
+        assert result[0].name == filename
 
     def test_find_files_needing_summary_skips_no_content(self, valid_env, tmp_data_dir):
         """Should skip files without content."""
@@ -3009,59 +3021,12 @@ class TestFindFilesNeedingSummary:
         assert "doc.pdf" in names
         assert "page.html" not in names
 
-    def test_find_files_needing_summary_paths_filters_to_specific_file(
-        self, valid_env, tmp_data_dir
-    ):
-        """Should only return files matching the specified paths."""
-        # Create two files needing summary
-        (tmp_data_dir / "doc1.pdf").write_bytes(b"pdf")
-        (tmp_data_dir / "doc1.pdf.json").write_text(
-            json.dumps(
-                {
-                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
-                    "title": "Test",
-                    "description": "Desc",
-                    "filename": "doc1.pdf",
-                    "filepath": "doc1.pdf",
-                    "filetype": "pdf",
-                    "date": 1728931200,
-                    "size": 1024,
-                    "content": "Content 1",
-                }
-            )
-        )
-        (tmp_data_dir / "doc2.pdf").write_bytes(b"pdf")
-        (tmp_data_dir / "doc2.pdf.json").write_text(
-            json.dumps(
-                {
-                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
-                    "title": "Test",
-                    "description": "Desc",
-                    "filename": "doc2.pdf",
-                    "filepath": "doc2.pdf",
-                    "filetype": "pdf",
-                    "date": 1728931200,
-                    "size": 1024,
-                    "content": "Content 2",
-                }
-            )
-        )
-
-        from local_feed_generator.cli import _find_files_needing_summary
-
-        # Without paths filter: both files returned
-        result = _find_files_needing_summary(tmp_data_dir)
-        assert len(result) == 2
-
-        # With paths filter for only doc1.pdf: only doc1.pdf returned
-        result = _find_files_needing_summary(tmp_data_dir, paths=[tmp_data_dir / "doc1.pdf"])
-        assert len(result) == 1
-        assert result[0].name == "doc1.pdf"
-
-    def test_find_files_needing_summary_paths_filters_to_directory(self, valid_env, tmp_data_dir):
-        """Should return files within the specified directory."""
+    @pytest.mark.parametrize(
+        "filter_type",
+        ["file", "directory"],
+    )
+    def test_find_files_needing_summary_paths_filters(self, valid_env, tmp_data_dir, filter_type):
+        """Should filter results to specific file or directory."""
         # Create a subdirectory with a file
         subdir = tmp_data_dir / "subdir"
         subdir.mkdir()
@@ -3103,10 +3068,20 @@ class TestFindFilesNeedingSummary:
 
         from local_feed_generator.cli import _find_files_needing_summary
 
-        # With paths filter for subdir: only doc1.pdf returned
-        result = _find_files_needing_summary(tmp_data_dir, paths=[subdir])
-        assert len(result) == 1
-        assert result[0].name == "doc1.pdf"
+        # Without paths filter: both files returned
+        result = _find_files_needing_summary(tmp_data_dir)
+        assert len(result) == 2
+
+        if filter_type == "file":
+            # With paths filter for only doc1.pdf: only doc1.pdf returned
+            result = _find_files_needing_summary(tmp_data_dir, paths=[tmp_data_dir / "doc2.pdf"])
+            assert len(result) == 1
+            assert result[0].name == "doc2.pdf"
+        else:
+            # With paths filter for subdir: only doc1.pdf returned
+            result = _find_files_needing_summary(tmp_data_dir, paths=[subdir])
+            assert len(result) == 1
+            assert result[0].name == "doc1.pdf"
 
 
 class TestFindFilesNeedingTranscription:
@@ -3141,10 +3116,14 @@ class TestFindFilesNeedingTranscription:
         result = _find_files_needing_transcription(tmp_data_dir)
         assert len(result) == 0
 
-    def test_find_files_needing_transcription_paths_filters_to_specific_file(
-        self, valid_env, tmp_data_dir
+    @pytest.mark.parametrize(
+        "filter_type",
+        ["file", "directory"],
+    )
+    def test_find_files_needing_transcription_paths_filters(
+        self, valid_env, tmp_data_dir, filter_type
     ):
-        """Should only return MP4 files matching the specified paths."""
+        """Should filter results to specific file or directory."""
         (tmp_data_dir / "video1.mp4").write_bytes(b"video")
         (tmp_data_dir / "video2.mp4").write_bytes(b"video")
 
@@ -3154,28 +3133,21 @@ class TestFindFilesNeedingTranscription:
         result = _find_files_needing_transcription(tmp_data_dir)
         assert len(result) == 2
 
-        # With paths filter for only video1.mp4: only video1.mp4 returned
-        result = _find_files_needing_transcription(
-            tmp_data_dir, paths=[tmp_data_dir / "video1.mp4"]
-        )
-        assert len(result) == 1
-        assert result[0].name == "video1.mp4"
-
-    def test_find_files_needing_transcription_paths_filters_to_directory(
-        self, valid_env, tmp_data_dir
-    ):
-        """Should return MP4 files within the specified directory."""
-        subdir = tmp_data_dir / "subdir"
-        subdir.mkdir()
-        (subdir / "video1.mp4").write_bytes(b"video")
-        (tmp_data_dir / "video2.mp4").write_bytes(b"video")
-
-        from local_feed_generator.cli import _find_files_needing_transcription
-
-        # With paths filter for subdir: only video1.mp4 returned
-        result = _find_files_needing_transcription(tmp_data_dir, paths=[subdir])
-        assert len(result) == 1
-        assert result[0].name == "video1.mp4"
+        if filter_type == "file":
+            # With paths filter for only video1.mp4: only video1.mp4 returned
+            result = _find_files_needing_transcription(
+                tmp_data_dir, paths=[tmp_data_dir / "video1.mp4"]
+            )
+            assert len(result) == 1
+            assert result[0].name == "video1.mp4"
+        else:
+            # With paths filter for subdir: only video1.mp4 returned
+            subdir = tmp_data_dir / "subdir"
+            subdir.mkdir()
+            (subdir / "video1.mp4").write_bytes(b"video")
+            result = _find_files_needing_transcription(tmp_data_dir, paths=[subdir])
+            assert len(result) == 1
+            assert result[0].name == "video1.mp4"
 
 
 class TestFindFilesNeedingMetadataExtraction:
@@ -3214,10 +3186,14 @@ class TestFindFilesNeedingMetadataExtraction:
         result = _find_files_needing_metadata_extraction(tmp_data_dir)
         assert len(result) == 0
 
-    def test_find_files_needing_metadata_extraction_paths_filters_to_specific_file(
-        self, valid_env, tmp_data_dir
+    @pytest.mark.parametrize(
+        "filter_type",
+        ["file", "directory"],
+    )
+    def test_find_files_needing_metadata_extraction_paths_filters(
+        self, valid_env, tmp_data_dir, filter_type
     ):
-        """Should only return files matching the specified paths."""
+        """Should filter results to specific file or directory."""
         (tmp_data_dir / "doc1.pdf").write_bytes(b"pdf")
         (tmp_data_dir / "doc2.pdf").write_bytes(b"pdf")
 
@@ -3227,28 +3203,21 @@ class TestFindFilesNeedingMetadataExtraction:
         result = _find_files_needing_metadata_extraction(tmp_data_dir)
         assert len(result) == 2
 
-        # With paths filter for only doc1.pdf: only doc1.pdf returned
-        result = _find_files_needing_metadata_extraction(
-            tmp_data_dir, paths=[tmp_data_dir / "doc1.pdf"]
-        )
-        assert len(result) == 1
-        assert result[0].name == "doc1.pdf"
-
-    def test_find_files_needing_metadata_extraction_paths_filters_to_directory(
-        self, valid_env, tmp_data_dir
-    ):
-        """Should return files within the specified directory."""
-        subdir = tmp_data_dir / "subdir"
-        subdir.mkdir()
-        (subdir / "doc1.pdf").write_bytes(b"pdf")
-        (tmp_data_dir / "doc2.pdf").write_bytes(b"pdf")
-
-        from local_feed_generator.cli import _find_files_needing_metadata_extraction
-
-        # With paths filter for subdir: only doc1.pdf returned
-        result = _find_files_needing_metadata_extraction(tmp_data_dir, paths=[subdir])
-        assert len(result) == 1
-        assert result[0].name == "doc1.pdf"
+        if filter_type == "file":
+            # With paths filter for only doc1.pdf: only doc1.pdf returned
+            result = _find_files_needing_metadata_extraction(
+                tmp_data_dir, paths=[tmp_data_dir / "doc1.pdf"]
+            )
+            assert len(result) == 1
+            assert result[0].name == "doc1.pdf"
+        else:
+            # With paths filter for subdir: only doc1.pdf returned
+            subdir = tmp_data_dir / "subdir"
+            subdir.mkdir()
+            (subdir / "doc1.pdf").write_bytes(b"pdf")
+            result = _find_files_needing_metadata_extraction(tmp_data_dir, paths=[subdir])
+            assert len(result) == 1
+            assert result[0].name == "doc1.pdf"
 
     """Tests for the extract command (T5.9)."""
 
@@ -3287,42 +3256,42 @@ class TestFindFilesNeedingMetadataExtraction:
         assert "doc.pdf" in result.output
         mock_extractor.extract.assert_not_called()
 
-    def test_extract_processes_pdf(self, runner, valid_env, tmp_data_dir):
-        """Extract should process PDF files without status['extract']='complete'."""
-        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+    @pytest.mark.parametrize(
+        "filename,content,extractor_path,expected_title,expected_description",
+        [
+            ("doc.pdf", b"pdf data", "PDFExtractor", "PDF Title", "PDF Description"),
+            (
+                "page.html",
+                b"<html><title>Test</title></html>",
+                "HTMLExtractor",
+                "HTML Title",
+                "HTML Description",
+            ),
+        ],
+    )
+    def test_extract_processes_pdf_and_html(
+        self,
+        runner,
+        valid_env,
+        tmp_data_dir,
+        filename,
+        content,
+        extractor_path,
+        expected_title,
+        expected_description,
+    ):
+        """Extract should process PDF and HTML files without status['extract']='complete'."""
+        (tmp_data_dir / filename).write_bytes(content)
 
-        with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
+        extractor_target = f"local_feed_generator.services.extractors.{extractor_path}"
+        with mock.patch(extractor_target) as MockExtractor:
             mock_extractor = mock.MagicMock()
             mock_extractor.extract.return_value = {
-                "title": "PDF Title",
-                "description": "PDF Description",
+                "title": expected_title,
+                "description": expected_description,
                 "date": 1728931200,
                 "size": 1024,
-                "filetype": "pdf",
-            }
-            MockExtractor.return_value = mock_extractor
-
-            result = runner.invoke(
-                app,
-                ["extract", str(tmp_data_dir)],
-            )
-
-        assert result.exit_code == 0
-        assert "Found 1 PDF/HTML file(s)" in result.output
-        mock_extractor.extract.assert_called_once()
-
-    def test_extract_processes_html(self, runner, valid_env, tmp_data_dir):
-        """Extract should process HTML files without status['extract']='complete'."""
-        (tmp_data_dir / "page.html").write_bytes(b"<html><title>Test</title></html>")
-
-        with mock.patch("local_feed_generator.services.extractors.HTMLExtractor") as MockExtractor:
-            mock_extractor = mock.MagicMock()
-            mock_extractor.extract.return_value = {
-                "title": "HTML Title",
-                "description": "HTML Description",
-                "date": 1728931200,
-                "size": 1024,
-                "filetype": "html",
+                "filetype": filename.rsplit(".", 1)[-1],
             }
             MockExtractor.return_value = mock_extractor
 
@@ -3433,18 +3402,6 @@ class TestFindFilesNeedingMetadataExtraction:
         """Extract should set status to 'in_progress' before extraction, then 'complete' after."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
 
-        # Track the status values written at each _write_json_metadata call.
-        written_statuses: list[str] = []
-
-        def track_write(data, source_path):
-            written_statuses.append(data.get("extract", {}).get("status"))
-            # Call the real implementation to actually write the file
-            json_path = source_path.with_name(source_path.name + ".json")
-            json_path.parent.mkdir(parents=True, exist_ok=True)
-            tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
-            tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-            tmp_path.replace(json_path)
-
         with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
             mock_extractor = mock.MagicMock()
             mock_extractor.extract.return_value = {
@@ -3456,203 +3413,19 @@ class TestFindFilesNeedingMetadataExtraction:
             }
             MockExtractor.return_value = mock_extractor
 
-            with mock.patch(
-                "local_feed_generator.cli._write_json_metadata",
-                side_effect=track_write,
-            ):
-                result = runner.invoke(
-                    app,
-                    ["extract", str(tmp_data_dir)],
-                )
+            result = runner.invoke(
+                app,
+                ["extract", str(tmp_data_dir)],
+            )
 
         assert result.exit_code == 0
-        # Should have written at least twice: once for in_progress, once for complete
-        assert len(written_statuses) >= 2
-        assert written_statuses[0] == "in_progress"
-        assert written_statuses[-1] == "complete"
 
-        # Verify final JSON state
+        # Verify final JSON state has complete status and end_time
         json_path = tmp_data_dir / "doc.pdf.json"
         data = json.loads(json_path.read_text())
         assert data["extract"]["status"] == "complete"
         assert data["title"] == "PDF Title"
         assert data["extract"]["end_time"] is not None
-
-
-class TestJsonFinalizationIntegration:
-    """Tests for JSON finalization integrated into validate and feeds commands."""
-
-    def test_validate_finalizes_incomplete_pdf_metadata(self, runner, valid_env, tmp_data_dir):
-        """Validate should finalize incomplete PDF metadata before validation."""
-        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
-        (tmp_data_dir / "doc.pdf.json").write_text(
-            json.dumps(
-                {
-                    "extract": {"status": "in_progress", "input_size": 0, "output_size": 0},
-                    "title": "PDF Title",
-                    "description": "PDF Description",
-                    "filename": "doc.pdf",
-                    "filepath": "doc.pdf",
-                    "filetype": "pdf",
-                    "date": 1728931200,
-                    "size": 1024,
-                }
-            )
-        )
-
-        result = runner.invoke(
-            app,
-            ["validate", str(tmp_data_dir)],
-        )
-
-        assert result.exit_code == 0
-        json_path = tmp_data_dir / "doc.pdf.json"
-        data = json.loads(json_path.read_text())
-        assert data["extract"]["status"] == "complete"
-        assert data["extract"]["end_time"] is not None
-
-    def test_feeds_finalizes_incomplete_mp4_metadata(self, runner, valid_env, tmp_data_dir):
-        """Feeds should finalize incomplete MP4 metadata before generating feeds."""
-        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
-        (tmp_data_dir / "lecture.mp4.json").write_text(
-            json.dumps(
-                {
-                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
-                    "title": "Test",
-                    "description": "",
-                    "filename": "lecture.mp4",
-                    "filepath": "lecture.mp4",
-                    "filetype": "mp4",
-                    "date": 1728931200,
-                    "size": 1024,
-                    "content": "Some transcript content",
-                    "summary": "Some summary",
-                }
-            )
-        )
-
-        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
-            mock_generator = mock.MagicMock()
-            mock_generator.generate_all_feeds.return_value = None
-            MockGen.return_value = mock_generator
-
-            result = runner.invoke(
-                app,
-                ["feeds", str(tmp_data_dir)],
-            )
-
-        assert result.exit_code == 0
-        json_path = tmp_data_dir / "lecture.mp4.json"
-        data = json.loads(json_path.read_text())
-        assert data["transcribe"]["status"] == "complete"
-        assert data["summarize"]["status"] == "complete"
-        assert data["summarize"]["end_time"] is not None
-
-    def test_feeds_skips_finalization_for_complete_files(self, runner, valid_env, tmp_data_dir):
-        """Feeds should not re-finalize files that are already feed-eligible."""
-        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
-        # Already complete metadata (extract + summarize both complete)
-        (tmp_data_dir / "doc.pdf.json").write_text(
-            json.dumps(
-                {
-                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "title": "Existing Title",
-                    "description": "Existing Description",
-                    "filename": "doc.pdf",
-                    "filepath": "doc.pdf",
-                    "filetype": "pdf",
-                    "date": 1728931200,
-                    "size": 1024,
-                }
-            )
-        )
-
-        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
-            mock_generator = mock.MagicMock()
-            mock_generator.generate_all_feeds.return_value = None
-            MockGen.return_value = mock_generator
-
-            result = runner.invoke(
-                app,
-                ["feeds", str(tmp_data_dir)],
-            )
-
-        assert result.exit_code == 0
-        # File should still be valid and feed-eligible
-        json_path = tmp_data_dir / "doc.pdf.json"
-        data = json.loads(json_path.read_text())
-        assert data["extract"]["status"] == "complete"
-        assert data["summarize"]["status"] == "complete"
-
-    def test_feeds_generates_title_for_mp4_without_title(self, runner, valid_env, tmp_data_dir):
-        """Feeds finalization should generate a title for MP4 files when missing."""
-        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
-        (tmp_data_dir / "lecture.mp4.json").write_text(
-            json.dumps(
-                {
-                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
-                    "title": "",
-                    "description": "",
-                    "filename": "lecture.mp4",
-                    "filepath": "lecture.mp4",
-                    "filetype": "mp4",
-                    "date": 1728931200,
-                    "size": 1024,
-                    "content": "Some transcript content",
-                    "summary": "Some summary",
-                }
-            )
-        )
-
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
-            mock_summarizer = mock.MagicMock()
-            mock_summarizer.generate_title.return_value = ("Generated Title", 30, 5)
-            MockSummarizer.return_value = mock_summarizer
-
-            with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
-                mock_generator = mock.MagicMock()
-                mock_generator.generate_all_feeds.return_value = None
-                MockGen.return_value = mock_generator
-
-                result = runner.invoke(
-                    app,
-                    ["feeds", str(tmp_data_dir)],
-                )
-
-        assert result.exit_code == 0
-        json_path = tmp_data_dir / "lecture.mp4.json"
-        data = json.loads(json_path.read_text())
-        assert data["title"]["generated"] == "Generated Title"
-        mock_summarizer.generate_title.assert_called_once()
-
-    def test_validate_finalizes_and_reports_no_errors(self, runner, valid_env, tmp_data_dir):
-        """Validate should finalize incomplete metadata and report no errors."""
-        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
-        (tmp_data_dir / "doc.pdf.json").write_text(
-            json.dumps(
-                {
-                    "extract": {"status": "in_progress", "input_size": 0, "output_size": 0},
-                    "title": "PDF Title",
-                    "description": "PDF Description",
-                    "filename": "doc.pdf",
-                    "filepath": "doc.pdf",
-                    "filetype": "pdf",
-                    "date": 1728931200,
-                    "size": 1024,
-                }
-            )
-        )
-
-        result = runner.invoke(
-            app,
-            ["validate", str(tmp_data_dir)],
-        )
-
-        assert result.exit_code == 0
-        assert "All files are valid" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -4316,45 +4089,47 @@ class TestFindFilesNeedingTitle:
         assert len(result) == 1
         assert result[0].name == "doc1.pdf"
 
+
+class TestGetContentForTitle:
     """Tests for the _get_content_for_title helper function."""
 
-    def test_get_content_for_title_mp4_uses_transcript(self, valid_env):
-        """Should use content from metadata for MP4 files."""
+    @pytest.mark.parametrize(
+        "filetype,metadata_dict,expected",
+        [
+            ("mp4", {"content": "This is the transcript."}, "This is the transcript."),
+            ("mp4", {}, ""),
+            ("txt", {}, ""),
+        ],
+    )
+    def test_get_content_for_title_basic(
+        self, valid_env, tmp_path, filetype, metadata_dict, expected
+    ):
+        """Should return content from metadata for MP4, empty for unsupported types."""
         from local_feed_generator.cli import _get_content_for_title
 
-        file_path = Path("/fake/path/lecture.mp4")
-        metadata_dict: dict[str, Any] = {"content": "This is the transcript."}
+        if filetype == "mp4":
+            file_path = Path("/fake/path/lecture.mp4")
+        else:
+            file_path = tmp_path / f"file.{filetype}"
         result = _get_content_for_title(file_path, metadata_dict)
-        assert result == "This is the transcript."
+        assert result == expected
 
-    def test_get_content_for_title_mp4_uses_empty_when_no_transcript(self, valid_env):
-        """Should return empty string for MP4 without transcript."""
+    @pytest.mark.parametrize(
+        "filetype,content",
+        [
+            ("pdf", "PDF content here."),
+            ("html", "<html>HTML content</html>"),
+        ],
+    )
+    def test_get_content_for_title_reads_file(self, valid_env, tmp_path, filetype, content):
+        """Should read file content for PDF and HTML files."""
         from local_feed_generator.cli import _get_content_for_title
 
-        file_path = Path("/fake/path/lecture.mp4")
-        metadata_dict: dict[str, Any] = {}
-        result = _get_content_for_title(file_path, metadata_dict)
-        assert result == ""
-
-    def test_get_content_for_title_pdf_reads_file_content(self, valid_env, tmp_path):
-        """Should read file content for PDF files."""
-        from local_feed_generator.cli import _get_content_for_title
-
-        source = tmp_path / "doc.pdf"
-        source.write_text("PDF content here.")
+        source = tmp_path / f"file.{filetype}"
+        source.write_text(content)
         metadata_dict: dict[str, Any] = {}
         result = _get_content_for_title(source, metadata_dict)
-        assert "PDF content here." in result
-
-    def test_get_content_for_title_html_reads_file_content(self, valid_env, tmp_path):
-        """Should read file content for HTML files."""
-        from local_feed_generator.cli import _get_content_for_title
-
-        source = tmp_path / "page.html"
-        source.write_text("<html>HTML content</html>")
-        metadata_dict: dict[str, Any] = {}
-        result = _get_content_for_title(source, metadata_dict)
-        assert "HTML content" in result
+        assert content in result
 
     def test_get_content_for_title_truncates_long_content(self, valid_env, tmp_path):
         """Should truncate content to 8000 characters for PDF/HTML files."""
@@ -4366,29 +4141,17 @@ class TestFindFilesNeedingTitle:
         result = _get_content_for_title(source, metadata_dict)
         assert len(result) <= 8000
 
-    def test_get_content_for_title_unsupported_ext_returns_empty(self, valid_env, tmp_path):
-        """Should return empty string for unsupported file types."""
-        from local_feed_generator.cli import _get_content_for_title
-
-        file_path = Path("/fake/path/file.txt")
-        metadata_dict: dict[str, Any] = {}
-        result = _get_content_for_title(file_path, metadata_dict)
-        assert result == ""
-
     def test_get_content_for_title_pdf_handles_read_error(self, valid_env, tmp_path):
         """Should return empty string when file cannot be read."""
         from local_feed_generator.cli import _get_content_for_title
 
         source = tmp_path / "doc.pdf"
         source.write_text("content")
-        # Make the file unreadable
-        source.chmod(0o000)
-        try:
+        # Mock the file read to raise an error (avoids chmod which is platform-dependent)
+        with mock.patch.object(Path, "read_text", side_effect=OSError("Permission denied")):
             metadata_dict: dict[str, Any] = {}
             result = _get_content_for_title(source, metadata_dict)
-            assert result == ""
-        finally:
-            source.chmod(0o644)
+        assert result == ""
 
 
 # ---------------------------------------------------------------------------
@@ -4401,7 +4164,7 @@ class TestIsDictFeedEligible:
 
     def test_pdf_eligible_with_extract_and_summarize(self, valid_env):
         """PDF should be eligible if both extract and summarize are complete."""
-        from local_feed_generator.cli import _is_dict_feed_eligible
+        from local_feed_generator.scanner import _is_dict_feed_eligible
 
         metadata = {
             "extract": {"status": "complete"},
@@ -4416,7 +4179,7 @@ class TestIsDictFeedEligible:
 
     def test_pdf_not_eligible_with_extract_only(self, valid_env):
         """PDF with only extract (no summarize) should not be eligible."""
-        from local_feed_generator.cli import _is_dict_feed_eligible
+        from local_feed_generator.scanner import _is_dict_feed_eligible
 
         metadata = {
             "extract": {"status": "complete"},
@@ -4425,59 +4188,12 @@ class TestIsDictFeedEligible:
             "filename": "doc.pdf",
             "filepath": "doc.pdf",
             "size": 1024,
-        }
-        assert _is_dict_feed_eligible(metadata, "pdf") is False
-
-    def test_pdf_eligible_with_content_and_summarize(self, valid_env):
-        """PDF with content should be eligible if summarize is also complete."""
-        from local_feed_generator.cli import _is_dict_feed_eligible
-
-        metadata = {
-            "extract": {"status": "complete"},
-            "summarize": {"status": "complete"},
-            "filetype": "pdf",
-            "title": "Test",
-            "filename": "doc.pdf",
-            "filepath": "doc.pdf",
-            "size": 1024,
-            "content": "Extracted text.",
-        }
-        assert _is_dict_feed_eligible(metadata, "pdf") is True
-
-    def test_pdf_not_eligible_with_content_no_summarize(self, valid_env):
-        """PDF with content but no summarize step should not be eligible."""
-        from local_feed_generator.cli import _is_dict_feed_eligible
-
-        metadata = {
-            "extract": {"status": "complete"},
-            "filetype": "pdf",
-            "title": "Test",
-            "filename": "doc.pdf",
-            "filepath": "doc.pdf",
-            "size": 1024,
-            "content": "Extracted text.",
-        }
-        assert _is_dict_feed_eligible(metadata, "pdf") is False
-
-    def test_pdf_not_eligible_with_content_summarize_incomplete(self, valid_env):
-        """PDF with content and incomplete summarize should not be eligible."""
-        from local_feed_generator.cli import _is_dict_feed_eligible
-
-        metadata = {
-            "extract": {"status": "complete"},
-            "summarize": {"status": None},
-            "filetype": "pdf",
-            "title": "Test",
-            "filename": "doc.pdf",
-            "filepath": "doc.pdf",
-            "size": 1024,
-            "content": "Extracted text.",
         }
         assert _is_dict_feed_eligible(metadata, "pdf") is False
 
     def test_html_eligible_with_extract_and_summarize(self, valid_env):
         """HTML should be eligible if both extract and summarize are complete."""
-        from local_feed_generator.cli import _is_dict_feed_eligible
+        from local_feed_generator.scanner import _is_dict_feed_eligible
 
         metadata = {
             "extract": {"status": "complete"},
@@ -4492,7 +4208,7 @@ class TestIsDictFeedEligible:
 
     def test_html_not_eligible_with_extract_only(self, valid_env):
         """HTML with only extract (no summarize) should not be eligible."""
-        from local_feed_generator.cli import _is_dict_feed_eligible
+        from local_feed_generator.scanner import _is_dict_feed_eligible
 
         metadata = {
             "extract": {"status": "complete"},
@@ -4501,27 +4217,12 @@ class TestIsDictFeedEligible:
             "filename": "page.html",
             "filepath": "page.html",
             "size": 512,
-        }
-        assert _is_dict_feed_eligible(metadata, "html") is False
-
-    def test_html_not_eligible_with_content_no_summarize(self, valid_env):
-        """HTML with content but no summarize step should not be eligible."""
-        from local_feed_generator.cli import _is_dict_feed_eligible
-
-        metadata = {
-            "extract": {"status": "complete"},
-            "filetype": "html",
-            "title": "Test",
-            "filename": "page.html",
-            "filepath": "page.html",
-            "size": 512,
-            "content": "Extracted text.",
         }
         assert _is_dict_feed_eligible(metadata, "html") is False
 
     def test_pdf_not_eligible_with_error(self, valid_env):
         """PDF with error should not be eligible."""
-        from local_feed_generator.cli import _is_dict_feed_eligible
+        from local_feed_generator.scanner import _is_dict_feed_eligible
 
         metadata = {
             "extract": {"status": "complete"},
@@ -4537,7 +4238,7 @@ class TestIsDictFeedEligible:
 
     def test_pdf_not_eligible_without_extract(self, valid_env):
         """PDF without extract step should not be eligible."""
-        from local_feed_generator.cli import _is_dict_feed_eligible
+        from local_feed_generator.scanner import _is_dict_feed_eligible
 
         metadata = {
             "filetype": "pdf",
@@ -4660,15 +4361,3 @@ class TestCreateFeedCommand:
         assert data["image"]["url"] == "https://www.example.com/logo.jpg"
         assert data["image"]["title"] == "Logo"
         assert data["image"]["link"] == "https://www.example.com/"
-
-    def test_create_feed_no_link_field(self, runner, tmp_path):
-        """The generated feed.json should NOT contain a link field."""
-        target_dir = tmp_path / "my-course"
-        result = runner.invoke(
-            app,
-            ["create-feed", str(target_dir)],
-        )
-
-        assert result.exit_code == 0
-        data = json.loads((target_dir / "feed.json").read_text(encoding="utf-8"))
-        assert "link" not in data

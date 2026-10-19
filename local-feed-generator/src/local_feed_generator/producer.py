@@ -1255,44 +1255,6 @@ class Producer:
         """
         return self.summarizer.generate_title(content, filename, extracted_title, filepath=filepath)
 
-    def generate_title_from_file(self, filepath: str | Path) -> tuple[str, int, int]:
-        """Generate a title from a file's content using the LLM.
-
-        Reads the first portion of the file and passes it to
-        :meth:`generate_title` as a fallback when the extractor did not
-        find a usable title.
-
-        Args:
-            filepath: Path to the file whose content should be used for
-                title generation.
-
-        Returns:
-            A tuple of ``(title, prompt_tokens, completion_tokens)``.
-
-        Raises:
-            SummarizationError: If the LLM request fails.
-            OSError: If the file cannot be read.
-        """
-        path = Path(filepath)
-        # Read a reasonable chunk of the file for title generation.
-        content = path.read_text(encoding="utf-8", errors="replace")[:8000]
-        filename = _sanitize_filename(path.name)
-        return self.generate_title(content, filename=filename, filepath=str(filepath))
-
-    def _write_metadata(self, metadata: Metadata, source_path: str) -> None:
-        """Write a metadata JSON file adjacent to the source file.
-
-        The JSON file is named ``<source_filename>.json`` and placed in
-        the same directory as the source file.
-
-        Args:
-            metadata: The :class:`Metadata` instance to write.
-            source_path: Absolute path to the source file. The JSON
-                metadata file will be written next to it.
-        """
-        json_path = Path(source_path).with_name(Path(source_path).name + ".json")
-        metadata.to_json_file(json_path)
-
     def _write_metadata_partial(self, metadata_dict: dict[str, Any], source_path: str) -> None:
         """Write a raw metadata dictionary to a JSON file atomically.
 

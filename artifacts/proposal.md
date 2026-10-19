@@ -12,10 +12,10 @@ Per-folder feeds via `feed.json`, with auto-generated root `index.html` for disc
 ## Scope
 
 ### In Scope
-- **Input:** PDF, HTML, MP4 in `data/` and subfolders
+- **Input:** PDF, HTML, MP4 in `data/` directory (at workspace root) and its subfolders
 - **Processing:** Batch and incremental watch mode
   - MP4: transcribe to markdown, LLM key takeaway summary
-  - PDF/HTML: extract metadata + content; optional summarization
+  - PDF/HTML: extract metadata + content; summarization required for feed eligibility
   - Track steps: `transcribe`, `summarize`, `extract`
 - **Metadata:** `<filename>.json` per file with title dict, description, summary, content, dates (ms), hash, size, duration/creation_time, step maps
   - MP4: description blank, summary = takeaways, content = transcript

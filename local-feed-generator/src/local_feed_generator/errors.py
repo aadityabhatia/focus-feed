@@ -56,10 +56,7 @@ def _sanitize_error_filename(filename: str) -> str:
 
 
 def _sanitize_endpoint(endpoint: str | None) -> str | None:
-    """Sanitize an endpoint URL to remove sensitive information.
-
-    Removes credentials (username/password) and query parameters from the
-    URL to prevent logging API keys or other sensitive data.
+    """Sanitize an endpoint URL by removing credentials and query parameters.
 
     Args:
         endpoint: The endpoint URL to sanitize.
@@ -72,10 +69,8 @@ def _sanitize_endpoint(endpoint: str | None) -> str | None:
         return endpoint
     try:
         parsed = urlparse(endpoint)
-        # If there's no scheme or netloc, the URL is malformed — return as-is.
         if not parsed.scheme or not parsed.netloc:
             return endpoint
-        # Reconstruct URL without credentials and query parameters.
         netloc = parsed.hostname or ""
         if parsed.port:
             netloc += f":{parsed.port}"
@@ -167,7 +162,8 @@ def _configure_error_log(
 
 
 _configure_logger(_logger)
-_configure_error_log()
+# Note: _configure_error_log() is called lazily inside log_error() to avoid
+# creating error.log in the CWD at import time (e.g. during test collection).
 
 
 # ---------------------------------------------------------------------------
@@ -343,6 +339,11 @@ def log_error(
 
     # Log to stderr (existing behaviour, unchanged).
     log.error(message)
+
+    # Lazily configure the error.log file handler on first use so that
+    # importing this module does not create error.log in the CWD.
+    if _error_log_handler is None:
+        _configure_error_log()
 
     # Also write to error.log with full details.
     _error_log_logger.error(message)

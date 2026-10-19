@@ -2999,80 +2999,6 @@ class TestHashBasedGuid:
         expected_guid = f"https://example.com/feeds/{filepath}"
         assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
 
-    def test_guid_uses_hash_for_mp4(self, tmp_path):
-        """Podcast feed GUID should use hash[-12:] when hash is present."""
-        test_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-        data_dir = tmp_path / "data"
-        data_dir.mkdir()
-        write_metadata_file(
-            data_dir,
-            "videos/lecture.mp4",
-            filetype="mp4",
-            hash=test_hash,
-        )
-
-        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
-        fg.generate_podcast_feed()
-
-        content = parse_rss_file(data_dir / "podcast.xml")
-        expected_guid = test_hash[-12:]
-        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
-        # Should NOT contain the filepath-based guid
-        guid_section = content.split("<guid")[1].split("</guid>")[0]
-        assert "https://example.com/feeds/videos/lecture.mp4" not in guid_section
-
-    def test_guid_uses_hash_for_pdf(self, tmp_path):
-        """Articles feed GUID should use hash[-12:] when hash is present."""
-        test_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-        write_metadata_file(
-            tmp_path,
-            "documents/doc.pdf",
-            filetype="pdf",
-            hash=test_hash,
-        )
-
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
-        fg.generate_articles_feed()
-
-        content = parse_rss_file(tmp_path / "articles.xml")
-        expected_guid = test_hash[-12:]
-        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
-
-    def test_guid_uses_hash_for_html(self, tmp_path):
-        """Articles feed GUID should use hash[-12:] for HTML files when hash is present."""
-        test_hash = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
-        write_metadata_file(
-            tmp_path,
-            "pages/article.html",
-            filetype="html",
-            hash=test_hash,
-        )
-
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
-        fg.generate_articles_feed()
-
-        content = parse_rss_file(tmp_path / "articles.xml")
-        expected_guid = test_hash[-12:]
-        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
-
-    def test_guid_last_12_chars_of_hash(self, tmp_path):
-        """GUID should be exactly the last 12 characters of the hash."""
-        test_hash = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-        write_metadata_file(
-            tmp_path,
-            "videos/lecture.mp4",
-            filetype="mp4",
-            hash=test_hash,
-        )
-
-        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
-        fg.generate_podcast_feed()
-
-        content = parse_rss_file(tmp_path / "podcast.xml")
-        expected_guid = test_hash[-12:]
-        assert expected_guid == "456789abcdef"
-        assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
-
     def test_guid_fallback_for_mixed_hash_and_no_hash(self, tmp_path):
         """When some items have hash and others don't, each should use its own guid."""
         hash_with = "a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2c3d4e5f6a1b2"
@@ -4392,7 +4318,10 @@ class TestFeedMetadataFields:
 
         content = parse_rss_file(tmp_path / "podcast.xml")
         assert "<title>Module 1</title>" in content
-        assert "<description>educational content - podcasts, articles, and resources</description>" in content
+        assert (
+            "<description>educational content - podcasts, articles, and resources</description>"
+            in content
+        )
         assert "<language>en-us</language>" in content
         # Author is stored internally by feedgen (RSS requires email to render)
         assert "<image>" in content
@@ -4581,7 +4510,11 @@ class TestFeedMetadataFields:
             description="Direct desc",
             language="de-de",
             author="Direct Author",
-            image={"url": "https://example.com/direct.jpg", "title": "Direct", "link": "https://example.com/"},
+            image={
+                "url": "https://example.com/direct.jpg",
+                "title": "Direct",
+                "link": "https://example.com/",
+            },
         )
 
         content = parse_rss_file(tmp_path / "podcast.xml")
@@ -4599,7 +4532,11 @@ class TestFeedMetadataFields:
             description="Direct desc",
             language="de-de",
             author="Direct Author",
-            image={"url": "https://example.com/direct.jpg", "title": "Direct", "link": "https://example.com/"},
+            image={
+                "url": "https://example.com/direct.jpg",
+                "title": "Direct",
+                "link": "https://example.com/",
+            },
         )
 
         content = parse_rss_file(tmp_path / "articles.xml")

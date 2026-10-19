@@ -909,33 +909,6 @@ class TestGenerateTitle:
 
         assert result == ("Generated Title", 30, 5)
 
-    def test_generate_title_from_file_reads_content(self, producer, mock_summarizer, tmp_path):
-        """generate_title_from_file should read file content and generate title."""
-        source = tmp_path / "doc.txt"
-        source.write_text("This is the file content for title generation.")
-
-        producer.generate_title_from_file(source)
-
-        mock_summarizer.generate_title.assert_called_once()
-        call_args = mock_summarizer.generate_title.call_args
-        # First positional arg is content
-        assert "This is the file content for title generation." in call_args[0][0]
-        # Filename should be passed (as positional or keyword arg)
-        assert call_args[0][1] == "doc" or call_args.kwargs.get("filename") == "doc"
-
-    def test_generate_title_from_file_truncates_long_content(
-        self, producer, mock_summarizer, tmp_path
-    ):
-        """generate_title_from_file should truncate very long files."""
-        source = tmp_path / "big.txt"
-        source.write_text("x" * 20000)
-
-        producer.generate_title_from_file(source)
-
-        call_args = mock_summarizer.generate_title.call_args
-        call_arg = call_args[0][0]
-        assert len(call_arg) <= 8000
-
 
 # ---------------------------------------------------------------------------
 # Integration tests with real extractors

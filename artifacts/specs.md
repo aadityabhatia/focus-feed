@@ -15,7 +15,7 @@ See proposal.md for problem, intent and scope.
 ### Metadata
 - Generate `<filename>.json` alongside source file.
 - Fields: `title:{filename,extracted,generated}`, `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date` ms, `publication_date`, `duration`, `creation_time`, `size`, `hash`, step maps `transcribe/summarize/extract`, `error`.
-- Title precedence: filename < extracted < generated. Auto-prepend parent folder name if missing. Sanitize filename key.
+- Title precedence: generated > extracted > filename. Auto-prepend parent folder name if missing. Sanitize filename key.
 - Remove control chars 0x00-0x1f except tab/newline/CR and 0x7f from extracted PDF/HTML.
 - Compute SHA256 on first process or before feed generation.
 - MP4: description blank, summary = key takeaways, content = transcript
@@ -23,8 +23,9 @@ See proposal.md for problem, intent and scope.
 
 ### Feed Eligibility
 - MP4: transcribe.complete AND summarize.complete
-- PDF/HTML: extract.complete
+- PDF/HTML: extract.complete AND summarize.complete
 - Ineligible items excluded from feeds
+- Nested feeds: each feed includes all content from its entire subtree (inner feeds are subsets of outer feeds)
 
 ### Audio
 - Transcribe MP4 to markdown via local faster-whisper or remote OpenAI-compatible API if `TRANSCRIPTION_ENDPOINT` set.
@@ -34,7 +35,7 @@ See proposal.md for problem, intent and scope.
 
 ### Documents
 - Extract metadata + content from PDF/HTML.
-- Summarization optional via explicit `summarize` command.
+- Summarization via explicit `summarize` command (required for feed eligibility).
 - Use `publication_date` for feed pubDate if present.
 
 ### Reflection
@@ -46,6 +47,7 @@ See proposal.md for problem, intent and scope.
 - Items include title, description, link `BASE_URL+filepath`, pubDate, guid from hash.
 - Sort by folder then filename. Markdown→HTML with XSS protection.
 - Conditional generation: only if feed.json exists and eligible files present.
+- Nested feeds: each feed includes all content from its entire subtree (inner feeds are subsets of outer feeds).
 - Root `index.html` lists all feeds. Root feeds require feed.json in data root.
 - Ensure hash present before feed generation.
 
@@ -69,7 +71,8 @@ Flags: `--config-file`, `--force`, `--dry-run` for transcribe/summarize/extract.
 - Special characters preserved with warnings only
 - Unix epoch ms timestamps
 - Title dict with filename/extracted/generated
-- Markdown library required for markdown to HTML conversion with XSS protection
+- Markdown library (>=3.5.0) required for markdown to HTML conversion with XSS protection
+- Remote transcription: vLLM server requires `VLLM_MAX_AUDIO_DECODE_DURATION_S` configuration for longer audio files
 
 ## Risks
 - Transcription quality varies → use established models

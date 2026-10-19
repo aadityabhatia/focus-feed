@@ -27,7 +27,6 @@ import json
 import logging
 import os
 from pathlib import Path
-import re
 import signal
 import sys
 import threading
@@ -39,25 +38,20 @@ from watchdog.events import FileSystemEventHandler
 
 from local_feed_generator.config import reload_config
 from local_feed_generator.errors import log_error
+from local_feed_generator.feeds import _is_orphaned_json
 from local_feed_generator.metadata import Metadata
 from local_feed_generator.producer import _check_reflection_md
-from local_feed_generator.scanner import ScannedFile, Scanner
+from local_feed_generator.scanner import (
+    _IGNORE_FILENAMES,
+    _SPECIAL_CHAR_PATTERN,
+    SUPPORTED_EXTENSIONS,
+    ScannedFile,
+    Scanner,
+    _is_dict_feed_eligible,
+)
 from local_feed_generator.services.extractors import _clean_title
 
 _logger = logging.getLogger("local_feed_generator")
-
-# Source file extensions supported for processing (case-insensitive).
-SOURCE_EXTENSIONS: frozenset[str] = frozenset({".mp4", ".pdf", ".html"})
-
-# Characters that are problematic in filenames for XML/URL contexts.
-# These trigger a warning but do not block processing.
-_SPECIAL_CHAR_PATTERN = re.compile(r'[<>&"\'\x00-\x1f]')
-
-# Filenames that should be ignored during scanning (generated feeds, index pages).
-# Comparison is case-insensitive (see callers that use ``filename.lower()``).
-_IGNORE_FILENAMES = frozenset(
-    {"podcast.xml", "articles.xml", "podcast.atom", "articles.atom", "index.html", "feed.json"}
-)
 
 
 # ---------------------------------------------------------------------------
@@ -219,7 +213,7 @@ def _expand_paths_to_files(paths: list[Path]) -> list[ScannedFile]:
 
     for path in paths:
         if path.is_file():
-            if path.suffix.lower() in SOURCE_EXTENSIONS:
+            if path.suffix.lower() in SUPPORTED_EXTENSIONS:
                 relative = os.path.relpath(path, cwd)
                 files.append(
                     ScannedFile(
@@ -236,7 +230,7 @@ def _expand_paths_to_files(paths: list[Path]) -> list[ScannedFile]:
                     if filename.lower() in _IGNORE_FILENAMES:
                         continue
                     source_path = root_path / filename
-                    if source_path.suffix.lower() in SOURCE_EXTENSIONS:
+                    if source_path.suffix.lower() in SUPPORTED_EXTENSIONS:
                         relative = os.path.relpath(source_path, cwd)
                         files.append(
                             ScannedFile(
@@ -281,24 +275,6 @@ def _check_special_characters(filepath: Path) -> list[str]:
             f"Filename '{filename}' contains special characters {unique_chars}: {filepath}"
         )
     return warnings
-
-
-def _is_orphaned_json(json_path: Path) -> bool:
-    """Return ``True`` if *json_path* is orphaned.
-
-    A JSON file is orphaned when the corresponding source file (the JSON
-    name without the ``.json`` suffix) does not exist or has an unsupported
-    extension.
-    """
-    # feed.json is a configuration file, not orphaned metadata.
-    if json_path.name == "feed.json":
-        return False
-
-    source_filename = json_path.name[: -len(".json")]
-    source_path = json_path.parent / source_filename
-    if not source_path.exists():
-        return True
-    return source_path.suffix.lower() not in SOURCE_EXTENSIONS
 
 
 def _generate_feeds(data_dir_path: Path) -> dict[str, int]:
@@ -577,7 +553,7 @@ def _find_files_needing_title(
         source_file = json_file.with_name(json_file.stem)
         if not source_file.exists():
             continue
-        if source_file.suffix.lower() not in SOURCE_EXTENSIONS:
+        if source_file.suffix.lower() not in SUPPORTED_EXTENSIONS:
             continue
         if paths is not None and not _is_path_within(source_file, paths):
             continue
@@ -616,40 +592,6 @@ def _get_content_for_title(file_path: Path, metadata_dict: dict[str, Any]) -> st
         except OSError:
             return ""
     return ""
-
-
-def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
-    """Check if a raw metadata dict indicates the file is feed-eligible.
-
-    A file is feed-eligible when all applicable step maps have
-    ``status == "complete"`` and there is no error field.
-
-    - **MP4**: ``transcribe`` step map exists with ``status == "complete"``
-      and ``summarize`` step map exists with ``status == "complete"``.
-    - **PDF/HTML**: ``extract`` step map exists with ``status == "complete"``
-      and ``summarize`` step map exists with ``status == "complete"``.
-    """
-    if metadata.get("error"):
-        return False
-    if filetype == "mp4":
-        transcribe = metadata.get("transcribe")
-        summarize = metadata.get("summarize")
-        return (
-            isinstance(transcribe, dict)
-            and transcribe.get("status") == "complete"
-            and isinstance(summarize, dict)
-            and summarize.get("status") == "complete"
-        )
-    if filetype in ("pdf", "html"):
-        extract = metadata.get("extract")
-        summarize = metadata.get("summarize")
-        return (
-            isinstance(extract, dict)
-            and extract.get("status") == "complete"
-            and isinstance(summarize, dict)
-            and summarize.get("status") == "complete"
-        )
-    return False
 
 
 def _is_step_complete(metadata: dict[str, Any], step: str) -> bool:
@@ -970,7 +912,7 @@ class _WatchHandler(FileSystemEventHandler):
             return
 
         # --- Source files: process and regenerate feeds -----------------
-        if source_path.suffix.lower() not in SOURCE_EXTENSIONS:
+        if source_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             return
 
         # Check if the file has an error state in its JSON metadata and the
@@ -1029,7 +971,7 @@ class _WatchHandler(FileSystemEventHandler):
 
         if not source_path.exists():
             _logger.warning("Orphaned JSON file detected (no source file): %s", json_path)
-        elif source_path.suffix.lower() not in SOURCE_EXTENSIONS:
+        elif source_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             _logger.warning(
                 "Orphaned JSON file detected (unsupported source extension): %s",
                 json_path,
@@ -1362,7 +1304,7 @@ def validate(
             if filename.lower() in _IGNORE_FILENAMES:
                 continue
             source_path = root_path / filename
-            if source_path.suffix.lower() in SOURCE_EXTENSIONS:
+            if source_path.suffix.lower() in SUPPORTED_EXTENSIONS:
                 warnings.extend(_check_special_characters(source_path))
 
     # --- Output report -------------------------------------------------

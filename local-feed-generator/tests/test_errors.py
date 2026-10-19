@@ -330,6 +330,21 @@ class TestSanitizeEndpoint:
 class TestConfigureErrorLog:
     """Tests for the _configure_error_log function."""
 
+    @pytest.fixture(autouse=True)
+    def cleanup_error_log_handler(self, tmp_path):
+        """Ensure error.log handler is reset after each test.
+
+        Some tests in this class (e.g. test_returns_none_on_permission_error)
+        may leave the handler in an unexpected state.  The autouse
+        ``isolate_error_log`` fixture in conftest.py handles re-configuration
+        before the next test, but we also explicitly reset here to keep
+        each test self-contained.
+        """
+        _configure_error_log(data_dir=tmp_path, force=True)
+        yield
+        # Reset to a temp dir (not CWD) to avoid creating error.log in CWD
+        _configure_error_log(data_dir=tmp_path, force=True)
+
     def test_creates_error_log_file(self, tmp_path):
         """_configure_error_log should create an error.log file."""
         handler = _configure_error_log(data_dir=tmp_path, force=True)

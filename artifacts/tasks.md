@@ -49,14 +49,14 @@ Establish the project foundation with dependency management, directory structure
 - **Description:** Create the project directory structure as specified in design doc section 5.1
 - **Actions:**
   - Create `local-feed-generator/` directory
-  - Create `src/local_feed_generator/` package directory
-  - Create `src/local_feed_generator/services/` subpackage directory
+  - Create `local-feed-generator/src/local_feed_generator/` package directory
+  - Create `local-feed-generator/src/local_feed_generator/services/` subpackage directory
   - Create all `__init__.py` files for packages
 - **Completion Criteria:**
   - Directory structure matches design doc exactly
   - All Python packages are importable
-  - `src/local_feed_generator/__init__.py` exists
-  - `src/local_feed_generator/services/__init__.py` exists
+  - `local-feed-generator/src/local_feed_generator/__init__.py` exists
+  - `local-feed-generator/src/local_feed_generator/services/__init__.py` exists
 
 - [x] T1.2: Create pyproject.toml
 - **Description:** Set up project metadata and dependencies using uv
@@ -414,7 +414,7 @@ Implement RSS feed generation for podcast and articles feeds with new features.
   - Implement `FeedGenerator` class
   - Accept `BASE_URL` from configuration
   - Scan base directory or provided paths recursively for all `*.json` files
-  - Filter entries by `feed_eligible` computed property (which checks step map statuses: MP4 needs transcribe.status="complete" AND summarize.status="complete", PDF/HTML needs extract.status="complete")
+  - Filter entries by `feed_eligible` computed property (which checks step map statuses: MP4 needs transcribe.status="complete" AND summarize.status="complete", PDF/HTML needs extract.status="complete" AND summarize.status="complete")
   - Implement sorting: folder name (ascending), then filename (ascending)
   - Calculate absolute URLs: `BASE_URL` + `filepath`
   - **NEW:** Implement markdown to HTML conversion with XSS protection

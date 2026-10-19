@@ -98,7 +98,6 @@ from pydantic import (
 from local_feed_generator.errors import log_error
 
 # Step status values.
-_STEP_STATUS_IN_PROGRESS = "in_progress"
 _STEP_STATUS_COMPLETE = "complete"
 
 _logger = logging.getLogger("local_feed_generator")
@@ -107,42 +106,12 @@ _logger = logging.getLogger("local_feed_generator")
 _TITLE_DICT_KEYS: frozenset[str] = frozenset({"filename", "extracted", "generated"})
 
 
-def _should_prepend_module(title: str, filepath: str) -> tuple[bool, str]:
-    """Determine whether the module name should be prepended to the title.
-
-    Extracts the module name from the parent directory of *filepath*.
-    Checks if the *title* (the resolved final title after precedence
-    resolution) already starts with the module name (case-insensitive,
-    handling underscores and spaces).
-
-    Args:
-        title: The resolved base title string (after precedence resolution).
-        filepath: Relative path from the data directory root.
-
-    Returns:
-        A tuple of ``(should_prepend, module_name)``.  When
-        *should_prepend* is ``False``, the module name is already part of
-        the title and should not be prepended to avoid duplication.
-    """
-    path = Path(filepath)
-    parent = path.parent
-    module_name = parent.name if parent.name else ""
-    if not module_name:
-        return False, ""
-
-    # Normalize: replace underscores with spaces, lowercase for comparison.
-    module_normalized = module_name.replace("_", " ").lower()
-    title_normalized = title.replace("_", " ").lower()
-
-    # Check if title already starts with module name (case-insensitive).
-    if title_normalized.startswith(module_normalized):
-        return False, ""
-
-    return True, module_name.replace("_", " ")
-
-
 def _apply_module_prefix_to_title(title: str, filepath: str) -> str:
     """Prepend the module name to *title* if appropriate.
+
+    The module name is extracted from the parent directory of *filepath*.
+    The module name is prepended only when the title does not already start
+    with the module name (case-insensitive, handling underscores and spaces).
 
     Args:
         title: The base title string (already resolved via precedence).
@@ -151,10 +120,21 @@ def _apply_module_prefix_to_title(title: str, filepath: str) -> str:
     Returns:
         The title with module prefix if needed, otherwise the original title.
     """
-    should_prepend, module = _should_prepend_module(title, filepath)
-    if should_prepend:
-        return f"{module}: {title}"
-    return title
+    path = Path(filepath)
+    parent = path.parent
+    module_name = parent.name if parent.name else ""
+    if not module_name:
+        return title
+
+    # Normalize: replace underscores with spaces, lowercase for comparison.
+    module_normalized = module_name.replace("_", " ").lower()
+    title_normalized = title.replace("_", " ").lower()
+
+    # Check if title already starts with module name (case-insensitive).
+    if title_normalized.startswith(module_normalized):
+        return title
+
+    return f"{module_name.replace('_', ' ')}: {title}"
 
 
 class StepMap(BaseModel):

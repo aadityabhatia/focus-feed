@@ -38,6 +38,7 @@ from local_feed_generator.config import get_config
 from local_feed_generator.errors import log_error
 from local_feed_generator.metadata import Metadata
 from local_feed_generator.producer import _compute_file_hash
+from local_feed_generator.scanner import SUPPORTED_EXTENSIONS
 
 _logger = logging.getLogger("local_feed_generator")
 
@@ -54,6 +55,32 @@ _DC_NAMESPACE = "http://purl.org/dc/elements/1.1/"
 # URL schemes allowed in markdown links to prevent XSS (e.g. javascript:).
 # Only http, https, mailto, relative paths, and fragment identifiers are allowed.
 _SAFE_URL_SCHEMES = re.compile(r"^(https?://|mailto:|/|#|\.\.)")
+
+
+def _is_orphaned_json(json_path: Path) -> bool:
+    """Check if a JSON metadata file is orphaned (no corresponding source).
+
+    A JSON file is orphaned when removing the ``.json`` suffix does not
+    yield an existing file with a supported source extension.
+
+    Args:
+        json_path: Path to the ``.json`` file to check.
+
+    Returns:
+        ``True`` if the JSON file is orphaned, ``False`` otherwise.
+    """
+    # feed.json is a configuration file, not orphaned metadata.
+    if json_path.name == "feed.json":
+        return False
+
+    source_filename = json_path.name[: -len(".json")]
+    source_path = json_path.parent / source_filename
+
+    # The stripped name must have a supported extension to be a real source.
+    if source_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
+        return True
+
+    return not source_path.exists()
 
 
 def _markdown_to_html(text: str | None) -> str:
@@ -441,7 +468,7 @@ class FeedGenerator:
                 json_path = root_path / filename
 
                 # Skip orphaned JSON files (no corresponding source file).
-                if self._is_orphaned_json(json_path):
+                if _is_orphaned_json(json_path):
                     _logger.warning(
                         "Skipping orphaned JSON file (no source): %s",
                         json_path,
@@ -511,7 +538,7 @@ class FeedGenerator:
                 json_path = root_path / filename
 
                 # Skip orphaned JSON files (no corresponding source file).
-                if self._is_orphaned_json(json_path):
+                if _is_orphaned_json(json_path):
                     continue
 
                 try:
@@ -564,32 +591,6 @@ class FeedGenerator:
                     )
 
         return updated_count
-
-    def _is_orphaned_json(self, json_path: Path) -> bool:
-        """Check if a JSON metadata file is orphaned (no corresponding source).
-
-        A JSON file is orphaned when removing the ``.json`` suffix does not
-        yield an existing file with a supported source extension.
-
-        Args:
-            json_path: Path to the ``.json`` file to check.
-
-        Returns:
-            ``True`` if the JSON file is orphaned, ``False`` otherwise.
-        """
-        # feed.json is a configuration file, not orphaned metadata.
-        if json_path.name == "feed.json":
-            return False
-
-        source_filename = json_path.name[: -len(".json")]
-        source_path = json_path.parent / source_filename
-
-        # The stripped name must have a supported extension to be a real source.
-        supported_extensions = (".mp4", ".pdf", ".html")
-        if source_path.suffix.lower() not in supported_extensions:
-            return True
-
-        return not source_path.exists()
 
     @staticmethod
     def _sort_key(metadata: Metadata) -> tuple[str, str]:

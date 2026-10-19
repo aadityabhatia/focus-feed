@@ -59,9 +59,6 @@ _IGNORE_FILENAMES = frozenset(
 # JSON status values that indicate a step is complete.
 _COMPLETED_STEP_STATUS: str = "complete"
 
-# JSON status values that indicate a step is in progress.
-_IN_PROGRESS_STEP_STATUS: str = "in_progress"
-
 # JSON field that indicates a previous processing attempt failed.
 _ERROR_FIELD: str = "error"
 
@@ -70,6 +67,72 @@ _MP4_FILETYPE: str = "mp4"
 
 # File types that use extract step map.
 _DOC_FILETYPES: frozenset[str] = frozenset({"pdf", "html"})
+
+
+def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
+    """Check if a raw metadata dict indicates the file is feed-eligible.
+
+    A file is feed-eligible when all applicable steps are
+    ``"complete"`` and there is no error field.
+
+    Checks the separate step maps (``transcribe``, ``summarize``,
+    ``extract``) for step completion status.
+
+    - **MP4**: ``transcribe`` step map exists and
+      ``transcribe.status == "complete"`` and ``summarize`` step map
+      exists and ``summarize.status == "complete"``.
+    - **PDF/HTML**: ``extract`` step map exists and
+      ``extract.status == "complete"`` and ``summarize`` step map
+      exists and ``summarize.status == "complete"``.
+
+    Legacy fields (``transcribe_status``, ``summarize_status``,
+    ``extract_status``) are also supported for backward compatibility.
+
+    Args:
+        metadata: The parsed JSON metadata dictionary.
+        filetype: The source file type (``"mp4"``, ``"pdf"``, ``"html"``).
+
+    Returns:
+        ``True`` if the file is feed-eligible, ``False`` otherwise.
+    """
+    if metadata.get(_ERROR_FIELD):
+        return False
+    if filetype == _MP4_FILETYPE:
+        # New schema: step maps
+        transcribe = metadata.get("transcribe")
+        summarize = metadata.get("summarize")
+        transcribe_complete = (
+            isinstance(transcribe, dict) and transcribe.get("status") == _COMPLETED_STEP_STATUS
+        )
+        summarize_complete = (
+            isinstance(summarize, dict) and summarize.get("status") == _COMPLETED_STEP_STATUS
+        )
+        # Legacy schema support
+        if not transcribe_complete:
+            transcribe_complete = metadata.get("transcribe_status") == _COMPLETED_STEP_STATUS
+        if not summarize_complete:
+            summarize_complete = metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
+        return transcribe_complete and summarize_complete
+    if filetype in _DOC_FILETYPES:
+        # New schema
+        extract = metadata.get("extract")
+        extract_complete = (
+            isinstance(extract, dict) and extract.get("status") == _COMPLETED_STEP_STATUS
+        )
+        # Legacy schema support
+        if not extract_complete:
+            extract_complete = metadata.get("extract_status") == _COMPLETED_STEP_STATUS
+        if not extract_complete:
+            return False
+        # summarize step must also be complete.
+        summarize = metadata.get("summarize")
+        summarize_complete = isinstance(summarize, dict) and (
+            summarize.get("status") == _COMPLETED_STEP_STATUS
+        )
+        if not summarize_complete:
+            summarize_complete = metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
+        return summarize_complete
+    return False
 
 
 @dataclass(frozen=True)
@@ -432,72 +495,6 @@ class Scanner:
 
         return source_mtime > json_mtime
 
-    @staticmethod
-    def _is_feed_eligible_dict(metadata: dict[str, Any], filetype: str) -> bool:
-        """Check if a raw metadata dict indicates the file is feed-eligible.
-
-        A file is feed-eligible when all applicable steps are
-        ``"complete"`` and there is no error field.
-
-        Checks the separate step maps (``transcribe``, ``summarize``,
-        ``extract``) for step completion status.
-
-        - **MP4**: ``transcribe`` step map exists and
-          ``transcribe.status == "complete"`` and ``summarize`` step map
-          exists and ``summarize.status == "complete"``.
-        - **PDF/HTML**: ``extract`` step map exists and
-          ``extract.status == "complete"`` and ``summarize`` step map
-          exists and ``summarize.status == "complete"``.
-
-        Legacy fields (``transcribe_status``, ``summarize_status``,
-        ``extract_status``) are also supported for backward compatibility.
-
-        Args:
-            metadata: The parsed JSON metadata dictionary.
-            filetype: The source file type (``"mp4"``, ``"pdf"``, ``"html"``).
-
-        Returns:
-            ``True`` if the file is feed-eligible, ``False`` otherwise.
-        """
-        if metadata.get(_ERROR_FIELD):
-            return False
-        if filetype == _MP4_FILETYPE:
-            # New schema: step maps
-            transcribe = metadata.get("transcribe")
-            summarize = metadata.get("summarize")
-            transcribe_complete = (
-                isinstance(transcribe, dict) and transcribe.get("status") == _COMPLETED_STEP_STATUS
-            )
-            summarize_complete = (
-                isinstance(summarize, dict) and summarize.get("status") == _COMPLETED_STEP_STATUS
-            )
-            # Legacy schema support
-            if not transcribe_complete:
-                transcribe_complete = metadata.get("transcribe_status") == _COMPLETED_STEP_STATUS
-            if not summarize_complete:
-                summarize_complete = metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
-            return transcribe_complete and summarize_complete
-        if filetype in _DOC_FILETYPES:
-            # New schema
-            extract = metadata.get("extract")
-            extract_complete = (
-                isinstance(extract, dict) and extract.get("status") == _COMPLETED_STEP_STATUS
-            )
-            # Legacy schema support
-            if not extract_complete:
-                extract_complete = metadata.get("extract_status") == _COMPLETED_STEP_STATUS
-            if not extract_complete:
-                return False
-            # summarize step must also be complete.
-            summarize = metadata.get("summarize")
-            summarize_complete = isinstance(summarize, dict) and (
-                summarize.get("status") == _COMPLETED_STEP_STATUS
-            )
-            if not summarize_complete:
-                summarize_complete = metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
-            return summarize_complete
-        return False
-
     def _evaluate_json_status(self, source_path: Path) -> tuple[bool, str | None, bool]:
         """Determine if *source_path* needs processing based on its JSON metadata.
 
@@ -563,7 +560,7 @@ class Scanner:
 
         # Check step statuses to determine if the file is complete.
         filetype = source_path.suffix.lower().lstrip(".")
-        if self._is_feed_eligible_dict(metadata, filetype):
+        if _is_dict_feed_eligible(metadata, filetype):
             return False, current_stage, True
 
         # Any step not complete → needs processing.

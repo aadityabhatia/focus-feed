@@ -50,7 +50,9 @@ Title precedence: generated > extracted > filename. Parent folder name auto-prep
 
 **Feed Eligibility**
 MP4: transcribe.complete AND summarize.complete
-PDF/HTML: extract.complete
+PDF/HTML: extract.complete AND summarize.complete
+
+Note: Nested feeds include all content from their entire subtree; inner feeds are subsets of outer feeds.
 
 **feed.json**
 Required for feeds. Fields: title required, description, language, author, link, image optional. Aggregates subtree.
@@ -98,9 +100,10 @@ Control chars → auto remove
 Missing feeds → document feed.json requirement
 
 ## 7. Assumptions & Dependencies
-- data directory exists and writable
+- data directory exists and writable (at workspace root, alongside local-feed-generator/)
 - Existing web server serves data directory
 - Python 3.14+ and uv for dependency management
 - LLM endpoint available (can be remote or local)
 - Nvidia GPU optional for local transcription; required for best performance in local mode, not needed for remote transcription
 - No ffprobe required; av library provides audio metadata
+- Remote transcription: vLLM server requires `VLLM_MAX_AUDIO_DECODE_DURATION_S` configuration for longer audio files

@@ -934,13 +934,25 @@ class TestFinalFailureErrorTypes:
     - InternalServerError does NOT print to stdout (print_stdout=False), errors logged to error.log
     """
 
-    def test_timeout_error_final_failure_prints_stdout(self, summarizer, capsys, tmp_path):
-        """APITimeoutError on final failure should print to stdout."""
-        # Configure error.log to write to a temp directory
+    @pytest.fixture(autouse=True)
+    def configure_error_log_tmp(self, tmp_path):
+        """Redirect error.log to tmp_path for tests that verify its content.
+
+        Tests in this class that call log_error (not mocked) write to
+        error.log.  This fixture ensures those writes go to a temp dir
+        rather than the workspace root.  The autouse ``isolate_error_log``
+        fixture in conftest.py also handles this, but we add it here for
+        explicitness and self-containment.
+        """
         from local_feed_generator.errors import _configure_error_log
 
         _configure_error_log(data_dir=tmp_path, force=True)
+        yield
+        # Reset to the same tmp_path to avoid creating error.log in CWD
+        _configure_error_log(data_dir=tmp_path, force=True)
 
+    def test_timeout_error_final_failure_prints_stdout(self, summarizer, capsys, tmp_path):
+        """APITimeoutError on final failure should print to stdout."""
         summarizer._client.chat.completions.create.side_effect = APITimeoutError(
             request=mock.MagicMock()
         )
@@ -955,10 +967,6 @@ class TestFinalFailureErrorTypes:
 
     def test_timeout_error_final_failure_logged_to_error_log(self, summarizer, tmp_path):
         """APITimeoutError on final failure should be logged to error.log."""
-        from local_feed_generator.errors import _configure_error_log
-
-        _configure_error_log(data_dir=tmp_path, force=True)
-
         summarizer._client.chat.completions.create.side_effect = APITimeoutError(
             request=mock.MagicMock()
         )
@@ -974,10 +982,6 @@ class TestFinalFailureErrorTypes:
 
     def test_rate_limit_error_final_failure_no_stdout(self, summarizer, capsys, tmp_path):
         """RateLimitError on final failure should NOT print to stdout."""
-        from local_feed_generator.errors import _configure_error_log
-
-        _configure_error_log(data_dir=tmp_path, force=True)
-
         summarizer._client.chat.completions.create.side_effect = RateLimitError(
             message="Rate limited",
             response=mock.MagicMock(status_code=429),
@@ -993,10 +997,6 @@ class TestFinalFailureErrorTypes:
 
     def test_rate_limit_error_final_failure_logged_to_error_log(self, summarizer, tmp_path):
         """RateLimitError on final failure should be logged to error.log."""
-        from local_feed_generator.errors import _configure_error_log
-
-        _configure_error_log(data_dir=tmp_path, force=True)
-
         summarizer._client.chat.completions.create.side_effect = RateLimitError(
             message="Rate limited",
             response=mock.MagicMock(status_code=429),
@@ -1015,10 +1015,6 @@ class TestFinalFailureErrorTypes:
 
     def test_internal_server_error_final_failure_no_stdout(self, summarizer, capsys, tmp_path):
         """InternalServerError on final failure should NOT print to stdout."""
-        from local_feed_generator.errors import _configure_error_log
-
-        _configure_error_log(data_dir=tmp_path, force=True)
-
         summarizer._client.chat.completions.create.side_effect = InternalServerError(
             message="Internal server error",
             response=mock.MagicMock(status_code=500),
@@ -1034,10 +1030,6 @@ class TestFinalFailureErrorTypes:
 
     def test_internal_server_error_final_failure_logged_to_error_log(self, summarizer, tmp_path):
         """InternalServerError on final failure should be logged to error.log."""
-        from local_feed_generator.errors import _configure_error_log
-
-        _configure_error_log(data_dir=tmp_path, force=True)
-
         summarizer._client.chat.completions.create.side_effect = InternalServerError(
             message="Internal server error",
             response=mock.MagicMock(status_code=500),

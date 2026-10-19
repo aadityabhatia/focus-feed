@@ -2,11 +2,11 @@
 
 Purpose: Transform education content (PDF/HTML/MP4) into RSS feeds.
 
-Command: `uv run local-feed-generator <command>` from project root.
+Command: `uv run local-feed-generator <command>` from workspace root (directory containing local-feed-generator/ and data/).
 
 ## Core
 - MP4: Requires `transcribe` → `summarize` → feed-eligible.
-- PDF/HTML: Requires `extract` → feed-eligible. Summarization optional.
+- PDF/HTML: Requires `extract` → `summarize` → feed-eligible.
 - Feeds: Generated only where `feed.json` exists. Requires feed-eligible files.
 
 ## Key Commands
@@ -29,7 +29,8 @@ Each file gets a `[filename].json` with:
   "error": ""
 }
 ```
-Feed Eligibility: MP4 = transcribe & summarize complete. PDF/HTML = extract complete.
+
+Feed Eligibility: MP4 = transcribe & summarize complete. PDF/HTML = extract & summarize complete.
 
 Title Rules: `generated` > `extracted` > `filename`. Parent folder name prepended.
 
@@ -53,4 +54,4 @@ uv run ruff format
 uv run mypy .
 ```
 
-Run commands from project root.
+Run commands from workspace root.

@@ -4,6 +4,7 @@ from collections.abc import Iterator
 import os
 from unittest import mock
 
+from local_feed_generator.errors import _configure_error_log
 import pytest
 
 # Required env vars that may be loaded into os.environ by load_dotenv() in
@@ -35,15 +36,25 @@ def restore_required_env_vars() -> Iterator[None]:
     This fixture snapshots the required env vars before each test and
     restores them afterwards, preventing cross-test leakage.
     """
-    saved: dict[str, str | None] = {
-        key: os.environ.get(key) for key in _REQUIRED_ENV_VARS
-    }
+    saved: dict[str, str | None] = {key: os.environ.get(key) for key in _REQUIRED_ENV_VARS}
     yield
     for key, value in saved.items():
         if value is None:
             os.environ.pop(key, None)
         else:
             os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def isolate_error_log(tmp_path_factory):
+    """Redirect error.log to a temp directory to prevent test pollution."""
+    tmp_dir = tmp_path_factory.mktemp("error_log")
+    _configure_error_log(data_dir=tmp_dir, force=True)
+    yield
+    # Redirect to a fresh temp dir rather than CWD to avoid creating
+    # error.log in the workspace root during teardown.
+    tmp_dir_cleanup = tmp_path_factory.mktemp("error_log_cleanup")
+    _configure_error_log(data_dir=tmp_dir_cleanup, force=True)
 
 
 @pytest.fixture(autouse=True)
