@@ -8,8 +8,10 @@ Tests cover:
   error handling
 - cleanup() method for resource release
 - CUDA availability check in _load_model()
+- CRITICAL logging when faster-whisper is not installed in local mode
 """
 
+import logging
 import os
 from pathlib import Path
 from unittest import mock
@@ -705,3 +707,56 @@ class TestCudaCheckInLoadModel:
                 assert "Transcription failed" in str(exc_info.value)
                 assert "Some other error" in str(exc_info.value)
                 assert "CUDA libraries" not in str(exc_info.value)
+
+
+class TestFasterWhisperNotInstalled:
+    """Tests for CRITICAL logging when faster-whisper is missing in local mode."""
+
+    def test_critical_log_when_faster_whisper_missing_in_local_mode(self, valid_env, caplog):
+        """A CRITICAL log should be emitted when faster-whisper is missing in local mode."""
+        with (
+            mock.patch("local_feed_generator.services.transcriber.WhisperModel", None),
+            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+        ):
+            Transcriber()
+        critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(critical_records) == 1
+        assert "faster-whisper is not installed" in critical_records[0].message
+
+    def test_no_critical_log_when_faster_whisper_missing_in_remote_mode(self, monkeypatch, caplog):
+        """No CRITICAL log should be emitted in remote mode even if faster-whisper is missing."""
+        # Set up env for remote mode with all required config fields
+        monkeypatch.setenv("BASE_URL", "https://example.com/feeds")
+        monkeypatch.setenv("LLM_ENDPOINT", "https://llm.example.com/v1")
+        monkeypatch.setenv("LLM_API_KEY", "test-key")
+        monkeypatch.setenv("LLM_MODEL", "test-model")
+        monkeypatch.setenv("PROMPT_ARTICLE", "Test article prompt")
+        monkeypatch.setenv("PROMPT_PODCAST", "Test podcast prompt")
+        monkeypatch.setenv("PROMPT_TITLE", "Test title prompt")
+        monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "https://remote.example.com")
+        monkeypatch.setenv("TRANSCRIPTION_API_KEY", "remote-key")
+        monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "whisper-1")
+        import local_feed_generator.config as config_module
+
+        config_module._config_instance = None
+
+        with (
+            mock.patch("local_feed_generator.services.transcriber.WhisperModel", None),
+            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+        ):
+            Transcriber()
+        critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(critical_records) == 0
+
+    def test_no_critical_log_when_faster_whisper_available(self, valid_env, caplog):
+        """No CRITICAL log should be emitted when faster-whisper is installed."""
+        with (
+            mock.patch(
+                "local_feed_generator.services.transcriber.WhisperModel"
+            ) as mock_whisper_cls,
+            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+        ):
+            mock_whisper_cls.return_value = mock.MagicMock()
+            Transcriber()
+        critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(critical_records) == 0

@@ -2225,11 +2225,14 @@ class TestHashComputation:
             )
         )
 
-        # Reprocess without force
+        # Reprocess without force — file is already feed-eligible so it is skipped
         metadata = producer.process_file(scanned)
 
-        assert metadata is not None
-        assert metadata.hash == existing_hash
+        # File is skipped (returns None) because it is already feed-eligible
+        assert metadata is None
+        # Hash is preserved in the JSON file since the file was not reprocessed
+        data = json.loads(json_path.read_text())
+        assert data["hash"] == existing_hash
 
     def test_hash_recomputed_when_force(self, producer, tmp_path):
         """Hash should be recomputed when reprocessing with --force."""

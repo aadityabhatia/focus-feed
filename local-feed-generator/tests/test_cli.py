@@ -9,9 +9,12 @@ Tests cover:
 - Entry point: main() function, pyproject.toml configuration
 - Positional args: process only specific files/directories
 - --force flag: force processing even if complete
+- Logging level: --log-level option, LOG_LEVEL env var, _configure_logging_level
 """
 
 import json
+import logging
+import os
 from pathlib import Path
 import time
 from typing import Any
@@ -19,6 +22,7 @@ from unittest import mock
 
 import click
 from click.testing import CliRunner
+from dotenv import load_dotenv
 from local_feed_generator.cli import app, main
 from local_feed_generator.scanner import ScannedFile
 import pytest
@@ -208,6 +212,104 @@ class TestCliFramework:
         assert result.exit_code == 0
         assert "Local Feed Generator" in result.output
 
+    def test_help_text_lists_log_level_option(self, runner):
+        """The --help output should mention --log-level."""
+        result = runner.invoke(app, ["--help"])
+        assert result.exit_code == 0
+        assert "--log-level" in result.output
+
+    def test_log_level_option_with_valid_value(self, runner):
+        """The --log-level option should accept valid level names."""
+        # Use a subcommand that will exit quickly; we only care that the
+        # group callback runs without error.
+        result = runner.invoke(app, ["--log-level", "DEBUG", "process", "--help"])
+        assert result.exit_code == 0
+
+    def test_log_level_option_case_insensitive(self, runner):
+        """The --log-level option should accept lowercase level names."""
+        result = runner.invoke(app, ["--log-level", "debug", "process", "--help"])
+        assert result.exit_code == 0
+
+    def test_log_level_option_short_flag(self, runner):
+        """The -l short flag should work as an alias for --log-level."""
+        result = runner.invoke(app, ["-l", "DEBUG", "process", "--help"])
+        assert result.exit_code == 0
+
+    def test_log_level_option_invalid_value(self, runner):
+        """The --log-level option should reject invalid level names."""
+        result = runner.invoke(app, ["--log-level", "INVALID", "process", "--help"])
+        assert result.exit_code == 2
+
+    def test_log_level_env_var(self, runner, monkeypatch):
+        """The LOG_LEVEL env var should set the log level."""
+        monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+        result = runner.invoke(app, ["process", "--help"])
+        assert result.exit_code == 0
+
+    def test_log_level_cli_overrides_env_var(self, runner, monkeypatch):
+        """The --log-level CLI option should take precedence over LOG_LEVEL env var."""
+        monkeypatch.setenv("LOG_LEVEL", "DEBUG")
+        result = runner.invoke(app, ["--log-level", "ERROR", "process", "--help"])
+        assert result.exit_code == 0
+
+    def test_configure_logging_level_sets_debug(self):
+        """_configure_logging_level should set the logger level to DEBUG."""
+        import logging
+
+        from local_feed_generator.cli import _configure_logging_level
+
+        _configure_logging_level("DEBUG")
+        _logger = logging.getLogger("local_feed_generator")
+        assert _logger.level == logging.DEBUG
+
+    def test_configure_logging_level_sets_critical(self):
+        """_configure_logging_level should set the logger level to CRITICAL."""
+        import logging
+
+        from local_feed_generator.cli import _configure_logging_level
+
+        _configure_logging_level("CRITICAL")
+        _logger = logging.getLogger("local_feed_generator")
+        assert _logger.level == logging.CRITICAL
+
+    def test_configure_logging_level_keeps_error_log_at_error(self):
+        """_configure_logging_level should keep the error_log logger at ERROR level.
+
+        The error log logger must always remain at ERROR level so that errors
+        are always written to error.log regardless of the user's log level.
+        """
+        import logging
+
+        from local_feed_generator.cli import _configure_logging_level
+
+        _configure_logging_level("WARNING")
+        error_log_logger = logging.getLogger("local_feed_generator.error_log")
+        assert error_log_logger.level == logging.ERROR
+
+        _configure_logging_level("CRITICAL")
+        error_log_logger = logging.getLogger("local_feed_generator.error_log")
+        assert error_log_logger.level == logging.ERROR
+
+    def test_configure_logging_level_invalid_falls_back_to_info(self):
+        """_configure_logging_level should fall back to INFO for unknown levels."""
+        import logging
+
+        from local_feed_generator.cli import _configure_logging_level
+
+        _configure_logging_level("UNKNOWN")
+        _logger = logging.getLogger("local_feed_generator")
+        assert _logger.level == logging.INFO
+
+    def test_configure_logging_level_case_insensitive(self):
+        """_configure_logging_level should handle lowercase input."""
+        import logging
+
+        from local_feed_generator.cli import _configure_logging_level
+
+        _configure_logging_level("debug")
+        _logger = logging.getLogger("local_feed_generator")
+        assert _logger.level == logging.DEBUG
+
     def test_process_help(self, runner):
         """The process command should have help text."""
         result = runner.invoke(app, ["process", "--help"])
@@ -273,6 +375,134 @@ class TestCliFramework:
             ["validate", str(tmp_path / "data")],
         )
         assert result.exit_code != 0
+
+    def test_config_loading_from_env_file_without_config_file(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """_load_config should load .env from cwd when config_file is None.
+
+        This verifies the fix for the false CRITICAL warning: when env vars
+        exist in a .env file (but not in os.environ), the CRITICAL warning
+        should not fire.
+        """
+        # Clear all required env vars so they are only available via .env
+        required_keys = [
+            "BASE_URL",
+            "LLM_ENDPOINT",
+            "LLM_API_KEY",
+            "LLM_MODEL",
+            "PROMPT_ARTICLE",
+            "PROMPT_ARTICLE_REFLECTION",
+            "PROMPT_PODCAST",
+            "PROMPT_PODCAST_REFLECTION",
+            "PROMPT_TITLE",
+        ]
+        for key in required_keys:
+            monkeypatch.delenv(key, raising=False)
+
+        # Write a .env file with all required vars
+        env_content = (
+            "BASE_URL=https://example.com/feeds\n"
+            "LLM_ENDPOINT=https://llm.example.com/v1\n"
+            "LLM_API_KEY=secret-key\n"
+            "LLM_MODEL=my-model\n"
+            "PROMPT_ARTICLE=Article prompt\n"
+            "PROMPT_ARTICLE_REFLECTION=Article reflection prompt\n"
+            "PROMPT_PODCAST=Podcast prompt\n"
+            "PROMPT_PODCAST_REFLECTION=Podcast reflection prompt\n"
+            "PROMPT_TITLE=Title prompt\n"
+        )
+        env_file = tmp_path / ".env"
+        env_file.write_text(env_content)
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            import local_feed_generator.config as config_module
+
+            config_module._config_instance = None
+
+            # _load_config should load .env and not raise CRITICAL.
+            # Mock load_dotenv to load from the tmp_path .env file specifically,
+            # preventing find_dotenv() from finding the project root's .env
+            # file and leaking env vars into subsequent tests.
+            real_load_dotenv = load_dotenv
+
+            def mock_load_dotenv(*args, **kwargs):
+                return real_load_dotenv(env_file, override=False)
+
+            with mock.patch("local_feed_generator.config._logger") as mock_logger:
+                with mock.patch("dotenv.load_dotenv", side_effect=mock_load_dotenv):
+                    from local_feed_generator.cli import _load_config
+
+                    _load_config(None)
+
+            # No CRITICAL log should have been emitted
+            mock_logger.critical.assert_not_called()
+        finally:
+            os.chdir(original_cwd)
+            config_module._config_instance = None
+            # Clean up any env vars loaded by load_dotenv
+            for key in required_keys:
+                monkeypatch.delenv(key, raising=False)
+
+    def test_config_loading_critical_when_env_truly_missing(
+        self, runner, tmp_path, monkeypatch
+    ):
+        """CRITICAL warning should fire when env vars are truly missing.
+
+        When no .env file exists and env vars are not set, the CRITICAL
+        warning should still fire.
+        """
+        required_keys = [
+            "BASE_URL",
+            "LLM_ENDPOINT",
+            "LLM_API_KEY",
+            "LLM_MODEL",
+            "PROMPT_ARTICLE",
+            "PROMPT_ARTICLE_REFLECTION",
+            "PROMPT_PODCAST",
+            "PROMPT_PODCAST_REFLECTION",
+            "PROMPT_TITLE",
+        ]
+        for key in required_keys:
+            monkeypatch.delenv(key, raising=False)
+
+        # Save original env var values for cleanup
+        original_env = {key: os.environ.get(key) for key in required_keys}
+
+        original_cwd = os.getcwd()
+        try:
+            os.chdir(tmp_path)
+            import local_feed_generator.config as config_module
+
+            config_module._config_instance = None
+
+            # No .env file exists, so CRITICAL should fire via config._logger
+            # and _load_config should raise click.ClickException.
+            # Mock load_dotenv to prevent it from finding the project root's
+            # .env file via find_dotenv() parent directory search.
+            with mock.patch("local_feed_generator.config._logger") as mock_logger:
+                with mock.patch("dotenv.load_dotenv"):
+                    from local_feed_generator.cli import _load_config
+
+                    with pytest.raises(click.ClickException):
+                        _load_config(None)
+
+            critical_calls = [
+                call for call in mock_logger.critical.call_args_list
+            ]
+            assert len(critical_calls) > 0
+            assert "Missing required configuration" in critical_calls[0].args[0]
+        finally:
+            os.chdir(original_cwd)
+            config_module._config_instance = None
+            # Restore original env var values
+            for key in required_keys:
+                if original_env[key] is not None:
+                    os.environ[key] = original_env[key]
+                else:
+                    os.environ.pop(key, None)
 
     def test_data_dir_option_validates_directory(self, runner, valid_env, tmp_path):
         """Positional args should reject non-existent paths."""
@@ -4331,15 +4561,14 @@ class TestCreateFeedCommand:
         """The create-feed command should have help text."""
         result = runner.invoke(app, ["create-feed", "--help"])
         assert result.exit_code == 0
-        assert "--dir" in result.output
-        assert "--directory" in result.output
+        assert "DIRECTORY" in result.output
 
     def test_create_feed_creates_feed_json(self, runner, tmp_path):
         """create-feed should create a feed.json file with template content."""
         target_dir = tmp_path / "my-course"
         result = runner.invoke(
             app,
-            ["create-feed", "--dir", str(target_dir)],
+            ["create-feed", str(target_dir)],
         )
 
         assert result.exit_code == 0
@@ -4350,23 +4579,12 @@ class TestCreateFeedCommand:
         assert data["title"] == "Feed Title"
         assert data["description"] == "Feed description"
 
-    def test_create_feed_directory_option_alias(self, runner, tmp_path):
-        """--directory should work as an alias for --dir."""
-        target_dir = tmp_path / "my-course"
-        result = runner.invoke(
-            app,
-            ["create-feed", "--directory", str(target_dir)],
-        )
-
-        assert result.exit_code == 0
-        assert (target_dir / "feed.json").exists()
-
     def test_create_feed_no_link_field(self, runner, tmp_path):
         """The generated feed.json should NOT contain a link field."""
         target_dir = tmp_path / "my-course"
         result = runner.invoke(
             app,
-            ["create-feed", "--dir", str(target_dir)],
+            ["create-feed", str(target_dir)],
         )
 
         assert result.exit_code == 0
@@ -4378,7 +4596,7 @@ class TestCreateFeedCommand:
         target_dir = tmp_path / "nested" / "deep" / "course"
         result = runner.invoke(
             app,
-            ["create-feed", "--dir", str(target_dir)],
+            ["create-feed", str(target_dir)],
         )
 
         assert result.exit_code == 0
@@ -4395,7 +4613,7 @@ class TestCreateFeedCommand:
 
         result = runner.invoke(
             app,
-            ["create-feed", "--dir", str(target_dir)],
+            ["create-feed", str(target_dir)],
         )
 
         assert result.exit_code == 0
@@ -4408,7 +4626,7 @@ class TestCreateFeedCommand:
         target_dir = tmp_path / "course"
         result = runner.invoke(
             app,
-            ["create-feed", "--dir", str(target_dir)],
+            ["create-feed", str(target_dir)],
         )
 
         assert result.exit_code == 0

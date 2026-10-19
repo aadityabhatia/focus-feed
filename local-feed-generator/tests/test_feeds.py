@@ -13,6 +13,7 @@ Tests cover:
 """
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 from unittest import mock
@@ -211,6 +212,15 @@ class TestFeedGeneratorConstruction:
         with pytest.raises(TypeError):
             FeedGenerator(data_dir=None, base_url="https://example.com")  # type: ignore[arg-type]
 
+    def test_init_nonexistent_data_dir_logs_critical(self, tmp_path, caplog):
+        """FeedGenerator should log CRITICAL when data_dir does not exist."""
+        nonexistent = tmp_path / "nonexistent"
+        with caplog.at_level(logging.CRITICAL, logger="local_feed_generator"):
+            FeedGenerator(data_dir=nonexistent, base_url="https://example.com")
+        critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(critical_records) == 1
+        assert "Data directory does not exist" in critical_records[0].message
+
 
 # ---------------------------------------------------------------------------
 # Metadata discovery and filtering
@@ -340,6 +350,44 @@ class TestMetadataDiscovery:
         # feed.json is config, not metadata — it should not appear in results
         # and should not produce an orphaned JSON warning.
         assert result == []
+
+    def test_feed_json_not_parsed_as_metadata(self, tmp_path, caplog):
+        """feed.json should be excluded from metadata discovery entirely.
+
+        It must not produce a "Failed to parse metadata" warning, since it is
+        a feed configuration file, not a per-source metadata file.
+        """
+        (tmp_path / "feed.json").write_text('{"title": "My Feed"}', encoding="utf-8")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com")
+        with caplog.at_level(logging.WARNING):
+            result = fg._discover_metadata_files()
+
+        assert result == []
+        assert not any(
+            "Failed to parse" in record.message
+            for record in caplog.records
+            if record.levelno >= 30  # WARNING
+        )
+
+    def test_feed_json_skipped_alongside_valid_metadata(self, tmp_path, caplog):
+        """feed.json should be skipped without warnings even when valid metadata exists."""
+        write_metadata_file(tmp_path, "lecture.mp4")
+        (tmp_path / "feed.json").write_text(
+            '{"title": "My Feed", "description": "desc"}', encoding="utf-8"
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com")
+        with caplog.at_level(logging.WARNING):
+            result = fg._discover_metadata_files()
+
+        assert len(result) == 1
+        assert result[0].filepath == "lecture.mp4"
+        assert not any(
+            "Failed to parse" in record.message
+            for record in caplog.records
+            if record.levelno >= 30  # WARNING
+        )
 
 
 # ---------------------------------------------------------------------------

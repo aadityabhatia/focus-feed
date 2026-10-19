@@ -487,15 +487,15 @@ class TestRetryLogic:
             summarizer.summarize("Test transcript")
         assert summarizer._client.chat.completions.create.call_count == 1
 
-    def test_retry_logs_warning(self, summarizer, mock_response, caplog):
-        """Retry attempts should log a warning."""
+    def test_retry_logs_debug(self, summarizer, mock_response, caplog):
+        """Retry attempts should log at DEBUG level."""
         summarizer._client.chat.completions.create.side_effect = [
             APIConnectionError(message="fail", request=mock.MagicMock()),
             mock_response,
         ]
 
         with mock.patch("time.sleep"):
-            with caplog.at_level("WARNING"):
+            with caplog.at_level("DEBUG", logger="local_feed_generator"):
                 summarizer.summarize("Test transcript")
 
             assert any("retrying" in record.message.lower() for record in caplog.records)
@@ -510,7 +510,7 @@ class TestRetryLogic:
             with caplog.at_level("ERROR"), pytest.raises(SummarizationError):
                 summarizer.summarize("Test transcript")
 
-            assert any("failed after" in record.message.lower() for record in caplog.records)
+            assert any("attempt=4/4" in record.message.lower() for record in caplog.records)
 
 
 # ---------------------------------------------------------------------------

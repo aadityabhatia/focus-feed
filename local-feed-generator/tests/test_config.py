@@ -1,5 +1,7 @@
 """Tests for the configuration system."""
 
+import contextlib
+import logging
 import os
 from unittest import mock
 
@@ -458,3 +460,79 @@ class TestBackwardsCompatibility:
             assert settings.prompt_article == "New article prompt"
             assert settings.prompt_podcast == "New podcast prompt"
             assert settings.prompt_title == "New title prompt"
+
+
+class TestCriticalLogging:
+    """Tests for CRITICAL-level logging when required config is missing."""
+
+    def _get_valid_env(self) -> dict[str, str]:
+        return {
+            "BASE_URL": "https://example.com/feeds",
+            "LLM_ENDPOINT": "https://llm.example.com/v1",
+            "LLM_API_KEY": "test-key",
+            "LLM_MODEL": "test-model",
+            "PROMPT_ARTICLE": "Test article prompt",
+            "PROMPT_PODCAST": "Test podcast prompt",
+            "PROMPT_TITLE": "Test title prompt",
+        }
+
+    def test_missing_required_field_logs_critical(self, caplog):
+        """A CRITICAL log should be emitted when a required field is missing."""
+        env = self._get_valid_env()
+        env["BASE_URL"] = ""
+        with (
+            mock.patch.dict(os.environ, env, clear=False),
+            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+            pytest.raises(ValidationError),
+        ):
+            get_config()
+        assert any(
+            "BASE_URL" in record.message and record.levelno == logging.CRITICAL
+            for record in caplog.records
+        )
+
+    def test_missing_multiple_required_fields_logs_critical(self, caplog):
+        """CRITICAL log should list all missing fields."""
+        env = {
+            "BASE_URL": "",
+            "LLM_ENDPOINT": "",
+            "LLM_MODEL": "test-model",
+            "PROMPT_TITLE": "Test title prompt",
+        }
+        with (
+            mock.patch.dict(os.environ, env, clear=False),
+            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+            pytest.raises(ValidationError),
+        ):
+            get_config()
+        critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(critical_records) >= 1
+        assert "BASE_URL" in critical_records[0].message
+        assert "LLM_ENDPOINT" in critical_records[0].message
+
+    def test_all_required_present_no_critical_log(self, caplog):
+        """No CRITICAL log should be emitted when all required fields are present."""
+        env = self._get_valid_env()
+        with (
+            mock.patch.dict(os.environ, env, clear=False),
+            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+            contextlib.suppress(ValidationError),
+        ):
+            get_config()
+        critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(critical_records) == 0
+
+    def test_reload_config_logs_critical_on_missing(self, caplog):
+        """reload_config should also log CRITICAL when config is missing."""
+        env = self._get_valid_env()
+        env["LLM_API_KEY"] = ""
+        with (
+            mock.patch.dict(os.environ, env, clear=False),
+            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+            pytest.raises(ValidationError),
+        ):
+            reload_config()
+        assert any(
+            "LLM_API_KEY" in record.message and record.levelno == logging.CRITICAL
+            for record in caplog.records
+        )

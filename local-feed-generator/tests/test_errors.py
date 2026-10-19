@@ -3,7 +3,6 @@
 from io import StringIO
 import json
 import logging
-from pathlib import Path
 
 from local_feed_generator.errors import (
     ProcessingError,
@@ -418,26 +417,20 @@ class TestConfigureErrorLog:
         assert "key:" not in content  # credentials removed
         assert "https://llm.example.com/v1" in content
 
-    def test_uses_project_root_when_data_dir_not_provided(self, tmp_path, monkeypatch):
-        """_configure_error_log should use the project root when data_dir is not provided.
+    def test_uses_cwd_when_data_dir_not_provided(self, tmp_path, monkeypatch):
+        """_configure_error_log should use the CWD when data_dir is not provided.
 
-        The project root is the parent directory of the local-feed-generator
-        package, determined via ``Path(__file__).parent.parent.parent.parent``
-        from the errors module's location.
+        The current working directory is used to determine where to create
+        ``error.log`` when no *data_dir* is given.
         """
-        import local_feed_generator.errors as errors_module
-
-        # Change to tmp_path so we can verify error.log is NOT created there
+        # Change to tmp_path so CWD is a known, writable location.
         monkeypatch.chdir(tmp_path)
 
         handler = _configure_error_log(force=True)
         assert handler is not None
 
-        # error.log should be written to the project root, not tmp_path
-        project_root = Path(errors_module.__file__).parent.parent.parent.parent.resolve()
-        assert (project_root / "error.log").exists()
-        # error.log should NOT be in the current working directory (tmp_path)
-        assert not (tmp_path / "error.log").exists()
+        # error.log should be written to the current working directory (tmp_path)
+        assert (tmp_path / "error.log").exists()
 
     def test_returns_none_on_permission_error(self, monkeypatch, tmp_path):
         """_configure_error_log should return None on PermissionError during mkdir."""
@@ -454,6 +447,24 @@ class TestConfigureErrorLog:
 
         handler = _configure_error_log(force=True)
         assert handler is None
+
+    def test_logs_critical_on_permission_error(self, monkeypatch, tmp_path, caplog):
+        """_configure_error_log should log CRITICAL when error.log cannot be created."""
+        import local_feed_generator.errors as errors_module
+
+        original_path = errors_module.Path
+
+        def mock_mkdir(self, *args, **kwargs):
+            raise PermissionError("Permission denied")
+
+        monkeypatch.setattr(original_path, "mkdir", mock_mkdir)
+
+        with caplog.at_level(logging.CRITICAL, logger="local_feed_generator"):
+            handler = _configure_error_log(force=True)
+        assert handler is None
+        critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
+        assert len(critical_records) == 1
+        assert "Failed to create error.log" in critical_records[0].message
 
 
 # ---------------------------------------------------------------------------

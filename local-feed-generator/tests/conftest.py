@@ -1,9 +1,49 @@
 """Pytest configuration for local-feed-generator tests."""
 
 from collections.abc import Iterator
+import os
 from unittest import mock
 
 import pytest
+
+# Required env vars that may be loaded into os.environ by load_dotenv() in
+# CLI tests.  These are saved and restored around each test to prevent
+# leakage between tests.
+_REQUIRED_ENV_VARS: tuple[str, ...] = (
+    "BASE_URL",
+    "LLM_ENDPOINT",
+    "LLM_API_KEY",
+    "LLM_MODEL",
+    "PROMPT_ARTICLE",
+    "PROMPT_ARTICLE_REFLECTION",
+    "PROMPT_PODCAST",
+    "PROMPT_PODCAST_REFLECTION",
+    "PROMPT_TITLE",
+)
+
+
+@pytest.fixture(autouse=True)
+def restore_required_env_vars() -> Iterator[None]:
+    """Save and restore required env vars around each test.
+
+    Tests in test_cli.py call ``_load_config()`` which invokes
+    ``load_dotenv()``, injecting .env values directly into ``os.environ``.
+    Because ``load_dotenv`` is not tracked by ``monkeypatch``, those values
+    persist across tests and can cause unrelated tests (e.g. ones that
+    intentionally omit a required field) to pass or fail unexpectedly.
+
+    This fixture snapshots the required env vars before each test and
+    restores them afterwards, preventing cross-test leakage.
+    """
+    saved: dict[str, str | None] = {
+        key: os.environ.get(key) for key in _REQUIRED_ENV_VARS
+    }
+    yield
+    for key, value in saved.items():
+        if value is None:
+            os.environ.pop(key, None)
+        else:
+            os.environ[key] = value
 
 
 @pytest.fixture(autouse=True)

@@ -1325,6 +1325,20 @@ class TestTitleDict:
             if record.levelno >= 30
         )
 
+    def test_string_title_warning_includes_filepath(self, caplog):
+        """String title deprecation warning should include the filepath."""
+        with caplog.at_level("WARNING"):
+            metadata = self._make_base_metadata("Plain String Title")
+        string_title_warnings = [
+            record
+            for record in caplog.records
+            if record.levelno >= 30
+            and "deprecated" in record.message.lower()
+            and "string titles are deprecated" in record.message.lower()
+        ]
+        assert string_title_warnings, "Expected a string title deprecation warning"
+        assert metadata.filepath in string_title_warnings[0].message
+
     def test_title_dict_missing_keys_emits_warning(self, caplog):
         """Title dict missing keys should emit a warning."""
         with caplog.at_level("WARNING"):
