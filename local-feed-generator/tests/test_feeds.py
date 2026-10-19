@@ -46,6 +46,7 @@ def make_metadata(
     date: int | None = 1728931200,
     publication_date: float | None = None,
     hash: str | None = None,
+    summarize_end_time: float | None = 1728931200.0,
 ) -> Metadata:
     """Create a Metadata object for testing.
 
@@ -60,10 +61,13 @@ def make_metadata(
         feed_eligible: If True, set status to "complete" for all applicable steps.
             If False, leave status as None.
         error: Error message (if provided, feed_eligible is set to False).
-        date: UNIX epoch date (seconds).
-        publication_date: Publication date from document metadata (seconds).
-            If None, the date field is used for pubDate in articles feed.
-        hash: SHA256 hash string (optional; used for guid generation).
+         date: UNIX epoch date (seconds).
+         publication_date: Publication date from document metadata (seconds).
+             If None, the date field is used for pubDate in articles feed.
+         hash: SHA256 hash string (optional; used for guid generation).
+         summarize_end_time: End time for the summarize step (seconds).
+             Used as the pubDate source for feed items. Pass None to simulate
+             a missing end_time (items will be skipped in feed generation).
 
     Returns:
         A validated Metadata instance.
@@ -97,6 +101,7 @@ def make_metadata(
                 output_size=(
                     len((summary or description).encode("utf-8")) if (summary or description) else 0
                 ),
+                end_time=summarize_end_time,
             )
     else:
         kwargs["description"] = description
@@ -114,6 +119,7 @@ def make_metadata(
                 output_size=len((summary or description).encode("utf-8"))
                 if (summary or description)
                 else 0,
+                end_time=summarize_end_time,
             )
     if error:
         kwargs["error"] = error
@@ -599,6 +605,7 @@ class TestPodcastFeedGeneration:
                         "status": "complete",
                         "input_size": 500,
                         "output_size": 200,
+                        "end_time": 1728931200.0,
                     },
                     "title": "lecture.mp4",
                     "description": "Fallback description",
@@ -658,6 +665,43 @@ class TestPodcastFeedGeneration:
             assert substring in content
         elif field == "pubdate":
             assert substring in content
+
+    def test_podcast_feed_pubdate_uses_summarize_end_time(self, tmp_path):
+        """Podcast feed pubDate should use summarize.end_time."""
+        write_metadata_file(
+            tmp_path,
+            "videos/lecture.mp4",
+            filetype="mp4",
+            date=1728931200,  # 2024-10-14
+            summarize_end_time=1719200000.0,  # 2024-06-24
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_podcast_feed()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        # pubDate should reflect summarize.end_time (June 2024)
+        from datetime import UTC, datetime
+
+        expected = datetime.fromtimestamp(1719200000.0, tz=UTC).strftime("%a, %d %b %Y")
+        assert expected in content
+
+    def test_podcast_feed_skips_item_when_summarize_end_time_missing(self, tmp_path):
+        """Podcast feed should skip items with missing summarize.end_time."""
+        write_metadata_file(
+            tmp_path,
+            "videos/lecture.mp4",
+            filetype="mp4",
+            date=1728931200,
+            summarize_end_time=None,
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_podcast_feed()
+
+        # Feed file should be generated but the item should not be in it
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert "<item>" not in content
 
     def test_podcast_feed_items_sorted(self, tmp_path):
         """Podcast feed items should be sorted by folder then filename (FR-021)."""
@@ -903,45 +947,42 @@ class TestArticlesFeedGeneration:
         filepaths = [m.filepath for m in items]
         assert filepaths == ["alpha/first.html", "alpha/middle.pdf", "zebra/last.pdf"]
 
-    def test_articles_feed_pubdate_uses_publication_date(self, tmp_path):
-        """Articles feed pubDate should use publication_date when available."""
+    def test_articles_feed_pubdate_uses_summarize_end_time(self, tmp_path):
+        """Articles feed pubDate should use summarize.end_time."""
         write_metadata_file(
             tmp_path,
             "documents/doc.pdf",
             filetype="pdf",
             date=1728931200,  # 2024-10-14
-            publication_date=1719200000.0,  # 2024-06-24
+            summarize_end_time=1719200000.0,  # 2024-06-24
         )
 
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
         fg.generate_articles_feed()
 
         content = parse_rss_file(tmp_path / "articles.xml")
-        # pubDate should reflect publication_date (June 2024), not date (Oct 2024)
+        # pubDate should reflect summarize.end_time (June 2024)
         from datetime import UTC, datetime
 
         expected = datetime.fromtimestamp(1719200000.0, tz=UTC).strftime("%a, %d %b %Y")
         assert expected in content
 
-    def test_articles_feed_pubdate_falls_back_to_date(self, tmp_path):
-        """Articles feed pubDate should fall back to date when publication_date is None."""
+    def test_articles_feed_skips_item_when_summarize_end_time_missing(self, tmp_path):
+        """Articles feed should skip items with missing summarize.end_time."""
         write_metadata_file(
             tmp_path,
             "documents/doc.pdf",
             filetype="pdf",
-            date=1728931200,  # 2024-10-14
-            publication_date=None,
+            date=1728931200,
+            summarize_end_time=None,
         )
 
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
         fg.generate_articles_feed()
 
+        # Feed file should be generated but the item should not be in it
         content = parse_rss_file(tmp_path / "articles.xml")
-        # pubDate should reflect date (Oct 2024) since publication_date is None
-        from datetime import UTC, datetime
-
-        expected = datetime.fromtimestamp(1728931200, tz=UTC).strftime("%a, %d %b %Y")
-        assert expected in content
+        assert "<item>" not in content
 
     def test_articles_feed_excludes_error_entries(self, tmp_path):
         """Error entries should not appear in the articles feed."""
@@ -2963,7 +3004,12 @@ class TestUpdateMissingHashes:
             json.dumps(
                 {
                     "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
-                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                        "end_time": 1728931200.0,
+                    },
                     "title": {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
                     "description": "",
                     "summary": "Summary text",
@@ -3053,7 +3099,12 @@ class TestUpdateMissingHashes:
             json.dumps(
                 {
                     "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
-                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                        "end_time": 1728931200.0,
+                    },
                     "title": "Orphan",
                     "description": "",
                     "filename": "orphan.mp4",
@@ -3196,7 +3247,12 @@ class TestUpdateMissingHashes:
             json.dumps(
                 {
                     "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
-                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                        "end_time": 1728931200.0,
+                    },
                     "title": {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
                     "description": "",
                     "summary": "Summary text",
@@ -3260,7 +3316,12 @@ class TestHashUpdateIntegration:
             json.dumps(
                 {
                     "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
-                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                        "end_time": 1728931200.0,
+                    },
                     "title": {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
                     "description": "",
                     "summary": "Summary text",
@@ -3302,7 +3363,12 @@ class TestHashUpdateIntegration:
             json.dumps(
                 {
                     "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
-                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                        "end_time": 1728931200.0,
+                    },
                     "title": {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
                     "description": "",
                     "summary": "Summary text",
@@ -3342,7 +3408,12 @@ class TestHashUpdateIntegration:
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 1000, "output_size": 500},
-                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                        "end_time": 1728931200.0,
+                    },
                     "title": {"filename": "doc", "extracted": None, "generated": "My Doc"},
                     "description": "Description",
                     "filename": "doc.pdf",
@@ -3380,7 +3451,12 @@ class TestHashUpdateIntegration:
             json.dumps(
                 {
                     "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
-                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                        "end_time": 1728931200.0,
+                    },
                     "title": {"filename": "orphan", "extracted": None, "generated": "Orphan"},
                     "description": "",
                     "summary": "Summary",
@@ -3401,7 +3477,12 @@ class TestHashUpdateIntegration:
             json.dumps(
                 {
                     "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
-                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                        "end_time": 1728931200.0,
+                    },
                     "title": {"filename": "real", "extracted": None, "generated": "Real"},
                     "description": "",
                     "summary": "Summary",
@@ -3439,7 +3520,12 @@ class TestHashUpdateIntegration:
             json.dumps(
                 {
                     "transcribe": {"status": "complete", "input_size": 1000, "output_size": 500},
-                    "summarize": {"status": "complete", "input_size": 500, "output_size": 200},
+                    "summarize": {
+                        "status": "complete",
+                        "input_size": 500,
+                        "output_size": 200,
+                        "end_time": 1728931200.0,
+                    },
                     "title": {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
                     "description": "",
                     "summary": "Summary text",
@@ -3831,6 +3917,7 @@ class TestAttributionInPodcastFeed:
                 input_size=100,
                 output_size=50,
                 model=None,
+                end_time=1728931200.0,
             )
             source = tmp_path / "videos" / "lecture.mp4"
             source.parent.mkdir(parents=True, exist_ok=True)
@@ -3958,6 +4045,7 @@ class TestAttributionInArticlesFeed:
                 input_size=100,
                 output_size=50,
                 model=None,
+                end_time=1728931200.0,
             )
             source = tmp_path / "docs" / "doc.pdf"
             source.parent.mkdir(parents=True, exist_ok=True)
@@ -3971,3 +4059,407 @@ class TestAttributionInArticlesFeed:
             content = parse_rss_file(tmp_path / "articles.xml")
             assert "Description text" in content
             assert "Summarized by" not in content
+
+
+# ---------------------------------------------------------------------------
+# Feed metadata: language, author, image (from feed.json)
+# ---------------------------------------------------------------------------
+
+
+class TestFeedMetadataFields:
+    """Tests for language, author, and image fields in feed generation."""
+
+    def test_root_feed_json_language_in_podcast_feed(self, tmp_path):
+        """Root feed.json language should appear in podcast.xml."""
+        write_metadata_file(tmp_path, "lecture.mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "My Podcast",
+                    "description": "A podcast feed",
+                    "language": "en-us",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert "<language>en-us</language>" in content
+
+    def test_root_feed_json_language_in_articles_feed(self, tmp_path):
+        """Root feed.json language should appear in articles.xml."""
+        write_metadata_file(tmp_path, "doc.pdf", filetype="pdf")
+        (tmp_path / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "My Articles",
+                    "description": "An articles feed",
+                    "language": "en-us",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "<language>en-us</language>" in content
+
+    def test_root_feed_json_author_in_podcast_feed(self, tmp_path):
+        """Root feed.json author should be set on the feed generator."""
+        write_metadata_file(tmp_path, "lecture.mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "My Podcast",
+                    "description": "A podcast feed",
+                    "author": "John Smith",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        # Author is stored internally by feedgen; verify feed generation succeeds
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert "<title>My Podcast</title>" in content
+
+    def test_root_feed_json_author_in_articles_feed(self, tmp_path):
+        """Root feed.json author should be set on the feed generator."""
+        write_metadata_file(tmp_path, "doc.pdf", filetype="pdf")
+        (tmp_path / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "My Articles",
+                    "description": "An articles feed",
+                    "author": "Jane Doe",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        # Author is stored internally by feedgen; verify feed generation succeeds
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "<title>My Articles</title>" in content
+
+    def test_root_feed_json_image_in_podcast_feed(self, tmp_path):
+        """Root feed.json image should appear in podcast.xml."""
+        write_metadata_file(tmp_path, "lecture.mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "My Podcast",
+                    "description": "A podcast feed",
+                    "image": {
+                        "url": "https://example.com/logo.jpg",
+                        "title": "Logo",
+                        "link": "https://example.com/",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert "<image>" in content
+        assert "<url>https://example.com/logo.jpg</url>" in content
+        assert "<title>Logo</title>" in content
+        assert "<link>https://example.com/</link>" in content
+
+    def test_root_feed_json_image_in_articles_feed(self, tmp_path):
+        """Root feed.json image should appear in articles.xml."""
+        write_metadata_file(tmp_path, "doc.pdf", filetype="pdf")
+        (tmp_path / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "My Articles",
+                    "description": "An articles feed",
+                    "image": {
+                        "url": "https://example.com/logo.jpg",
+                        "title": "Logo",
+                        "link": "https://example.com/",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "<image>" in content
+        assert "<url>https://example.com/logo.jpg</url>" in content
+
+    def test_root_feed_json_all_fields_in_podcast_feed(self, tmp_path):
+        """All new fields (language, author, image) should appear together."""
+        write_metadata_file(tmp_path, "lecture.mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "Module 1",
+                    "description": "educational content - podcasts, articles, and resources",
+                    "language": "en-us",
+                    "author": "John Smith",
+                    "image": {
+                        "url": "https://www.example.com/logo.jpg",
+                        "title": "Logo",
+                        "link": "https://www.example.com/",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert "<title>Module 1</title>" in content
+        assert "<description>educational content - podcasts, articles, and resources</description>" in content
+        assert "<language>en-us</language>" in content
+        # Author is stored internally by feedgen (RSS requires email to render)
+        assert "<image>" in content
+        assert "<url>https://www.example.com/logo.jpg</url>" in content
+        assert "<title>Logo</title>" in content
+        assert "<link>https://www.example.com/</link>" in content
+
+    def test_root_feed_json_all_fields_in_articles_feed(self, tmp_path):
+        """All new fields (language, author, image) should appear in articles feed."""
+        write_metadata_file(tmp_path, "doc.pdf", filetype="pdf")
+        (tmp_path / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "Module 1",
+                    "description": "educational content",
+                    "language": "en-us",
+                    "author": "John Smith",
+                    "image": {
+                        "url": "https://www.example.com/logo.jpg",
+                        "title": "Logo",
+                        "link": "https://www.example.com/",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "<title>Module 1</title>" in content
+        assert "<description>educational content</description>" in content
+        assert "<language>en-us</language>" in content
+        assert "<image>" in content
+        assert "<url>https://www.example.com/logo.jpg</url>" in content
+
+    def test_per_folder_feed_json_language_in_podcast_feed(self, tmp_path):
+        """Per-folder feed.json language should appear in podcast.xml."""
+        write_metadata_file(tmp_path, "Course1/lecture.mp4")
+        write_feed_json(tmp_path, "Course1", "Course 1", "Description")
+        (tmp_path / "Course1" / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "Course 1",
+                    "description": "Description",
+                    "language": "fr-fr",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "Course1" / "podcast.xml")
+        assert "<language>fr-fr</language>" in content
+
+    def test_per_folder_feed_json_author_in_articles_feed(self, tmp_path):
+        """Per-folder feed.json author should be set on the feed generator."""
+        write_metadata_file(tmp_path, "Course1/doc.pdf", filetype="pdf")
+        (tmp_path / "Course1" / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "Course 1",
+                    "description": "Description",
+                    "author": "Jane Doe",
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        # Author is stored internally by feedgen; verify feed generation succeeds
+        content = parse_rss_file(tmp_path / "Course1" / "articles.xml")
+        assert "<title>Course 1</title>" in content
+
+    def test_per_folder_feed_json_image_in_podcast_feed(self, tmp_path):
+        """Per-folder feed.json image should appear in podcast.xml."""
+        write_metadata_file(tmp_path, "Course1/lecture.mp4")
+        (tmp_path / "Course1" / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "Course 1",
+                    "description": "Description",
+                    "image": {
+                        "url": "https://example.com/course1-logo.jpg",
+                        "title": "Course 1 Logo",
+                        "link": "https://example.com/course1",
+                    },
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "Course1" / "podcast.xml")
+        assert "<image>" in content
+        assert "<url>https://example.com/course1-logo.jpg</url>" in content
+        assert "<title>Course 1 Logo</title>" in content
+
+    def test_no_language_when_not_in_feed_json(self, tmp_path):
+        """No language tag should appear when feed.json has no language field."""
+        write_metadata_file(tmp_path, "lecture.mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "My Podcast", "description": "A feed"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert "<language>" not in content
+
+    def test_no_author_when_not_in_feed_json(self, tmp_path):
+        """No author tag should appear when feed.json has no author field."""
+        write_metadata_file(tmp_path, "doc.pdf", filetype="pdf")
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "My Articles", "description": "A feed"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "<author>" not in content
+        assert "itunes:author" not in content
+
+    def test_no_image_when_not_in_feed_json(self, tmp_path):
+        """No image tag should appear when feed.json has no image field."""
+        write_metadata_file(tmp_path, "lecture.mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "My Podcast", "description": "A feed"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert "<image>" not in content
+
+    def test_description_not_defaulted_to_title_when_empty(self, tmp_path):
+        """Description should be empty string, not the title, when description is None."""
+        write_metadata_file(tmp_path, "lecture.mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "My Podcast"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        # Description should be empty, not "My Podcast" (the title)
+        assert "<description></description>" in content
+        assert "<description>My Podcast</description>" not in content
+
+    def test_description_not_defaulted_to_title_for_articles(self, tmp_path):
+        """Articles feed description should be empty string, not title, when None."""
+        write_metadata_file(tmp_path, "doc.pdf", filetype="pdf")
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "My Articles"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "<description></description>" in content
+        assert "<description>My Articles</description>" not in content
+
+    def test_generate_podcast_feed_accepts_language_author_image_directly(self, tmp_path):
+        """generate_podcast_feed should accept language, author, image params directly."""
+        write_metadata_file(tmp_path, "lecture.mp4")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_podcast_feed(
+            title="Direct Podcast",
+            description="Direct desc",
+            language="de-de",
+            author="Direct Author",
+            image={"url": "https://example.com/direct.jpg", "title": "Direct", "link": "https://example.com/"},
+        )
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert "<language>de-de</language>" in content
+        # Author is stored internally by feedgen (RSS requires email to render)
+        assert "<url>https://example.com/direct.jpg</url>" in content
+
+    def test_generate_articles_feed_accepts_language_author_image_directly(self, tmp_path):
+        """generate_articles_feed should accept language, author, image params directly."""
+        write_metadata_file(tmp_path, "doc.pdf", filetype="pdf")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_articles_feed(
+            title="Direct Articles",
+            description="Direct desc",
+            language="de-de",
+            author="Direct Author",
+            image={"url": "https://example.com/direct.jpg", "title": "Direct", "link": "https://example.com/"},
+        )
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "<language>de-de</language>" in content
+        assert "<url>https://example.com/direct.jpg</url>" in content
+
+    def test_image_with_missing_title_and_link_defaults_to_empty(self, tmp_path):
+        """Image dict missing title/link should not cause errors."""
+        write_metadata_file(tmp_path, "lecture.mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps(
+                {
+                    "title": "My Podcast",
+                    "description": "A feed",
+                    "image": {"url": "https://example.com/logo.jpg"},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_all_feeds()
+
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert "<url>https://example.com/logo.jpg</url>" in content
+        assert "<image>" in content

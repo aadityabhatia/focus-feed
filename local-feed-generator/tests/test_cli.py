@@ -4632,3 +4632,43 @@ class TestCreateFeedCommand:
         assert result.exit_code == 0
         assert "Created feed.json" in result.output
         assert str(target_dir / "feed.json") in result.output
+
+    def test_create_feed_includes_language_and_author(self, runner, tmp_path):
+        """create-feed should include language and author fields in the template."""
+        target_dir = tmp_path / "course"
+        result = runner.invoke(
+            app,
+            ["create-feed", str(target_dir)],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads((target_dir / "feed.json").read_text(encoding="utf-8"))
+        assert data["language"] == "en-us"
+        assert data["author"] == "Feed Author"
+
+    def test_create_feed_includes_image(self, runner, tmp_path):
+        """create-feed should include an image dict in the template."""
+        target_dir = tmp_path / "course"
+        result = runner.invoke(
+            app,
+            ["create-feed", str(target_dir)],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads((target_dir / "feed.json").read_text(encoding="utf-8"))
+        assert "image" in data
+        assert data["image"]["url"] == "https://www.example.com/logo.jpg"
+        assert data["image"]["title"] == "Logo"
+        assert data["image"]["link"] == "https://www.example.com/"
+
+    def test_create_feed_no_link_field(self, runner, tmp_path):
+        """The generated feed.json should NOT contain a link field."""
+        target_dir = tmp_path / "my-course"
+        result = runner.invoke(
+            app,
+            ["create-feed", str(target_dir)],
+        )
+
+        assert result.exit_code == 0
+        data = json.loads((target_dir / "feed.json").read_text(encoding="utf-8"))
+        assert "link" not in data

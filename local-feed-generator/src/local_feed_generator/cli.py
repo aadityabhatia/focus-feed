@@ -2129,9 +2129,16 @@ def _finalize_incomplete_json(
 # Template for the feed.json file created by the ``create-feed`` subcommand.
 # The ``link`` field is intentionally omitted: feed links are derived from
 # ``BASE_URL`` + relative path at generation time (see feeds.py).
-_FEED_JSON_TEMPLATE: dict[str, str] = {
+_FEED_JSON_TEMPLATE: dict[str, Any] = {
     "title": "Feed Title",
     "description": "Feed description",
+    "language": "en-us",
+    "author": "Feed Author",
+    "image": {
+        "url": "https://www.example.com/logo.jpg",
+        "title": "Logo",
+        "link": "https://www.example.com/",
+    },
 }
 
 

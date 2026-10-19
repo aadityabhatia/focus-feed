@@ -28,6 +28,7 @@ import logging
 import os
 from pathlib import Path
 import re
+from typing import Any
 import xml.etree.ElementTree as ET
 
 from feedgen.feed import FeedGenerator as _FeedGenerator
@@ -652,7 +653,7 @@ class FeedGenerator:
     # Per-folder feed.json discovery and metadata filtering
     # ------------------------------------------------------------------
 
-    def _discover_feed_json_dirs(self) -> list[tuple[Path, dict[str, str]]]:
+    def _discover_feed_json_dirs(self) -> list[tuple[Path, dict[str, Any]]]:
         """Walk ``data_dir`` recursively and find all ``feed.json`` files.
 
         Each ``feed.json`` provides a per-folder feed configuration with
@@ -667,12 +668,12 @@ class FeedGenerator:
             ``description`` keys).  Invalid or unreadable ``feed.json``
             files are logged as warnings and skipped.
         """
-        results: list[tuple[Path, dict[str, str]]] = []
+        results: list[tuple[Path, dict[str, Any]]] = []
 
         for feed_json_path in self.data_dir.rglob("feed.json"):
             _logger.debug("Found feed.json at %s", feed_json_path)
             try:
-                config: dict[str, str] = json.loads(feed_json_path.read_text(encoding="utf-8"))
+                config: dict[str, Any] = json.loads(feed_json_path.read_text(encoding="utf-8"))
                 results.append((feed_json_path.parent, config))
             except (json.JSONDecodeError, OSError) as exc:
                 _logger.warning("Failed to parse feed.json at %s: %s", feed_json_path, exc)
@@ -722,6 +723,9 @@ class FeedGenerator:
         title: str | None = None,
         description: str | None = None,
         link: str | None = None,
+        language: str | None = None,
+        author: str | None = None,
+        image: dict[str, str] | None = None,
         metadata_items: list[Metadata] | None = None,
     ) -> list[Metadata]:
         """Generate the podcast RSS feed (``podcast.xml``).
@@ -737,7 +741,7 @@ class FeedGenerator:
               for backward compatibility.  Markdown is converted to HTML.
             - **link**: absolute URL to the source MP4 file.
             - **enclosure**: URL, type ``audio/mp4``, and length (file size).
-            - **publication date**: from metadata ``date``.
+            - **publication date**: from ``summarize.end_time``.
             - **GUID**: last 12 characters of the ``hash`` field when present,
               otherwise the absolute URL of the file path (FR-020).
 
@@ -748,10 +752,16 @@ class FeedGenerator:
             output_dir: Directory to write the feed file.  Defaults to
                 ``self.data_dir``.
             title: Feed title.  Defaults to ``_PODCAST_FEED_TITLE``.
-            description: Feed description.  Defaults to ``_PODCAST_FEED_TITLE``.
+            description: Feed description.  Defaults to an empty string.
             link: Feed-level channel link URL.  When ``None`` (default),
                 ``self.base_url`` is used.  If provided (e.g. from
                 ``feed.json``), it overrides the default.
+            language: Feed language (e.g., ``"en-us"``).  When ``None``
+                (default), no language tag is emitted.
+            author: Feed author name.  When ``None`` (default), no author is
+                emitted.
+            image: Feed image dict with ``url``, ``title``, and ``link`` keys.
+                When ``None`` (default), no image tag is emitted.
             metadata_items: Pre-discovered metadata items to use instead of
                 discovering them.  When ``None`` (default), metadata is
                 discovered via :meth:`_discover_metadata_files`.
@@ -766,8 +776,6 @@ class FeedGenerator:
             output_dir = self.data_dir
         if title is None:
             title = _PODCAST_FEED_TITLE
-        if description is None:
-            description = _PODCAST_FEED_TITLE
         if link is None:
             link = self.base_url
 
@@ -791,10 +799,23 @@ class FeedGenerator:
         fg.title(title)
         fg.link(href=self._absolute_url(feed_rel_path), rel="self")
         fg.link(href=link)
+        description = description or ""
         fg.description(description)
-        fg.language("en")
+        if language:
+            fg.language(language)
+        if author:
+            fg.author({"name": author})
+        if image:
+            fg.image(url=image["url"], title=image.get("title", ""), link=image.get("link", ""))
 
         for metadata in mp4_items:
+            # Publication date: from summarize.end_time (no fallback).
+            if metadata.summarize is None or metadata.summarize.end_time is None:
+                _logger.error(
+                    "Missing summarize.end_time for %s, skipping",
+                    metadata.filename,
+                )
+                continue
             entry = fg.add_entry()
             entry.id(str(metadata.filepath))
             entry.guid(self._compute_guid(metadata))
@@ -821,12 +842,7 @@ class FeedGenerator:
                 type=_PODCAST_MIME_TYPE,
             )
 
-            # Publication date.
-            pub_date = (
-                datetime.fromtimestamp(metadata.date, tz=UTC)
-                if metadata.date
-                else datetime.now(UTC)
-            )
+            pub_date = datetime.fromtimestamp(metadata.summarize.end_time, tz=UTC)
             entry.pubDate(pub_date)
 
         output_path = output_dir / "podcast.xml"
@@ -851,6 +867,9 @@ class FeedGenerator:
         title: str | None = None,
         description: str | None = None,
         link: str | None = None,
+        language: str | None = None,
+        author: str | None = None,
+        image: dict[str, str] | None = None,
         metadata_items: list[Metadata] | None = None,
     ) -> list[Metadata]:
         """Generate the articles RSS feed (``articles.xml``).
@@ -864,9 +883,7 @@ class FeedGenerator:
               otherwise from ``description``, otherwise empty.
               Markdown is converted to HTML.
             - **link**: absolute URL to the source file.
-            - **publication date**: from metadata ``publication_date``
-              (document metadata date) if available, otherwise from
-              ``date`` (file modification time).
+            - **publication date**: from ``summarize.end_time``.
             - **GUID**: last 12 characters of the ``hash`` field when present,
               otherwise the absolute URL of the file path (FR-020).
 
@@ -877,11 +894,16 @@ class FeedGenerator:
             output_dir: Directory to write the feed file.  Defaults to
                 ``self.data_dir``.
             title: Feed title.  Defaults to ``_ARTICLES_FEED_TITLE``.
-            description: Feed description.  Defaults to
-                ``_ARTICLES_FEED_TITLE``.
+            description: Feed description.  Defaults to an empty string.
             link: Feed-level channel link URL.  When ``None`` (default),
                 ``self.base_url`` is used.  If provided (e.g. from
                 ``feed.json``), it overrides the default.
+            language: Feed language (e.g., ``"en-us"``).  When ``None``
+                (default), no language tag is emitted.
+            author: Feed author name.  When ``None`` (default), no author is
+                emitted.
+            image: Feed image dict with ``url``, ``title``, and ``link`` keys.
+                When ``None`` (default), no image tag is emitted.
             metadata_items: Pre-discovered metadata items to use instead of
                 discovering them.  When ``None`` (default), metadata is
                 discovered via :meth:`_discover_metadata_files`.
@@ -896,8 +918,6 @@ class FeedGenerator:
             output_dir = self.data_dir
         if title is None:
             title = _ARTICLES_FEED_TITLE
-        if description is None:
-            description = _ARTICLES_FEED_TITLE
         if link is None:
             link = self.base_url
 
@@ -923,10 +943,23 @@ class FeedGenerator:
         fg.title(title)
         fg.link(href=self._absolute_url(feed_rel_path), rel="self")
         fg.link(href=link)
+        description = description or ""
         fg.description(description)
-        fg.language("en")
+        if language:
+            fg.language(language)
+        if author:
+            fg.author({"name": author})
+        if image:
+            fg.image(url=image["url"], title=image.get("title", ""), link=image.get("link", ""))
 
         for metadata in article_items:
+            # Publication date: from summarize.end_time (no fallback).
+            if metadata.summarize is None or metadata.summarize.end_time is None:
+                _logger.error(
+                    "Missing summarize.end_time for %s, skipping",
+                    metadata.filename,
+                )
+                continue
             entry = fg.add_entry()
             entry.id(str(metadata.filepath))
             entry.guid(self._compute_guid(metadata))
@@ -946,14 +979,7 @@ class FeedGenerator:
             source_url = self._absolute_url(metadata.filepath)
             entry.link(href=source_url)
 
-            # Publication date: use document metadata date if available,
-            # falling back to file modification date.
-            pub_date_value = metadata.publication_date or metadata.date
-            pub_date = (
-                datetime.fromtimestamp(pub_date_value, tz=UTC)
-                if pub_date_value
-                else datetime.now(UTC)
-            )
+            pub_date = datetime.fromtimestamp(metadata.summarize.end_time, tz=UTC)
             entry.pubDate(pub_date)
 
         output_path = output_dir / "articles.xml"
@@ -982,6 +1008,9 @@ class FeedGenerator:
         title: str | None,
         description: str | None,
         link: str | None,
+        language: str | None,
+        author: str | None,
+        image: dict[str, str] | None,
         metadata_items: list[Metadata],
     ) -> dict[str, list[Metadata]]:
         """Generate podcast and/or articles feeds for a specific folder.
@@ -1005,6 +1034,9 @@ class FeedGenerator:
                 use the default description for the feed type.
             link: Feed-level channel link URL from ``feed.json``, or ``None``
                 to use ``self.base_url`` as the default.
+            language: Feed language from ``feed.json``, or ``None`` to omit.
+            author: Feed author from ``feed.json``, or ``None`` to omit.
+            image: Feed image dict from ``feed.json``, or ``None`` to omit.
             metadata_items: Pre-discovered metadata items to use for this
                 folder.
 
@@ -1033,6 +1065,9 @@ class FeedGenerator:
                     title=title,
                     description=description,
                     link=link,
+                    language=language,
+                    author=author,
+                    image=image,
                     metadata_items=metadata_items,
                 )
             except Exception as exc:
@@ -1052,6 +1087,9 @@ class FeedGenerator:
                     title=title,
                     description=description,
                     link=link,
+                    language=language,
+                    author=author,
+                    image=image,
                     metadata_items=metadata_items,
                 )
             except Exception as exc:
@@ -1151,11 +1189,17 @@ class FeedGenerator:
             root_title: str | None = None
             root_description: str | None = None
             root_link: str | None = None
+            root_language: str | None = None
+            root_author: str | None = None
+            root_image: dict[str, str] | None = None
             try:
                 root_config = json.loads(root_feed_json.read_text(encoding="utf-8"))
                 root_title = root_config.get("title")
                 root_description = root_config.get("description")
                 root_link = root_config.get("link")
+                root_language = root_config.get("language")
+                root_author = root_config.get("author")
+                root_image = root_config.get("image")
             except (json.JSONDecodeError, OSError) as exc:
                 _logger.warning(
                     "Failed to parse root feed.json at %s: %s",
@@ -1165,6 +1209,9 @@ class FeedGenerator:
                 root_title = None
                 root_description = None
                 root_link = None
+                root_language = None
+                root_author = None
+                root_image = None
 
             # Generate podcast feed (only if MP4 files exist - handled in generate_podcast_feed)
             try:
@@ -1173,6 +1220,9 @@ class FeedGenerator:
                     title=root_title,
                     description=root_description,
                     link=root_link,
+                    language=root_language,
+                    author=root_author,
+                    image=root_image,
                 )
             except Exception as exc:
                 log_error(exc, filepath=str(self.data_dir), stage="podcast_feed_generation")
@@ -1184,6 +1234,9 @@ class FeedGenerator:
                     title=root_title,
                     description=root_description,
                     link=root_link,
+                    language=root_language,
+                    author=root_author,
+                    image=root_image,
                 )
             except Exception as exc:
                 log_error(exc, filepath=str(self.data_dir), stage="articles_feed_generation")
@@ -1216,6 +1269,9 @@ class FeedGenerator:
             folder_title = config.get("title")
             folder_description = config.get("description")
             folder_link = config.get("link")
+            folder_language = config.get("language")
+            folder_author = config.get("author")
+            folder_image = config.get("image")
 
             # Filter metadata to only items within this folder tree.
             folder_metadata = self._filter_metadata_for_folder(all_metadata, folder_path)
@@ -1225,6 +1281,9 @@ class FeedGenerator:
                 title=folder_title,
                 description=folder_description,
                 link=folder_link,
+                language=folder_language,
+                author=folder_author,
+                image=folder_image,
                 metadata_items=folder_metadata,
             )
 
