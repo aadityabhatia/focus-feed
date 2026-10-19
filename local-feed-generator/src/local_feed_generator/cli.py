@@ -8,7 +8,7 @@ each step of the processing pipeline:
 - ``feeds``            — Generate RSS feeds from existing JSON metadata.
 - ``validate``         — Validate all JSON metadata files.
 - ``transcribe``       — Transcribe MP4 files to markdown text.
-- ``summarize``        — Generate summaries from existing transcripts.
+- ``summarize``        — Generate summaries from existing content.
 - ``extract``          — Extract metadata from PDF/HTML files.
 - ``title``            — Generate titles for files that lack proper titles.
 - ``create-feed``      — Create a template ``feed.json`` file in a target directory.
@@ -153,8 +153,11 @@ def _resolve_paths(paths: tuple[str, ...]) -> list[Path]:
         A list of resolved :class:`~pathlib.Path` objects.
 
     Raises:
+        click.UsageError: If no paths are provided.
         click.ClickException: If any path does not exist.
     """
+    if not paths:
+        raise click.UsageError("At least one file or directory path is required.")
     resolved: list[Path] = []
     for p in paths:
         path = Path(p).resolve()
@@ -168,17 +171,14 @@ def _resolve_data_dir_from_paths(paths: list[Path]) -> Path:
     """Determine the data directory from a list of resolved paths.
 
     Computes the common parent directory of all paths.  If a single path
-    is a file, its parent directory is used.  If no paths are provided,
-    the current working directory is used.
+    is a file, its parent directory is used.
 
     Args:
-        paths: List of resolved :class:`~pathlib.Path` objects.
+        paths: List of resolved :class:`~pathlib.Path` objects (must not be empty).
 
     Returns:
         An absolute :class:`~pathlib.Path` to the data directory.
     """
-    if not paths:
-        return Path.cwd()
     if len(paths) == 1:
         if paths[0].is_dir():
             return paths[0]
@@ -670,7 +670,7 @@ def _dry_run_option(func: Any) -> Any:
 def app(log_level: str | None) -> None:
     """Local Feed Generator — Privacy-first RSS/Atom feed generator.
 
-    Processes PDF, HTML, and MP4 files in a data directory and generates
+    Processes PDF, HTML, and MP4 files from the given paths and generates
     RSS feeds for personal consumption through mobile applications.
     """
     # Configure logging level early, before any subcommand logging occurs.
@@ -695,22 +695,17 @@ def process(
 ) -> None:
     """Process all files in the given paths (batch mode).
 
-    Scans the given paths for content files (MP4, PDF, HTML) without
-    JSON metadata, processes each file through the Producer pipeline,
+    Scans the given paths for content files (MP4, PDF, HTML) that need
+    processing, processes each file through the Producer pipeline,
     and generates both RSS feeds afterwards.
 
     When ``--force`` is specified, all files are processed even if
     already feed-eligible.
 
-    At least one path (file or directory) is required.  If no paths are
-    provided, the current directory (``.``) is used.
+    At least one file or directory path is required.
     """
     _load_config(config_file)
     _logger.info("Starting process command")
-
-    # Default to current directory if no paths provided.
-    if not paths:
-        paths = (".",)
 
     resolved_paths = _resolve_paths(paths)
     data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
@@ -1047,15 +1042,10 @@ def watch(
     When ``--force`` is specified, all files are processed on startup
     even if already feed-eligible.
 
-    At least one directory path is required.  If no paths are provided,
-    the current directory (``.``) is used.
+    At least one file or directory path is required.
     """
     _load_config(config_file)
     _logger.info("Starting watch command")
-
-    # Default to current directory if no paths provided.
-    if not paths:
-        paths = (".",)
 
     resolved_paths = _resolve_paths(paths)
     data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
@@ -1191,10 +1181,13 @@ def feeds(
     Before generating feeds, finalizes any incomplete JSON metadata files
     (i.e., files with step statuses that are not yet ``"complete"``) by
     filling in missing required fields, setting applicable step statuses
-    to ``"complete"``, and adding ``completed_at`` timestamps. This makes
-    files feed-eligible so they appear in the generated feeds.
+    to ``"complete"``, and adding timestamps. This makes files
+    feed-eligible so they appear in the generated feeds.
 
-    At least one path (file or directory) is required.
+    When ``--force`` is specified, all files are processed even if already
+    feed-eligible.
+
+    At least one file or directory path is required.
     """
     _load_config(config_file)
     _logger.info("Starting feeds command")
@@ -1255,15 +1248,18 @@ def validate(
     Before validation, finalizes any incomplete JSON metadata files
     (i.e., files with step statuses that are not yet ``"complete"``) by
     filling in missing required fields, setting applicable step statuses
-    to ``"complete"``, and adding ``completed_at`` timestamps. This makes
-    files feed-eligible.
+    to ``"complete"``, and adding timestamps. This makes files
+    feed-eligible.
+
+    When ``--force`` is specified, all files are processed even if already
+    feed-eligible.
 
     Then scans for all JSON metadata files, validates each against the
     schema, checks for orphaned JSON files, and checks for special
     characters in filenames.  Exits with code 0 when all files are valid,
     1 when errors are found.
 
-    At least one path (file or directory) is required.
+    At least one file or directory path is required.
     """
     _load_config(config_file)
     _logger.info("Starting validate command")
@@ -1350,14 +1346,15 @@ def transcribe(
     """Transcribe MP4 files to markdown text.
 
     Scans the given paths for MP4 files that do not yet have a complete
-    transcript, transcribes each one using the faster-whisker model, and
-    writes the transcript to the adjacent JSON metadata file.
+    transcript, transcribes each one using faster-whisper or remote
+    transcription API if configured, and writes the transcript to the
+    adjacent JSON metadata file.
 
     Files that already have ``transcribe.status="complete"`` are skipped
     unless ``--force`` is specified.  Use ``--dry-run`` to preview which
     files would be processed without making any changes.
 
-    At least one path (file or directory) is required.
+    At least one file or directory path is required.
     """
     _load_config(config_file)
     _logger.info("Starting transcribe command")
@@ -1484,7 +1481,7 @@ def summarize(
     ``--force`` is specified.  Use ``--dry-run`` to preview which files
     would be processed without making any changes.
 
-    At least one path (file or directory) is required.
+    At least one file or directory path is required.
     """
     _load_config(config_file)
     _logger.info("Starting summarize command")
@@ -1611,7 +1608,7 @@ def extract(
     is specified.  Use ``--dry-run`` to preview which files would be
     processed without making any changes.
 
-    At least one path (file or directory) is required.
+    At least one file or directory path is required.
     """
     _load_config(config_file)
     _logger.info("Starting extract command")
@@ -1738,7 +1735,7 @@ def title(
     is specified.  Use ``--dry-run`` to preview which files would be
     processed without making any changes.
 
-    At least one path (file or directory) is required.
+    At least one file or directory path is required.
     """
     _load_config(config_file)
     _logger.info("Starting title command")
@@ -2091,6 +2088,13 @@ _FEED_JSON_TEMPLATE: dict[str, Any] = {
     type=click.Path(file_okay=False, dir_okay=True),
 )
 def create_feed(config_file: str | None, directory: str) -> None:
+    """Create a template ``feed.json`` file in a target directory.
+
+    Creates a ``feed.json`` file with default template fields (title,
+    description, language, author, image) in the specified directory.
+    The directory is created if it does not exist. If a ``feed.json``
+    already exists, it is overwritten.
+    """
     _logger.info("Starting create-feed command")
     target_dir = Path(directory)
     feed_json_path = target_dir / "feed.json"

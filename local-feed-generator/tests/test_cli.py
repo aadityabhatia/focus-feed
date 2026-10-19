@@ -521,6 +521,46 @@ class TestCliFramework:
 
 
 # ---------------------------------------------------------------------------
+# T5.1: No-Paths Required Tests
+# ---------------------------------------------------------------------------
+
+
+class TestNoPathsRequired:
+    """Commands must require at least one file or directory path."""
+
+    @pytest.mark.parametrize(
+        "command",
+        ["process", "watch", "feeds", "validate", "transcribe", "summarize", "extract", "title"],
+    )
+    def test_command_requires_at_least_one_path(self, runner, valid_env, command):
+        """Each command should fail with a usage error when no paths are given."""
+        result = runner.invoke(app, [command])
+        assert result.exit_code != 0
+        assert "At least one file or directory path is required." in result.output
+
+    def test_resolve_paths_raises_on_empty(self):
+        """_resolve_paths should raise UsageError for an empty tuple."""
+        from local_feed_generator.cli import _resolve_paths
+
+        with pytest.raises(
+            click.UsageError,
+            match=r"At least one file or directory path is required\.",
+        ):
+            _resolve_paths(())
+
+    def test_resolve_data_dir_does_not_fallback_to_cwd(self):
+        """_resolve_data_dir_from_paths should not silently fall back to CWD."""
+        import tempfile
+
+        from local_feed_generator.cli import _resolve_data_dir_from_paths
+
+        # With a non-empty list it should still work as before.
+        with tempfile.TemporaryDirectory() as d:
+            result = _resolve_data_dir_from_paths([Path(d)])
+            assert result == Path(d)
+
+
+# ---------------------------------------------------------------------------
 # T5.2: Process Command Tests
 # ---------------------------------------------------------------------------
 
