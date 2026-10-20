@@ -19,7 +19,7 @@ Standalone app that processes MP4, PDF, HTML files and generates private RSS fee
 - **Producer Pipeline:** Queue manager that decides skip/process/resume based on JSON step maps
   - Transcription Service: MP4 → markdown via faster-whisper local CUDA or remote OpenAI-compatible API
   - Summarization Service: LLM key takeaways from transcript/extracted text, with reflection.md injection
-  - Extraction Service: PDF/HTML metadata+plaintext via `pypdf`/`beautifulsoup4`; audio metadata via `av`
+  - Extraction Service: PDF/HTML metadata+plaintext via `pypdf`/`beautifulsoup4`; audio metadata via optional `ffprobe` (falls back to file metadata)
 - **Feed Generator (`feedgen`):** Aggregates eligible metadata per feed.json, builds RSS items with enclosure links, pubDate logic, and GUIDs; writes podcast.xml / articles.xml
 - **Index Generator:** Builds root index.html with links/titles/descriptions from all feed.json configs
 - **CLI (`click`) + Config (`pydantic-settings` + `.env`)**
@@ -28,8 +28,8 @@ Standalone app that processes MP4, PDF, HTML files and generates private RSS fee
 1. Scanner discovers file recursively
 2. If JSON exists, check step statuses. Skip if all applicable steps complete; otherwise resume incomplete steps
 3. Dispatch by type:
-   - MP4: load reflection.md if present → transcribe to markdown → store in content → summarize with reflection prompt → extract audio metadata via av → build title dict → apply parent folder prefix
-   - PDF/HTML: extract metadata & plaintext → sanitize control chars → store description/content → build title dict → apply folder prefix
+   - MP4: load reflection.md if present → transcribe to markdown → store in content → summarize with reflection prompt → extract audio metadata via optional ffprobe → generate_title via LLM → build title dict → apply parent folder prefix
+   - PDF/HTML: extract metadata & plaintext → sanitize control chars → store description/content → generate_title via LLM → build title dict → apply folder prefix
 4. Write/update JSON with step maps, hash, timestamps
 5. Feed Generator scans for feed.json, collects feed-eligible items from subtree, sorts by folder/filename, converts markdown→HTML with XSS protection, writes podcast.xml / articles.xml
 6. Index Generator updates root index.html with all feeds
@@ -37,7 +37,7 @@ Standalone app that processes MP4, PDF, HTML files and generates private RSS fee
 ## 3. Interfaces & Contracts
 
 **CLI**
-`uv run local-feed-generator <process|watch|feeds|validate|transcribe|summarize|extract|create-feed>`
+`uv run local-feed-generator <process|watch|feeds|validate|transcribe|summarize|extract|title|create-feed|cleanup>`
 Flags: `--config-file`, `--force`, `--dry-run`
 
 **Environment**
@@ -45,7 +45,7 @@ Required: BASE_URL, LLM_ENDPOINT, LLM_API_KEY, LLM_MODEL, PROMPT_ARTICLE, PROMPT
 Optional: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION, TRANSCRIPTION_ENDPOINT, TRANSCRIPTION_API_KEY, TRANSCRIPTION_MODEL, TRANSCRIPTION_DEVICE, TRANSCRIPTION_COMPUTE_TYPE, TRANSCRIPTION_REMOTE_MODEL
 
 **JSON Metadata**
-Per file `<name>.json` with title dict `{filename,extracted,generated}`, description, summary, content, filetype, dates ms, size, hash, step maps `transcribe/summarize/extract` with status/timing, error.
+Per file `<name>.json` with title dict `{filename,extracted,generated}`, description, summary, content, filetype, dates ms, size, hash, step maps `transcribe/summarize/extract/generate_title` with status/timing, error.
 Title precedence: generated > extracted > filename. Parent folder name auto-prepended.
 
 **Feed Eligibility**
@@ -73,7 +73,7 @@ feedgen, watchdog, openai, pydantic-settings, pydantic, click, pypdf, beautifuls
 OpenAI-compatible endpoint. Prompts per filetype. Context 128K+ recommended.
 
 **Extraction**
-PDF: pypdf; HTML: beautifulsoup4; Audio metadata: av library. Control characters removed for XML safety.
+PDF: pypdf; HTML: beautifulsoup4; Audio metadata: optional ffprobe with file-metadata fallback. Control characters removed for XML safety.
 
 ## 5. Key Decisions
 - Title as dict with provenance for fallback and display
@@ -105,5 +105,5 @@ Missing feeds → document feed.json requirement
 - Python 3.14+ and uv for dependency management
 - LLM endpoint available (can be remote or local)
 - Nvidia GPU optional for local transcription; required for best performance in local mode, not needed for remote transcription
-- No ffprobe required; av library provides audio metadata
+- No ffprobe required by default; audio metadata uses optional ffprobe and falls back to file metadata when unavailable
 - Remote transcription: vLLM server requires `VLLM_MAX_AUDIO_DECODE_DURATION_S` configuration for longer audio files

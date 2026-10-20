@@ -11,7 +11,7 @@ Command: `uv run local-feed-generator <command>` from workspace root (directory 
 
 ## Key Commands
 - `process` / `watch`: Process files batch/incrementally.
-- `transcribe`, `summarize`, `extract`, `feeds`, `validate`, `create-feed`.
+- `transcribe`, `summarize`, `extract`, `title`, `feeds`, `validate`, `create-feed`, `cleanup`.
 - Flags: `--force`, `--dry-run`.
 
 ## Metadata Schema
@@ -26,6 +26,7 @@ Each file gets a `[filename].json` with:
   "transcribe": {"status": "complete"},
   "summarize": {"status": "complete"},
   "extract": {"status": "complete"},
+  "generate_title": {"status": "complete"},
   "error": ""
 }
 ```
@@ -37,7 +38,7 @@ Title Rules: `generated` > `extracted` > `filename`. Parent folder name prepende
 ## Config (Env Vars)
 Required: `BASE_URL`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`, `PROMPT_ARTICLE`, `PROMPT_PODCAST`, `PROMPT_TITLE`.
 
-Optional: `PROMPT_ARTICLE_REFLECTION`, `PROMPT_PODCAST_REFLECTION`, `TRANSCRIPTION_ENDPOINT` (remote overrides local), `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_DEVICE`, `TRANSCRIPTION_COMPUTE_TYPE`.
+Optional: `PROMPT_ARTICLE_REFLECTION`, `PROMPT_PODCAST_REFLECTION`, `TRANSCRIPTION_ENDPOINT` (remote overrides local), `TRANSCRIPTION_API_KEY`, `TRANSCRIPTION_REMOTE_MODEL`, `TRANSCRIPTION_MODEL`, `TRANSCRIPTION_DEVICE`, `TRANSCRIPTION_COMPUTE_TYPE`.
 
 ## Artifacts
 - `artifacts/proposal.md` - Project proposal and scope.

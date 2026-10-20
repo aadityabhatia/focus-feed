@@ -14,7 +14,7 @@ See proposal.md for problem, intent and scope.
 
 ### Metadata
 - Generate `<filename>.json` alongside source file.
-- Fields: `title:{filename,extracted,generated}`, `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date` ms, `publication_date`, `duration`, `creation_time`, `size`, `hash`, step maps `transcribe/summarize/extract`, `error`.
+- Fields: `title:{filename,extracted,generated}`, `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date` ms, `publication_date`, `duration`, `creation_time`, `size`, `hash`, step maps `transcribe/summarize/extract/generate_title`, `error`.
 - Title precedence: generated > extracted > filename. Auto-prepend parent folder name if missing. Sanitize filename key.
 - Remove control chars 0x00-0x1f except tab/newline/CR and 0x7f from extracted PDF/HTML.
 - Compute SHA256 on first process or before feed generation.
@@ -52,7 +52,7 @@ See proposal.md for problem, intent and scope.
 - Ensure hash present before feed generation.
 
 ### CLI
-Commands: `process`, `watch`, `transcribe`, `summarize`, `extract`, `feeds`, `validate`, `create-feed`
+Commands: `process`, `watch`, `transcribe`, `summarize`, `extract`, `title`, `feeds`, `validate`, `create-feed`, `cleanup`
 Accept one or more files or directories as positional arguments.
 Flags: `--config-file`, `--force`, `--dry-run` for transcribe/summarize/extract.
 `--force` re-runs step.
@@ -69,7 +69,7 @@ Flags: `--config-file`, `--force`, `--dry-run` for transcribe/summarize/extract.
 - Feeds only where feed.json exists
 - Directory structure preserved
 - Special characters preserved with warnings only
-- Unix epoch ms timestamps
+- Unix epoch timestamps with millisecond precision
 - Title dict with filename/extracted/generated
 - Markdown library (>=3.5.0) required for markdown to HTML conversion with XSS protection
 - Remote transcription: vLLM server requires `VLLM_MAX_AUDIO_DECODE_DURATION_S` configuration for longer audio files

@@ -139,8 +139,8 @@ Implement the foundational modules for configuration, file scanning, and metadat
   - **NEW:** `date` field is float (millisecond precision UNIX epoch)
   - **NEW:** Add `duration` field (float, MP4 only, optional)
   - **NEW:** Add `creation_time` field (ISO-8601 string, MP4 only, optional)
-  - Include all fields: `title`, `extracted_title`, `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date`, `duration`, `creation_time`, `size`, `transcribe`, `summarize`, `extract`, `feed_eligible`, `error`
-  - `transcribe`, `summarize`, `extract` are step maps with fields: `status` (null | "in_progress" | "complete"), `start_time` (float, ms precision), `end_time` (float, ms precision), `input_size`, `output_size`, `words`, `model`, `input_tokens`, `output_tokens`
+  - Include all fields: `title`, `extracted_title`, `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date`, `duration`, `creation_time`, `size`, `transcribe`, `summarize`, `extract`, `generate_title`, `feed_eligible`, `error`
+  - `transcribe`, `summarize`, `extract`, `generate_title` are step maps with fields: `status` (null | "in_progress" | "complete"), `start_time` (float, ms precision), `end_time` (float, ms precision), `input_size`, `output_size`, `words`, `model`, `input_tokens`, `output_tokens`
   - Add validation: `filetype` must be "mp4", "pdf", or "html"
   - Add validation: `error` field is optional
   - Add validation: MP4 files should have blank `description`, PDF/HTML files should have extracted metadata in `description`
@@ -822,7 +822,7 @@ Implement comprehensive validation and robust error handling throughout the syst
   - Validate required fields for each filetype (title, filename, filepath, filetype, date)
   - Validate field types and formats (UNIX epoch float for date, float for duration, ISO8601 for creation_time)
   - Validate conditional fields (content/summary only for MP4, description for PDF/HTML)
-  - Validate step map structure (transcribe, summarize, extract objects with proper fields)
+  - Validate step map structure (transcribe, summarize, extract, generate_title objects with proper fields)
   - **NEW:** Validate title dict structure (filename=sanitized no extension/no underscores, extracted=from metadata, generated=LLM-generated) with precedence validation
   - **NEW:** Validate millisecond precision timestamps
   - Add validation for MP4: description should be blank, summary and content should be present for complete files
@@ -1334,7 +1334,7 @@ The following tasks can be worked on concurrently:
 ### Schema Requirements (Version 2.0)
 1. **Title field**: Must be a dict with keys: `filename`, `extracted`, `generated` (or a plain string for backward compatibility)
 2. **Content field**: Used for both MP4 (transcript) and PDF/HTML (extracted text)
-3. **Step maps**: Processing tracked via `transcribe`, `summarize`, `extract` objects (not unified `status` dict)
+3. **Step maps**: Processing tracked via `transcribe`, `summarize`, `extract`, `generate_title` objects (not unified `status` dict)
 4. **Description behavior**: MP4 files have blank `description`, PDF/HTML have extracted metadata in `description`
 5. **Summary behavior**: MP4 files have key takeaways in `summary`, PDF/HTML have null `summary` (unless explicitly summarized via summarize command)
 6. **extracted_title field**: NEW - stores source metadata title separately

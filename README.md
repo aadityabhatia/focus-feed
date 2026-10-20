@@ -120,9 +120,11 @@ Target specific steps or files by passing files and directories as positional ar
 - `transcribe` - Transcribe MP4 files to markdown
 - `summarize` - Generate summaries from transcripts or document content
 - `extract` - Extract metadata from PDF/HTML files
+- `title` - Generate titles for files that lack proper titles
 - `feeds` - Generate RSS feeds and index.html
 - `validate` - Validate all metadata files
 - `create-feed` - Create a template `feed.json` in a directory
+- `cleanup` - Remove unknown keys from JSON metadata files
 
 ### Common Flags
 
@@ -242,7 +244,7 @@ Place a `reflection.md` file in any folder to focus summarization on specific qu
 ### Local Transcription (GPU-accelerated)
 
 ```bash
-uv sync --optional-group local-transcription
+uv sync --extra local-transcription
 ```
 
 Installs `faster-whisper` and `av` for local GPU-accelerated transcription.
