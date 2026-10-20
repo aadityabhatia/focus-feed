@@ -7,7 +7,8 @@ summarizes the extracted content via LLM, and uses the filename
 (without extension, underscores→spaces) as the ``title.filename``. For
 all file types, it generates a descriptive title via LLM using the
 filename, extracted title (if available), and content as context,
-stored as ``title.generated``.
+stored as ``title.generated``.  This title generation step is tracked via
+the ``generate_title`` step map (status, timing, model, and token usage).
 
 The Producer writes a JSON metadata file adjacent to each source file,
 following the schema defined in design doc section 3.3. On errors, it
@@ -17,6 +18,8 @@ Processing progress is tracked through separate step maps:
 - ``transcribe``: StepMap for transcription (MP4 only).
 - ``summarize``: StepMap for summarization (all file types).
 - ``extract``: StepMap for metadata extraction (PDF/HTML only).
+- ``generate_title``: StepMap for LLM title generation (all file types,
+  when LLM title generation runs).
 
 Date fields (``date``) are stored as UNIX epoch floats with millisecond
 precision.  Per-step timing is tracked within each step map's
@@ -267,6 +270,7 @@ class Producer:
         existing_transcribe: dict[str, Any] | None = None
         existing_summarize: dict[str, Any] | None = None
         existing_extract: dict[str, Any] | None = None
+        existing_generate_title: dict[str, Any] | None = None
         existing_content: str | None = None
         existing_hash: str | None = None
         existing_error: str | None = None
@@ -277,6 +281,7 @@ class Producer:
                     existing_transcribe = existing_data.get("transcribe")
                     existing_summarize = existing_data.get("summarize")
                     existing_extract = existing_data.get("extract")
+                    existing_generate_title = existing_data.get("generate_title")
                     existing_content = existing_data.get("content")
                     existing_hash = existing_data.get("hash")
                     existing_error = existing_data.get("error")
@@ -373,6 +378,23 @@ class Producer:
                 "output_tokens": 0,
             }
 
+        # Initialize the generate_title step map for all file types.  This is
+        # an LLM-based step (like summarize) so it includes model and token
+        # fields.  The step is populated with completion metrics when the LLM
+        # is actually called; if title generation is skipped (e.g. no content
+        # available for PDF/HTML), the key is removed before final metadata
+        # construction so it does not appear in the output.
+        partial_metadata["generate_title"] = {
+            "status": "in_progress",
+            "start_time": now_ts,
+            "input_size": 0,
+            "output_size": 0,
+            "words": 0,
+            "model": None,
+            "input_tokens": 0,
+            "output_tokens": 0,
+        }
+
         # Preserve existing step maps that are complete (only when not forcing).
         if not force:
             if filetype == "mp4":
@@ -385,13 +407,17 @@ class Producer:
                     partial_metadata["extract"] = existing_extract
                 if existing_summarize and existing_summarize.get("status") == "complete":
                     partial_metadata["summarize"] = existing_summarize
+            # Preserve existing generate_title step map if already complete.
+            if existing_generate_title and existing_generate_title.get("status") == "complete":
+                partial_metadata["generate_title"] = existing_generate_title
 
             _logger.debug(
-                "Resuming %s: transcribe=%s, summarize=%s, extract=%s",
+                "Resuming %s: transcribe=%s, summarize=%s, extract=%s, generate_title=%s",
                 filepath,
                 existing_transcribe.get("status") if existing_transcribe else None,
                 existing_summarize.get("status") if existing_summarize else None,
                 existing_extract.get("status") if existing_extract else None,
+                existing_generate_title.get("status") if existing_generate_title else None,
             )
 
         # Preserve existing content (transcript for MP4, only when not forcing).
@@ -573,6 +599,16 @@ class Producer:
                     "input_tokens": 0,
                     "output_tokens": 0,
                 },
+                "generate_title": {
+                    "status": "in_progress",
+                    "start_time": now_ts,
+                    "input_size": 0,
+                    "output_size": 0,
+                    "words": 0,
+                    "model": None,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                },
                 "filename": filename,
                 "filepath": filepath,
                 "filetype": "mp4",
@@ -723,13 +759,40 @@ class Producer:
         # from audio metadata as context to the LLM.
         filename_title = _sanitize_filename(filename)
         _logger.info("Starting title generation for %s (step 3/3)", filepath)
-        generated_title, _, _ = self.summarizer.generate_title(
+
+        # Initialize/update the generate_title step map before the LLM call.
+        generate_title_step = metadata_dict.get("generate_title") or {}
+        generate_title_step["status"] = "in_progress"
+        generate_title_step["start_time"] = _now_timestamp()
+        generate_title_step["input_size"] = len(transcript.encode("utf-8")) if transcript else 0
+        generate_title_step["output_size"] = 0
+        generate_title_step["words"] = 0
+        generate_title_step["model"] = config.llm_model
+        generate_title_step["input_tokens"] = 0
+        generate_title_step["output_tokens"] = 0
+        metadata_dict["generate_title"] = generate_title_step
+        self._write_metadata_partial(metadata_dict, absolute_path)
+
+        generated_title, prompt_tokens, completion_tokens = self.summarizer.generate_title(
             transcript,
             filename=filename_title,
             extracted_title=extracted_title,
             filepath=filepath,
         )
         generated_title = _clean_title(generated_title) or generated_title
+        generate_title_end = datetime.now(UTC)
+
+        # Update generate_title step with completion info.
+        generate_title_step["status"] = "complete"
+        generate_title_step["end_time"] = int(generate_title_end.timestamp() * 1000) / 1000.0
+        generate_title_step["output_size"] = (
+            len(generated_title.encode("utf-8")) if generated_title else 0
+        )
+        generate_title_step["words"] = len(generated_title.split()) if generated_title else 0
+        generate_title_step["model"] = config.llm_model
+        generate_title_step["input_tokens"] = prompt_tokens
+        generate_title_step["output_tokens"] = completion_tokens
+        metadata_dict["generate_title"] = generate_title_step
         _logger.info("Title generation completed for %s", filepath)
 
         # Module prefix is applied in Metadata.final_title after precedence
@@ -776,6 +839,7 @@ class Producer:
             hash=metadata_dict.get("hash"),
             transcribe=StepMap(**transcribe_step),
             summarize=StepMap(**summarize_step),
+            generate_title=StepMap(**generate_title_step),
         )
         return metadata
 
@@ -834,6 +898,16 @@ class Producer:
                     "words": 0,
                 },
                 "summarize": {
+                    "status": "in_progress",
+                    "start_time": now_ts,
+                    "input_size": 0,
+                    "output_size": 0,
+                    "words": 0,
+                    "model": None,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                },
+                "generate_title": {
                     "status": "in_progress",
                     "start_time": now_ts,
                     "input_size": 0,
@@ -943,17 +1017,47 @@ class Producer:
         # Step 3: Generate title via LLM using filename, extracted title,
         # and the extracted content (summarizer truncates to ~4000 chars).
         _logger.info("Starting title generation for %s (step 3/3)", filepath)
+        generate_title_step = metadata_dict.get("generate_title") or {}
         if file_content and file_content.strip():
-            generated_title, _, _ = self.summarizer.generate_title(
+            # Initialize/update the generate_title step map before the LLM call.
+            generate_title_step["status"] = "in_progress"
+            generate_title_step["start_time"] = _now_timestamp()
+            generate_title_step["input_size"] = len(file_content.encode("utf-8"))
+            generate_title_step["output_size"] = 0
+            generate_title_step["words"] = 0
+            generate_title_step["model"] = config.llm_model
+            generate_title_step["input_tokens"] = 0
+            generate_title_step["output_tokens"] = 0
+            metadata_dict["generate_title"] = generate_title_step
+            self._write_metadata_partial(metadata_dict, absolute_path)
+
+            generated_title, prompt_tokens, completion_tokens = self.summarizer.generate_title(
                 file_content,
                 filename=filename_title,
                 extracted_title=extracted_title,
                 filepath=filepath,
             )
             generated_title = _clean_title(generated_title) or generated_title
+            generate_title_end = datetime.now(UTC)
+
+            # Update generate_title step with completion info.
+            generate_title_step["status"] = "complete"
+            generate_title_step["end_time"] = int(generate_title_end.timestamp() * 1000) / 1000.0
+            generate_title_step["output_size"] = (
+                len(generated_title.encode("utf-8")) if generated_title else 0
+            )
+            generate_title_step["words"] = len(generated_title.split()) if generated_title else 0
+            generate_title_step["model"] = config.llm_model
+            generate_title_step["input_tokens"] = prompt_tokens
+            generate_title_step["output_tokens"] = completion_tokens
+            metadata_dict["generate_title"] = generate_title_step
         else:
             # No content available; fall back to filename-derived title.
+            # The LLM is not called, so remove the generate_title step map
+            # (initialized as in_progress in process_file) to avoid leaving
+            # a stale in_progress entry in the final metadata.
             generated_title = filename_title
+            metadata_dict.pop("generate_title", None)
         _logger.info("Title generation completed for %s", filepath)
 
         # Module prefix is applied in Metadata.final_title after precedence
@@ -996,6 +1100,9 @@ class Producer:
             hash=metadata_dict.get("hash"),
             extract=StepMap(**extract_step),
             summarize=StepMap(**summarize_step),
+            generate_title=StepMap(**generate_title_step)
+            if generate_title_step.get("status") == "complete"
+            else None,
         )
         return metadata
 
@@ -1055,6 +1162,16 @@ class Producer:
                     "words": 0,
                 },
                 "summarize": {
+                    "status": "in_progress",
+                    "start_time": now_ts,
+                    "input_size": 0,
+                    "output_size": 0,
+                    "words": 0,
+                    "model": None,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                },
+                "generate_title": {
                     "status": "in_progress",
                     "start_time": now_ts,
                     "input_size": 0,
@@ -1164,17 +1281,47 @@ class Producer:
         # Step 3: Generate title via LLM using filename, extracted title,
         # and the extracted content (summarizer truncates to ~4000 chars).
         _logger.info("Starting title generation for %s (step 3/3)", filepath)
+        generate_title_step = metadata_dict.get("generate_title") or {}
         if file_content and file_content.strip():
-            generated_title, _, _ = self.summarizer.generate_title(
+            # Initialize/update the generate_title step map before the LLM call.
+            generate_title_step["status"] = "in_progress"
+            generate_title_step["start_time"] = _now_timestamp()
+            generate_title_step["input_size"] = len(file_content.encode("utf-8"))
+            generate_title_step["output_size"] = 0
+            generate_title_step["words"] = 0
+            generate_title_step["model"] = config.llm_model
+            generate_title_step["input_tokens"] = 0
+            generate_title_step["output_tokens"] = 0
+            metadata_dict["generate_title"] = generate_title_step
+            self._write_metadata_partial(metadata_dict, absolute_path)
+
+            generated_title, prompt_tokens, completion_tokens = self.summarizer.generate_title(
                 file_content,
                 filename=filename_title,
                 extracted_title=extracted_title,
                 filepath=filepath,
             )
             generated_title = _clean_title(generated_title) or generated_title
+            generate_title_end = datetime.now(UTC)
+
+            # Update generate_title step with completion info.
+            generate_title_step["status"] = "complete"
+            generate_title_step["end_time"] = int(generate_title_end.timestamp() * 1000) / 1000.0
+            generate_title_step["output_size"] = (
+                len(generated_title.encode("utf-8")) if generated_title else 0
+            )
+            generate_title_step["words"] = len(generated_title.split()) if generated_title else 0
+            generate_title_step["model"] = config.llm_model
+            generate_title_step["input_tokens"] = prompt_tokens
+            generate_title_step["output_tokens"] = completion_tokens
+            metadata_dict["generate_title"] = generate_title_step
         else:
             # No content available; fall back to filename-derived title.
+            # The LLM is not called, so remove the generate_title step map
+            # (initialized as in_progress in process_file) to avoid leaving
+            # a stale in_progress entry in the final metadata.
             generated_title = filename_title
+            metadata_dict.pop("generate_title", None)
         _logger.info("Title generation completed for %s", filepath)
 
         # Module prefix is applied in Metadata.final_title after precedence
@@ -1217,6 +1364,9 @@ class Producer:
             hash=metadata_dict.get("hash"),
             extract=StepMap(**extract_step),
             summarize=StepMap(**summarize_step),
+            generate_title=StepMap(**generate_title_step)
+            if generate_title_step.get("status") == "complete"
+            else None,
         )
         return metadata
 
@@ -1336,7 +1486,7 @@ class Producer:
                 existing = json.loads(json_path.read_text(encoding="utf-8"))
                 if isinstance(existing, dict):
                     # Preserve any step maps that were already set.
-                    for step_key in ("transcribe", "summarize", "extract"):
+                    for step_key in ("transcribe", "summarize", "extract", "generate_title"):
                         if step_key in existing:
                             error_metadata[step_key] = existing[step_key]
                     # Preserve existing content (transcript for MP4).

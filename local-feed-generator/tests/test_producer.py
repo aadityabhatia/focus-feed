@@ -2366,3 +2366,218 @@ class TestHashComputation:
         expected_hash = hashlib.sha256(content).hexdigest()
         assert metadata is not None
         assert metadata.hash == expected_hash
+
+
+# ---------------------------------------------------------------------------
+# generate_title step map tracking tests
+# ---------------------------------------------------------------------------
+
+
+class TestGenerateTitleStepTracking:
+    """Tests for the generate_title StepMap tracking across file types."""
+
+    def test_mp4_generate_title_step_complete_with_metrics(self, producer, tmp_path):
+        """MP4 metadata should have a complete generate_title step with metrics."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.generate_title is not None
+        assert metadata.generate_title.status == "complete"
+        assert metadata.generate_title.start_time is not None
+        assert metadata.generate_title.end_time is not None
+        assert metadata.generate_title.model == "test-model"
+        assert metadata.generate_title.input_tokens == 30
+        assert metadata.generate_title.output_tokens == 5
+        assert metadata.generate_title.words == 2  # "Generated Title"
+        assert metadata.generate_title.output_size > 0
+
+    def test_mp4_json_has_generate_title_step(self, producer, tmp_path):
+        """MP4 JSON metadata should include the generate_title step map."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        producer.process_file(scanned)
+
+        json_path = tmp_path / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        assert "generate_title" in data
+        assert data["generate_title"]["status"] == "complete"
+        assert data["generate_title"]["model"] == "test-model"
+        assert data["generate_title"]["input_tokens"] == 30
+        assert data["generate_title"]["output_tokens"] == 5
+
+    def test_pdf_generate_title_step_when_content_available(self, producer, tmp_path):
+        """PDF with content should have a complete generate_title step."""
+        source = tmp_path / "doc.pdf"
+        source.write_bytes(b"pdf data")
+        scanned = _make_scanned_file(
+            "doc.pdf",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.generate_title is not None
+        assert metadata.generate_title.status == "complete"
+        assert metadata.generate_title.model == "test-model"
+        assert metadata.generate_title.input_tokens == 30
+        assert metadata.generate_title.output_tokens == 5
+
+    def test_pdf_no_generate_title_step_when_no_content(
+        self, producer, mock_pdf_extractor, tmp_path
+    ):
+        """PDF without content should NOT have a generate_title step."""
+        source = tmp_path / "document.pdf"
+        source.write_bytes(b"pdf data")
+        scanned = _make_scanned_file(
+            "document.pdf",
+            absolute_path=str(source),
+        )
+
+        mock_pdf_extractor.extract.return_value = {
+            "title": "doc",
+            "extracted_title": None,
+            "description": "PDF Description",
+            "date": 1728931200,
+            "size": 1024,
+            "filetype": "pdf",
+            # No content key
+        }
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.generate_title is None
+
+        json_path = tmp_path / "document.pdf.json"
+        data = json.loads(json_path.read_text())
+        assert "generate_title" not in data
+
+    def test_html_generate_title_step_when_content_available(self, producer, tmp_path):
+        """HTML with content should have a complete generate_title step."""
+        source = tmp_path / "article.html"
+        source.write_text("<html>test</html>")
+        scanned = _make_scanned_file(
+            "article.html",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.generate_title is not None
+        assert metadata.generate_title.status == "complete"
+        assert metadata.generate_title.model == "test-model"
+        assert metadata.generate_title.input_tokens == 30
+        assert metadata.generate_title.output_tokens == 5
+
+    def test_html_no_generate_title_step_when_no_content(
+        self, producer, mock_html_extractor, tmp_path
+    ):
+        """HTML without content should NOT have a generate_title step."""
+        source = tmp_path / "page.html"
+        source.write_text("<html>test</html>")
+        scanned = _make_scanned_file(
+            "page.html",
+            absolute_path=str(source),
+        )
+
+        mock_html_extractor.extract.return_value = {
+            "title": "",
+            "extracted_title": None,
+            "description": "Desc",
+            "date": 1728931200,
+            "size": 512,
+            "filetype": "html",
+            # No content key
+        }
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.generate_title is None
+
+        json_path = tmp_path / "page.html.json"
+        data = json.loads(json_path.read_text())
+        assert "generate_title" not in data
+
+    def test_mp4_generate_title_step_preserved_on_error(self, producer, mock_summarizer, tmp_path):
+        """When title generation fails, the generate_title step should show in_progress."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        mock_summarizer.generate_title.side_effect = RuntimeError("title fail")
+
+        producer.process_file(scanned)
+
+        json_path = tmp_path / "lecture.mp4.json"
+        data = json.loads(json_path.read_text())
+        # generate_title should be in_progress (written before the LLM call)
+        assert data.get("generate_title", {}).get("status") == "in_progress"
+        assert data["error"] is not None
+
+    def test_pdf_generate_title_step_preserved_on_error(self, producer, mock_summarizer, tmp_path):
+        """When title generation fails for PDF, generate_title should show in_progress."""
+        source = tmp_path / "doc.pdf"
+        source.write_bytes(b"pdf data")
+        scanned = _make_scanned_file(
+            "doc.pdf",
+            absolute_path=str(source),
+        )
+
+        mock_summarizer.generate_title.side_effect = RuntimeError("title fail")
+
+        producer.process_file(scanned)
+
+        json_path = tmp_path / "doc.pdf.json"
+        data = json.loads(json_path.read_text())
+        assert data.get("generate_title", {}).get("status") == "in_progress"
+        assert data["error"] is not None
+
+    def test_mp4_generate_title_step_input_size_matches_transcript(self, producer, tmp_path):
+        """generate_title input_size should match the transcript byte length."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file(
+            "lecture.mp4",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.generate_title is not None
+        expected_input_size = len(b"This is a test transcript.")
+        assert metadata.generate_title.input_size == expected_input_size
+
+    def test_pdf_generate_title_step_input_size_matches_content(self, producer, tmp_path):
+        """generate_title input_size should match the extracted content byte length."""
+        source = tmp_path / "doc.pdf"
+        source.write_bytes(b"pdf data")
+        scanned = _make_scanned_file(
+            "doc.pdf",
+            absolute_path=str(source),
+        )
+
+        metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.generate_title is not None
+        expected_input_size = len(b"PDF plaintext content")
+        assert metadata.generate_title.input_size == expected_input_size

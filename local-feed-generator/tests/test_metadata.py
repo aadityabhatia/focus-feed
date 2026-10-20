@@ -583,6 +583,58 @@ class TestSerialization:
         assert "transcribe" not in data
         assert "summarize" not in data
 
+    def test_to_dict_with_generate_title(self):
+        """to_dict should include generate_title when set."""
+        metadata = Metadata(
+            extract=StepMap(
+                status="complete",
+                input_size=5000,
+                output_size=1234,
+            ),
+            generate_title=StepMap(
+                status="complete",
+                start_time=1792096520,
+                end_time=1792096525,
+                input_size=456789,
+                output_size=24,
+                words=4,
+                model="test-model",
+                input_tokens=456,
+                output_tokens=8,
+            ),
+            title="Test",
+            description="Test",
+            filename="test.pdf",
+            filepath="docs/test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            size=5000,
+        )
+        data = metadata.to_dict()
+        assert data["generate_title"]["status"] == "complete"
+        assert data["generate_title"]["model"] == "test-model"
+        assert data["generate_title"]["input_tokens"] == 456
+        assert data["generate_title"]["output_tokens"] == 8
+
+    def test_to_dict_excludes_generate_title_when_none(self):
+        """to_dict should exclude generate_title when it is None."""
+        metadata = Metadata(
+            extract=StepMap(
+                status="complete",
+                input_size=5000,
+                output_size=1234,
+            ),
+            title="Test",
+            description="Test",
+            filename="test.pdf",
+            filepath="docs/test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            size=5000,
+        )
+        data = metadata.to_dict()
+        assert "generate_title" not in data
+
 
 class TestDeserialization:
     """Tests for deserialization methods."""

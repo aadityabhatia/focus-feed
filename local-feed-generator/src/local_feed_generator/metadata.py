@@ -11,6 +11,8 @@ step:
 - ``transcribe``: Step map for transcription progress (MP4 files only).
 - ``summarize``: Step map for summarization progress (all file types).
 - ``extract``: Step map for metadata extraction progress (PDF/HTML only).
+- ``generate_title``: Step map for LLM title generation progress (all file
+  types, when LLM title generation runs).
 
     Each step map contains a ``status`` field that can be ``None`` (not started),
     ``"in_progress"``, or ``"complete"``.  The :attr:`feed_eligible` computed
@@ -73,6 +75,17 @@ millisecond precision.
                 "input_size": 1790891,
                 "output_size": 12345,
                 "words": 543
+            },
+            "generate_title": {
+                "status": "complete",
+                "start_time": 1792096520.123,
+                "end_time": 1792096525.456,
+                "input_size": 12345,
+                "output_size": 24,
+                "words": 4,
+                "model": "mistralai/Mistral-7B-Instruct",
+                "input_tokens": 456,
+                "output_tokens": 8
             },
             "error": "string (optional, only when processing failed)"
         }
@@ -140,9 +153,9 @@ def _apply_module_prefix_to_title(title: str, filepath: str) -> str:
 class StepMap(BaseModel):
     """Metadata for a single processing step.
 
-    Each processing step (transcribe, summarize, extract) gets its own
-    :class:`StepMap` instance that tracks the step's status, timing, sizes,
-    and (for LLM-based steps) model and token usage.
+    Each processing step (transcribe, summarize, extract, generate_title) gets
+    its own :class:`StepMap` instance that tracks the step's status, timing,
+    sizes, and (for LLM-based steps) model and token usage.
 
     Attributes:
         status: ``None``, ``"in_progress"``, or ``"complete"``.
@@ -154,7 +167,7 @@ class StepMap(BaseModel):
         output_size: Output size in bytes.
         words: Output word count (for text output steps), or ``None``.
         model: Model identifier used (LLM-based steps only: transcribe,
-            summarize), or ``None``.
+            summarize, generate_title), or ``None``.
         input_tokens: Number of tokens input to LLM (LLM-based steps only),
             or ``None``.
         output_tokens: Number of tokens output from LLM (LLM-based steps
@@ -215,6 +228,8 @@ class Metadata(BaseModel):
     - ``transcribe``: :class:`StepMap` for transcription (MP4 only).
     - ``summarize``: :class:`StepMap` for summarization (all file types).
     - ``extract``: :class:`StepMap` for metadata extraction (PDF/HTML only).
+    - ``generate_title``: :class:`StepMap` for LLM title generation (all file
+      types, when LLM title generation runs).
 
     The :attr:`feed_eligible` computed property returns ``True`` only when all
     applicable steps are ``"complete"``.  Files with ``feed_eligible == False``
@@ -257,6 +272,8 @@ class Metadata(BaseModel):
         transcribe: Step map for transcription (MP4 only)
         summarize: Step map for summarization (all file types)
         extract: Step map for metadata extraction (PDF/HTML only)
+        generate_title: Step map for LLM title generation (all file types,
+            when LLM title generation runs)
         error: Error message (only present when processing failed)
     """
 
@@ -342,6 +359,11 @@ class Metadata(BaseModel):
     extract: StepMap | None = Field(
         default=None,
         description="Step map for metadata extraction (PDF/HTML files only)",
+    )
+    generate_title: StepMap | None = Field(
+        default=None,
+        description="Step map for title generation (all file types, when "
+        "LLM title generation runs)",
     )
     hash: str | None = Field(
         default=None,

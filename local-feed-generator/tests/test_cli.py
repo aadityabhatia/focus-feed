@@ -530,13 +530,27 @@ class TestNoPathsRequired:
 
     @pytest.mark.parametrize(
         "command",
-        ["process", "watch", "feeds", "validate", "transcribe", "summarize", "extract", "title"],
+        [
+            "process",
+            "watch",
+            "feeds",
+            "validate",
+            "transcribe",
+            "summarize",
+            "extract",
+            "title",
+            "cleanup",
+            "create-feed",
+        ],
     )
     def test_command_requires_at_least_one_path(self, runner, valid_env, command):
         """Each command should fail with a usage error when no paths are given."""
         result = runner.invoke(app, [command])
         assert result.exit_code != 0
-        assert "At least one file or directory path is required." in result.output
+        if command == "create-feed":
+            assert "Missing argument 'DIRECTORY'." in result.output
+        else:
+            assert "At least one file or directory path is required." in result.output
 
     def test_resolve_paths_raises_on_empty(self):
         """_resolve_paths should raise UsageError for an empty tuple."""
@@ -1644,6 +1658,12 @@ class TestFeedsCommand:
         json_path = tmp_data_dir / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
         assert data["title"]["generated"] == "Generated Title"
+        # Verify generate_title step map is tracked during finalization
+        assert "generate_title" in data
+        assert data["generate_title"]["status"] == "complete"
+        assert data["generate_title"]["model"] == "test-model"
+        assert data["generate_title"]["input_tokens"] == 30
+        assert data["generate_title"]["output_tokens"] == 5
         mock_summarizer.generate_title.assert_called_once()
 
 
@@ -1960,6 +1980,7 @@ class TestEntryPoint:
             "extract",
             "title",
             "create-feed",
+            "cleanup",
         }
         assert expected.issubset(result_commands)
 
@@ -3605,6 +3626,12 @@ class TestTitleCommand:
         json_path = tmp_data_dir / "doc.pdf.json"
         data = json.loads(json_path.read_text())
         assert data["title"]["generated"] == "Generated Title"
+        # Verify generate_title step map is tracked
+        assert "generate_title" in data
+        assert data["generate_title"]["status"] == "complete"
+        assert data["generate_title"]["model"] == "test-model"
+        assert data["generate_title"]["input_tokens"] == 30
+        assert data["generate_title"]["output_tokens"] == 5
 
     def test_title_skips_files_with_proper_title(self, runner, valid_env, tmp_data_dir):
         """Title should skip files that already have a generated title."""
@@ -4401,3 +4428,287 @@ class TestCreateFeedCommand:
         assert data["image"]["url"] == "https://www.example.com/logo.jpg"
         assert data["image"]["title"] == "Logo"
         assert data["image"]["link"] == "https://www.example.com/"
+
+
+# ---------------------------------------------------------------------------
+# Cleanup command tests
+# ---------------------------------------------------------------------------
+
+
+class TestCleanupCommand:
+    """Tests for the cleanup command."""
+
+    def test_cleanup_help(self, runner):
+        """The cleanup command should have help text."""
+        result = runner.invoke(app, ["cleanup", "--help"])
+        assert result.exit_code == 0
+        assert "--config-file" in result.output
+        assert "PATHS" in result.output
+
+    def test_cleanup_requires_at_least_one_path(self, runner, valid_env):
+        """Cleanup should fail with a usage error when no paths are given."""
+        result = runner.invoke(app, ["cleanup"])
+        assert result.exit_code != 0
+        assert "At least one file or directory path is required." in result.output
+
+    def test_cleanup_no_json_files(self, runner, valid_env, tmp_data_dir):
+        """Cleanup should report no JSON files found in an empty directory."""
+        result = runner.invoke(
+            app,
+            ["cleanup", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "No JSON metadata files found." in result.output
+
+    def test_cleanup_removes_unknown_top_level_key(self, runner, valid_env, tmp_data_dir):
+        """Cleanup should remove unknown top-level keys from JSON metadata."""
+        meta = _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
+        meta["unknown_field"] = "should be removed"
+        (tmp_data_dir / "doc.pdf.json").write_text(json.dumps(meta))
+
+        result = runner.invoke(
+            app,
+            ["cleanup", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "unknown_field" in result.output
+        data = json.loads((tmp_data_dir / "doc.pdf.json").read_text())
+        assert "unknown_field" not in data
+
+    def test_cleanup_removes_unknown_title_keys(self, runner, valid_env, tmp_data_dir):
+        """Cleanup should remove unknown keys from the title dict."""
+        meta = _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
+        meta["title"] = {
+            "filename": "doc",
+            "extracted": "Doc Title",
+            "generated": "Generated Title",
+            "extra_title_key": "should be removed",
+        }
+        (tmp_data_dir / "doc.pdf.json").write_text(json.dumps(meta))
+
+        result = runner.invoke(
+            app,
+            ["cleanup", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "title.extra_title_key" in result.output
+        data = json.loads((tmp_data_dir / "doc.pdf.json").read_text())
+        assert "extra_title_key" not in data["title"]
+        # Known keys should be preserved
+        assert data["title"]["filename"] == "doc"
+        assert data["title"]["extracted"] == "Doc Title"
+        assert data["title"]["generated"] == "Generated Title"
+
+    def test_cleanup_removes_unknown_step_map_keys(self, runner, valid_env, tmp_data_dir):
+        """Cleanup should remove unknown keys from step-map dicts."""
+        meta = _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
+        meta["extract"]["extra_step_key"] = "should be removed"
+        (tmp_data_dir / "doc.pdf.json").write_text(json.dumps(meta))
+
+        result = runner.invoke(
+            app,
+            ["cleanup", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "extract.extra_step_key" in result.output
+        data = json.loads((tmp_data_dir / "doc.pdf.json").read_text())
+        assert "extra_step_key" not in data["extract"]
+
+    def test_cleanup_preserves_valid_metadata(self, runner, valid_env, tmp_data_dir):
+        """Cleanup should not modify files with no unknown keys."""
+        meta = _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
+        (tmp_data_dir / "doc.pdf.json").write_text(json.dumps(meta))
+
+        original_content = (tmp_data_dir / "doc.pdf.json").read_text()
+
+        result = runner.invoke(
+            app,
+            ["cleanup", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "modified 0 file(s)" in result.output
+        # File content should be unchanged
+        assert (tmp_data_dir / "doc.pdf.json").read_text() == original_content
+
+    def test_cleanup_does_not_modify_feed_json(self, runner, valid_env, tmp_data_dir):
+        """Cleanup should not modify feed.json files."""
+        (tmp_data_dir / "feed.json").write_text(
+            json.dumps({"title": "My Feed", "unknown_key": "should stay"})
+        )
+
+        result = runner.invoke(
+            app,
+            ["cleanup", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        # feed.json should still have the unknown key
+        data = json.loads((tmp_data_dir / "feed.json").read_text())
+        assert "unknown_key" in data
+
+    def test_cleanup_handles_invalid_json_gracefully(self, runner, valid_env, tmp_data_dir):
+        """Cleanup should handle invalid JSON files without crashing."""
+        (tmp_data_dir / "bad.pdf.json").write_text("{invalid json content")
+
+        result = runner.invoke(
+            app,
+            ["cleanup", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        # Should report 0 files modified
+        assert "modified 0 file(s)" in result.output
+
+    def test_cleanup_handles_string_title(self, runner, valid_env, tmp_data_dir):
+        """Cleanup should not modify files with string titles (backward compat)."""
+        meta = _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
+        meta["title"] = "String Title"
+        (tmp_data_dir / "doc.pdf.json").write_text(json.dumps(meta))
+
+        result = runner.invoke(
+            app,
+            ["cleanup", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "modified 0 file(s)" in result.output
+        data = json.loads((tmp_data_dir / "doc.pdf.json").read_text())
+        assert data["title"] == "String Title"
+
+    def test_cleanup_summary_output(self, runner, valid_env, tmp_data_dir):
+        """Cleanup should print a completion summary with counts."""
+        meta = _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
+        meta["unknown1"] = "val1"
+        meta["unknown2"] = "val2"
+        (tmp_data_dir / "doc.pdf.json").write_text(json.dumps(meta))
+
+        result = runner.invoke(
+            app,
+            ["cleanup", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "checked 1 file(s)" in result.output
+        assert "modified 1 file(s)" in result.output
+        assert "removed 2 key(s)" in result.output
+
+    def test_cleanup_with_config_file(self, runner, valid_env, tmp_data_dir, tmp_path):
+        """Cleanup should accept --config-file option."""
+        config_file = tmp_path / "custom.env"
+        config_file.write_text(
+            "BASE_URL=https://custom.example.com\n"
+            "LLM_ENDPOINT=https://llm.example.com/v1\n"
+            "LLM_API_KEY=test-key\n"
+            "LLM_MODEL=test-model\n"
+            "PROMPT_ARTICLE=Test article prompt\n"
+            "PROMPT_ARTICLE_REFLECTION=Test article reflection prompt\n"
+            "PROMPT_PODCAST=Test podcast prompt\n"
+            "PROMPT_PODCAST_REFLECTION=Test podcast reflection prompt\n"
+            "PROMPT_TITLE=Test title prompt\n"
+        )
+
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
+        )
+
+        result = runner.invoke(
+            app,
+            [
+                "cleanup",
+                str(tmp_data_dir),
+                "--config-file",
+                str(config_file),
+            ],
+        )
+        assert result.exit_code == 0
+
+    def test_cleanup_multiple_files(self, runner, valid_env, tmp_data_dir):
+        """Cleanup should process multiple JSON files."""
+        # File 1: has unknown key
+        meta1 = _make_valid_metadata(filepath="doc1.pdf", filename="doc1.pdf", filetype="pdf")
+        meta1["unknown_key"] = "remove me"
+        (tmp_data_dir / "doc1.pdf.json").write_text(json.dumps(meta1))
+
+        # File 2: clean (no unknown keys)
+        meta2 = _make_valid_metadata(filepath="doc2.pdf", filename="doc2.pdf", filetype="pdf")
+        (tmp_data_dir / "doc2.pdf.json").write_text(json.dumps(meta2))
+
+        result = runner.invoke(
+            app,
+            ["cleanup", str(tmp_data_dir)],
+        )
+        assert result.exit_code == 0
+        assert "checked 2 file(s)" in result.output
+        assert "modified 1 file(s)" in result.output
+
+    def test_cleanup_nonexistent_path(self, runner, valid_env, tmp_path):
+        """Cleanup should fail for a nonexistent path."""
+        result = runner.invoke(
+            app,
+            ["cleanup", str(tmp_path / "nonexistent")],
+        )
+        assert result.exit_code != 0
+        assert "Path does not exist" in result.output
+
+
+class TestFindUnknownKeys:
+    """Tests for the _find_unknown_keys helper function."""
+
+    def test_no_unknown_keys(self):
+        """Should return empty list for valid metadata."""
+        from local_feed_generator.cli import _find_unknown_keys
+
+        data = _make_valid_metadata()
+        assert _find_unknown_keys(data) == []
+
+    def test_unknown_top_level_key(self):
+        """Should detect unknown top-level keys."""
+        from local_feed_generator.cli import _find_unknown_keys
+
+        data = _make_valid_metadata()
+        data["unknown_field"] = "value"
+        result = _find_unknown_keys(data)
+        assert "unknown_field" in result
+
+    def test_unknown_title_key(self):
+        """Should detect unknown keys in title dict."""
+        from local_feed_generator.cli import _find_unknown_keys
+
+        data = _make_valid_metadata()
+        data["title"] = {
+            "filename": "doc",
+            "extracted": "Title",
+            "generated": "Gen",
+            "extra": "bad",
+        }
+        result = _find_unknown_keys(data)
+        assert "title.extra" in result
+
+    def test_unknown_step_map_key(self):
+        """Should detect unknown keys in step-map dicts."""
+        from local_feed_generator.cli import _find_unknown_keys
+
+        data = _make_valid_metadata()
+        data["transcribe"]["extra_step"] = "bad"
+        result = _find_unknown_keys(data)
+        assert "transcribe.extra_step" in result
+
+    def test_string_title_not_flagged(self):
+        """Should not flag string titles (backward compatibility)."""
+        from local_feed_generator.cli import _find_unknown_keys
+
+        data = _make_valid_metadata()
+        data["title"] = "String Title"
+        assert _find_unknown_keys(data) == []
+
+    def test_multiple_unknown_keys(self):
+        """Should detect all unknown keys across all levels."""
+        from local_feed_generator.cli import _find_unknown_keys
+
+        data = _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
+        data["unknown_top"] = "val"
+        data["title"] = {"filename": "doc", "extracted": "T", "generated": "G", "bad_title": "x"}
+        data["extract"]["bad_step"] = "x"
+        data["summarize"]["bad_step2"] = "x"
+        result = _find_unknown_keys(data)
+        assert "unknown_top" in result
+        assert "title.bad_title" in result
+        assert "extract.bad_step" in result
+        assert "summarize.bad_step2" in result
+        assert len(result) == 4

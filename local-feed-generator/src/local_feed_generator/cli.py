@@ -12,6 +12,7 @@ each step of the processing pipeline:
 - ``extract``          — Extract metadata from PDF/HTML files.
 - ``title``            — Generate titles for files that lack proper titles.
 - ``create-feed``      — Create a template ``feed.json`` file in a target directory.
+- ``cleanup``          — Remove unknown keys from JSON metadata files.
 
 Files and directories are passed as positional arguments, e.g.::
 
@@ -39,7 +40,7 @@ from watchdog.events import FileSystemEventHandler
 from local_feed_generator.config import reload_config
 from local_feed_generator.errors import log_error
 from local_feed_generator.feeds import _is_orphaned_json
-from local_feed_generator.metadata import Metadata
+from local_feed_generator.metadata import Metadata, StepMap
 from local_feed_generator.producer import _check_reflection_md
 from local_feed_generator.scanner import (
     _IGNORE_FILENAMES,
@@ -610,6 +611,128 @@ def _is_step_complete(metadata: dict[str, Any], step: str) -> bool:
     """
     step_map = metadata.get(step)
     return isinstance(step_map, dict) and step_map.get("status") == "complete"
+
+
+# ---------------------------------------------------------------------------
+# Schema constants for cleanup command
+# ---------------------------------------------------------------------------
+
+# Allowed top-level keys in metadata JSON files, derived from the Metadata model.
+_ALLOWED_TOP_LEVEL_KEYS: frozenset[str] = frozenset(Metadata.model_fields.keys())
+
+# Allowed keys inside the ``title`` dict (when it is a dict, not a string).
+_ALLOWED_TITLE_KEYS: frozenset[str] = frozenset({"filename", "extracted", "generated"})
+
+# Allowed keys inside step-map dicts (transcribe, summarize, extract,
+# generate_title).
+_ALLOWED_STEP_MAP_KEYS: frozenset[str] = frozenset(StepMap.model_fields.keys())
+
+# Step-map keys at the top level of metadata that should be validated as dicts.
+_STEP_MAP_KEYS: frozenset[str] = frozenset({"transcribe", "summarize", "extract", "generate_title"})
+
+
+def _find_unknown_keys(data: dict[str, Any]) -> list[str]:
+    """Detect keys in a metadata dict that are not part of the schema.
+
+    Checks:
+
+    - **Top-level keys** against :data:`_ALLOWED_TOP_LEVEL_KEYS`.
+    - **Nested ``title`` dict keys** against :data:`_ALLOWED_TITLE_KEYS`
+      (only when ``title`` is a dict; a plain-string title is accepted).
+    - **Nested step-map dict keys** (``transcribe``, ``summarize``,
+      ``extract``, ``generate_title``) against
+      :data:`_ALLOWED_STEP_MAP_KEYS` (only when the value is a dict).
+
+    Args:
+        data: The parsed JSON metadata dictionary.
+
+    Returns:
+        A list of human-readable strings describing each unknown key,
+        using dotted path notation for nested keys (e.g.
+        ``"transcribe.extra_field"``).
+    """
+    unknown: list[str] = []
+
+    # --- Top-level keys --------------------------------------------------
+    for key in data:
+        if key not in _ALLOWED_TOP_LEVEL_KEYS:
+            unknown.append(key)
+
+    # --- Nested title dict keys ----------------------------------------
+    title = data.get("title")
+    if isinstance(title, dict):
+        for key in title:
+            if key not in _ALLOWED_TITLE_KEYS:
+                unknown.append(f"title.{key}")
+
+    # --- Nested step-map keys --------------------------------------------
+    for step_key in _STEP_MAP_KEYS:
+        step_map = data.get(step_key)
+        if isinstance(step_map, dict):
+            for key in step_map:
+                if key not in _ALLOWED_STEP_MAP_KEYS:
+                    unknown.append(f"{step_key}.{key}")
+
+    return unknown
+
+
+def _cleanup_json_file(json_path: Path) -> tuple[int, list[str]]:
+    """Remove unknown keys from a single JSON metadata file.
+
+    Reads the file, detects unknown keys via :func:`_find_unknown_keys`,
+    removes them, and rewrites the file only if changes were made.
+
+    Args:
+        json_path: Path to the JSON metadata file.
+
+    Returns:
+        A tuple of ``(keys_removed_count, unknown_key_paths)``.
+        If the file cannot be parsed as JSON, returns ``(0, [])`` and
+        logs the error.
+    """
+    try:
+        raw = json_path.read_text(encoding="utf-8")
+        data: dict[str, Any] = json.loads(raw)
+    except (json.JSONDecodeError, OSError) as exc:
+        log_error(exc, filepath=str(json_path), stage="metadata_parse")
+        return 0, []
+
+    if not isinstance(data, dict):
+        _logger.warning("Skipping non-dict JSON file: %s", json_path)
+        return 0, []
+
+    unknown_keys = _find_unknown_keys(data)
+    if not unknown_keys:
+        return 0, []
+
+    # Remove top-level unknown keys.
+    for key in list(data.keys()):
+        if key not in _ALLOWED_TOP_LEVEL_KEYS:
+            del data[key]
+
+    # Remove nested title dict unknown keys.
+    title = data.get("title")
+    if isinstance(title, dict):
+        for key in list(title.keys()):
+            if key not in _ALLOWED_TITLE_KEYS:
+                del title[key]
+
+    # Remove nested step-map unknown keys.
+    for step_key in _STEP_MAP_KEYS:
+        step_map = data.get(step_key)
+        if isinstance(step_map, dict):
+            for key in list(step_map.keys()):
+                if key not in _ALLOWED_STEP_MAP_KEYS:
+                    del step_map[key]
+
+    # Rewrite the file with cleaned data.
+    try:
+        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    except OSError as exc:
+        log_error(exc, filepath=str(json_path), stage="metadata_write")
+        raise
+
+    return len(unknown_keys), unknown_keys
 
 
 # ---------------------------------------------------------------------------
@@ -1740,6 +1863,7 @@ def title(
     _load_config(config_file)
     _logger.info("Starting title command")
 
+    from local_feed_generator.config import get_config
     from local_feed_generator.services.summarizer import Summarizer
 
     resolved_paths = _resolve_paths(paths)
@@ -1800,12 +1924,38 @@ def title(
             filename_title = _clean_title(source_file.stem)
             extracted_title = metadata_dict.get("extracted_title")
 
-            new_title, _, _ = summarizer.generate_title(
+            # Initialize the generate_title step map before the LLM call.
+            now = datetime.now(UTC)
+            config = get_config()
+            generate_title_step = metadata_dict.get("generate_title") or {}
+            generate_title_step["status"] = "in_progress"
+            generate_title_step["start_time"] = int(now.timestamp() * 1000) / 1000.0
+            generate_title_step["input_size"] = len(content.encode("utf-8")) if content else 0
+            generate_title_step["output_size"] = 0
+            generate_title_step["words"] = 0
+            generate_title_step["model"] = config.llm_model
+            generate_title_step["input_tokens"] = 0
+            generate_title_step["output_tokens"] = 0
+            metadata_dict["generate_title"] = generate_title_step
+            _write_json_metadata(metadata_dict, source_file)
+
+            new_title, prompt_tokens, completion_tokens = summarizer.generate_title(
                 content,
                 filename=filename_title,
                 extracted_title=extracted_title,
             )
             new_title = _clean_title(new_title) or new_title
+
+            # Update the generate_title step map with completion info.
+            generate_title_end = datetime.now(UTC)
+            generate_title_step["status"] = "complete"
+            generate_title_step["end_time"] = int(generate_title_end.timestamp() * 1000) / 1000.0
+            generate_title_step["output_size"] = len(new_title.encode("utf-8")) if new_title else 0
+            generate_title_step["words"] = len(new_title.split()) if new_title else 0
+            generate_title_step["model"] = config.llm_model
+            generate_title_step["input_tokens"] = prompt_tokens
+            generate_title_step["output_tokens"] = completion_tokens
+            metadata_dict["generate_title"] = generate_title_step
 
             # Update metadata title dict with generated title.
             if isinstance(title, dict):
@@ -1822,6 +1972,7 @@ def title(
 
             success_count += 1
             click.echo(f"  Title: {new_title}")
+            click.echo(f"  Tokens in: {prompt_tokens}, Tokens out: {completion_tokens}")
         except Exception as exc:
             error_count += 1
             log_error(exc, filepath=str(relative_path), stage="title_generation")
@@ -1939,25 +2090,31 @@ def _finalize_incomplete_json(
             extracted_title = title.get("extracted") or metadata.get("extracted_title")
 
             # Generate title via LLM if not already present.
+            title_generated_tokens: tuple[int, int] | None = None
+            generate_title_content: str | None = None
             if not title.get("generated") or not title["generated"].strip():
                 generated = filename_title
                 try:
                     if filetype == "mp4":
                         content = metadata.get("content") or ""
                         if content.strip():
-                            generated, _, _ = summarizer.generate_title(
+                            generate_title_content = content
+                            generated, prompt_tokens, completion_tokens = summarizer.generate_title(
                                 content,
                                 filename=filename_title,
                             )
+                            title_generated_tokens = (prompt_tokens, completion_tokens)
                             generated = _clean_title(generated) or generated
                     else:
                         content = _get_content_for_title(source_file, metadata)
                         if content.strip():
-                            generated, _, _ = summarizer.generate_title(
+                            generate_title_content = content
+                            generated, prompt_tokens, completion_tokens = summarizer.generate_title(
                                 content,
                                 filename=filename_title,
                                 extracted_title=extracted_title,
                             )
+                            title_generated_tokens = (prompt_tokens, completion_tokens)
                             generated = _clean_title(generated) or generated
                 except Exception as gen_exc:
                     _logger.warning(
@@ -2029,6 +2186,20 @@ def _finalize_incomplete_json(
                     "model": config.llm_model,
                 }
                 final_metadata["content"] = metadata.get("content") or ""
+                # Add generate_title step map when the LLM was called.
+                if title_generated_tokens is not None and generate_title_content is not None:
+                    prompt_tokens, completion_tokens = title_generated_tokens
+                    final_metadata["generate_title"] = {
+                        "status": "complete",
+                        "start_time": now_ts,
+                        "end_time": now_ts,
+                        "input_size": len(generate_title_content.encode("utf-8")),
+                        "output_size": len((title.get("generated") or "").encode("utf-8")),
+                        "words": len((title.get("generated") or "").split()),
+                        "model": config.llm_model,
+                        "input_tokens": prompt_tokens,
+                        "output_tokens": completion_tokens,
+                    }
             elif filetype in ("pdf", "html"):
                 final_metadata["extract"] = {
                     "status": "complete",
@@ -2049,6 +2220,20 @@ def _finalize_incomplete_json(
                 }
                 final_metadata["summary"] = summary or ""
                 final_metadata["content"] = metadata.get("content")
+                # Add generate_title step map when the LLM was called.
+                if title_generated_tokens is not None and generate_title_content is not None:
+                    prompt_tokens, completion_tokens = title_generated_tokens
+                    final_metadata["generate_title"] = {
+                        "status": "complete",
+                        "start_time": now_ts,
+                        "end_time": now_ts,
+                        "input_size": len(generate_title_content.encode("utf-8")),
+                        "output_size": len((title.get("generated") or "").encode("utf-8")),
+                        "words": len((title.get("generated") or "").split()),
+                        "model": config.llm_model,
+                        "input_tokens": prompt_tokens,
+                        "output_tokens": completion_tokens,
+                    }
 
             _write_json_metadata(final_metadata, source_file)
 
@@ -2112,6 +2297,83 @@ def create_feed(config_file: str | None, directory: str) -> None:
         raise click.ClickException(f"Failed to create feed.json: {exc}") from exc
 
     click.echo(f"Created feed.json at {feed_json_path}")
+
+
+# ---------------------------------------------------------------------------
+# Cleanup command
+# ---------------------------------------------------------------------------
+
+
+@app.command()
+@_config_file_option
+@click.argument("paths", nargs=-1)
+def cleanup(config_file: str | None, paths: tuple[str, ...]) -> None:
+    """Remove unknown keys from JSON metadata files.
+
+    Scans the given paths for ``.json`` metadata files (excluding
+    ``feed.json`` and other ignored filenames) and removes any keys
+    that are not part of the Metadata schema:
+
+    - Unknown top-level keys (not in ``Metadata.model_fields``).
+    - Unknown keys inside the ``title`` dict (``filename``, ``extracted``,
+      ``generated`` are allowed; a plain-string title is left as-is).
+    - Unknown keys inside step-map dicts (``transcribe``, ``summarize``,
+      ``extract``, ``generate_title``) — only ``StepMap.model_fields``
+      keys are kept.
+
+    Files are rewritten in-place only when unknown keys were found.
+    A summary of the number of files cleaned and keys removed is printed.
+
+    At least one file or directory path is required.
+    """
+    _load_config(config_file)
+    _logger.info("Starting cleanup command")
+
+    resolved_paths = _resolve_paths(paths)
+    data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
+
+    json_files = _find_json_files(data_dir_path)
+
+    if not json_files:
+        click.echo("No JSON metadata files found.")
+        return
+
+    files_checked = 0
+    files_modified = 0
+    total_keys_removed = 0
+
+    for json_path in json_files:
+        files_checked += 1
+        try:
+            keys_removed, unknown_key_paths = _cleanup_json_file(json_path)
+        except OSError:
+            # Error already logged by _cleanup_json_file.
+            continue
+
+        if keys_removed > 0:
+            files_modified += 1
+            total_keys_removed += keys_removed
+            relative = os.path.relpath(json_path, Path.cwd())
+            click.echo(f"  {relative}: removed {keys_removed} unknown key(s):")
+            for key_path in unknown_key_paths:
+                click.echo(f"    - {key_path}")
+            _logger.info(
+                "Cleaned %s: removed %d unknown key(s) %s",
+                json_path,
+                keys_removed,
+                unknown_key_paths,
+            )
+
+    click.echo(
+        f"\nCleanup complete: checked {files_checked} file(s), "
+        f"modified {files_modified} file(s), removed {total_keys_removed} key(s)."
+    )
+    _logger.info(
+        "Cleanup complete: %d files checked, %d modified, %d keys removed",
+        files_checked,
+        files_modified,
+        total_keys_removed,
+    )
 
 
 # ---------------------------------------------------------------------------
