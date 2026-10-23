@@ -1,7 +1,8 @@
 [project]
 name = "focus-feed"
-version = "1.0"
+version = "1.1"
 description = "A local RSS/Atom feed generator for audio, HTML and PDF files"
+readme = "README.md"
 requires-python = ">=3.14"
 dependencies = [
     "feedgen>=1.0.0",
