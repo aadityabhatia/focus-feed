@@ -7,8 +7,9 @@ import time
 from typing import Any
 from unittest import mock
 
-from local_feed_generator.scanner import ScannedFile, Scanner
 import pytest
+
+from focus_feed.scanner import ScannedFile, Scanner
 
 
 class TestScannerConstruction:
@@ -45,7 +46,7 @@ class TestScanDirectory:
     def test_nonexistent_directory_logs_warning(self, tmp_path, caplog):
         """Scanning a nonexistent directory should log a warning."""
         scanner = Scanner(data_dir=tmp_path / "nonexistent")
-        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+        with caplog.at_level(logging.WARNING, logger="focus_feed"):
             scanner.scan_directory()
         assert any(
             "does not exist" in record.message
@@ -203,7 +204,7 @@ class TestSpecialCharacterWarnings:
         (tmp_path / filename).write_bytes(b"video")
 
         scanner = Scanner(data_dir=tmp_path)
-        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+        with caplog.at_level(logging.WARNING, logger="focus_feed"):
             scanner.scan_directory()
 
         assert any(
@@ -218,7 +219,7 @@ class TestSpecialCharacterWarnings:
         (tmp_path / "my-document.pdf").write_bytes(b"pdf")
 
         scanner = Scanner(data_dir=tmp_path)
-        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+        with caplog.at_level(logging.WARNING, logger="focus_feed"):
             scanner.scan_directory()
 
         assert not any(
@@ -251,7 +252,7 @@ class TestOrphanedJsonDetection:
         (tmp_path / json_filename).write_text(json_content)
 
         scanner = Scanner(data_dir=tmp_path)
-        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+        with caplog.at_level(logging.WARNING, logger="focus_feed"):
             result = scanner.scan_directory()
 
         if should_warn:
@@ -282,7 +283,7 @@ class TestOrphanedJsonDetection:
         )
 
         scanner = Scanner(data_dir=tmp_path)
-        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+        with caplog.at_level(logging.WARNING, logger="focus_feed"):
             result = scanner.scan_directory()
 
         assert result == []
@@ -298,7 +299,7 @@ class TestOrphanedJsonDetection:
         (tmp_path / "Course1" / "orphan.pdf.json").write_text('{"extract": {"status": "complete"}}')
 
         scanner = Scanner(data_dir=tmp_path)
-        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+        with caplog.at_level(logging.WARNING, logger="focus_feed"):
             result = scanner.scan_directory()
 
         assert result == []
@@ -335,7 +336,7 @@ class TestScanDirectoryErrorHandling:
 
         with (
             mock.patch.object(Path, "stat", mock_stat),
-            caplog.at_level(logging.WARNING, logger="local_feed_generator"),
+            caplog.at_level(logging.WARNING, logger="focus_feed"),
         ):
             result = scanner.scan_directory()
 
@@ -626,7 +627,7 @@ class TestStepStatusBasedScanning:
         json_file.write_text("{invalid json content")
 
         scanner = Scanner(data_dir=tmp_path)
-        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+        with caplog.at_level(logging.WARNING, logger="focus_feed"):
             result = scanner.scan_directory()
 
         assert result == []
@@ -649,7 +650,7 @@ class TestStepStatusBasedScanning:
         os.utime(source, (new_time, new_time))
 
         scanner = Scanner(data_dir=tmp_path)
-        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+        with caplog.at_level(logging.WARNING, logger="focus_feed"):
             result = scanner.scan_directory()
 
         assert len(result) == 1
@@ -905,7 +906,7 @@ class TestScanPaths:
     def test_nonexistent_path_skipped(self, tmp_path, caplog):
         """Nonexistent paths should be skipped with a warning."""
         scanner = Scanner(data_dir=tmp_path)
-        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+        with caplog.at_level(logging.WARNING, logger="focus_feed"):
             result = scanner.scan_paths([tmp_path / "nonexistent.mp4"])
 
         assert result == []
@@ -970,7 +971,7 @@ class TestScanPaths:
         (tmp_path / "orphan.pdf.json").write_text('{"extract": {"status": "complete"}}')
 
         scanner = Scanner(data_dir=tmp_path)
-        with caplog.at_level(logging.WARNING, logger="local_feed_generator"):
+        with caplog.at_level(logging.WARNING, logger="focus_feed"):
             result = scanner.scan_paths([tmp_path])
 
         assert result == []

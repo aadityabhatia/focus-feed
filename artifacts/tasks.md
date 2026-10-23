@@ -1,6 +1,8 @@
-# Local Feed Generator - Implementation Plan
+# Historical Implementation Plan (Focus Feed)
 
-**Project:** `local-feed-generator`  
+> Historical implementation plan. The current distribution and CLI are named `focus-feed`, with source and tests in root-level `src/` and `tests/` directories.
+
+**Historical distribution name:** `focus-feed`
 **Date:** 2026-10-16  
 **Python:** 3.14+  
 **Dependency Manager:** uv
@@ -9,7 +11,7 @@
 
 ## Overview
 
-This document provides a detailed, executable implementation plan for building `local-feed-generator`, a Python application that processes PDF/HTML/MP4 files and generates RSS feeds. The plan is organized into phases with ordered tasks, dependencies, and completion criteria.
+This document provides a detailed, executable implementation plan for building `focus-feed`, a Python application that processes PDF/HTML/MP4 files and generates RSS feeds. The plan is organized into phases with ordered tasks, dependencies, and completion criteria.
 
 **Latest Updates:**
   - Added create-feed CLI subcommand to create template feed.json files with title and description placeholders
@@ -48,20 +50,20 @@ Establish the project foundation with dependency management, directory structure
 - [x] T1.1: Initialize Project Structure
 - **Description:** Create the project directory structure as specified in design doc section 5.1
 - **Actions:**
-  - Create `local-feed-generator/` directory
-  - Create `local-feed-generator/src/local_feed_generator/` package directory
-  - Create `local-feed-generator/src/local_feed_generator/services/` subpackage directory
+  - Create `focus-feed/` directory
+  - Create `focus-feed/src/focus_feed/` package directory
+  - Create `focus-feed/src/focus_feed/services/` subpackage directory
   - Create all `__init__.py` files for packages
 - **Completion Criteria:**
   - Directory structure matches design doc exactly
   - All Python packages are importable
-  - `local-feed-generator/src/local_feed_generator/__init__.py` exists
-  - `local-feed-generator/src/local_feed_generator/services/__init__.py` exists
+  - `focus-feed/src/focus_feed/__init__.py` exists
+  - `focus-feed/src/focus_feed/services/__init__.py` exists
 
 - [x] T1.2: Create pyproject.toml
 - **Description:** Set up project metadata and dependencies using uv
 - **Actions:**
-  - Create `pyproject.toml` with project name `local-feed-generator`
+  - Create `pyproject.toml` with project name `focus-feed`
   - Specify Python requirement
   - Add all dependencies from design doc section 4.1
   - Add optional dependency group for local transcription (faster-whisper only)
@@ -114,7 +116,7 @@ Implement the foundational modules for configuration, file scanning, and metadat
 
 - [x] T2.1: Implement Configuration System
 - **Description:** Create config.py with Pydantic settings for all environment variables
-- **File:** `src/local_feed_generator/config.py`
+- **File:** `src/focus_feed/config.py`
 - **Actions:**
   - Create `Settings` class extending `pydantic_settings.BaseSettings`
   - Define all environment variables with types and defaults
@@ -131,7 +133,7 @@ Implement the foundational modules for configuration, file scanning, and metadat
 
 - [x] T2.2: Implement Metadata Model
 - **Description:** Create metadata.py with Pydantic models for JSON schema (Version 2.0)
-- **File:** `src/local_feed_generator/metadata.py`
+- **File:** `src/focus_feed/metadata.py`
 - **Actions:**
   - Create `Metadata` dataclass/model matching schema from design doc section 3.3
   - **NEW:** `title` field is now a dict with keys: `filename`, `extracted`, `generated` (can also be a plain string for backward compatibility)
@@ -160,7 +162,7 @@ Implement the foundational modules for configuration, file scanning, and metadat
 
 - [x] T2.3: Implement File Scanner (Batch Mode)
 - **Description:** Create scanner.py with directory scanning functionality
-- **File:** `src/local_feed_generator/scanner.py`
+- **File:** `src/focus_feed/scanner.py`
 - **Actions:**
   - Implement `Scanner` class with `scan_directory()` method
   - Recursively walk base directory or provided paths for files with extensions: `.mp4`, `.pdf`, `.html` (case-insensitive)
@@ -182,7 +184,7 @@ Implement the foundational modules for configuration, file scanning, and metadat
 
 - [x] T2.4: Create Error Handling Utilities
 - **Description:** Create utilities for consistent error handling
-- **File:** `src/local_feed_generator/errors.py` (new)
+- **File:** `src/focus_feed/errors.py` (new)
 - **Actions:**
   - Define custom exception classes: `ProcessingError`, `TranscriptionError`, `SummarizationError`, `ValidationError`
   - Create utility function to create error metadata from exception
@@ -205,7 +207,7 @@ Implement the file processing pipeline including transcription, summarization, a
 
 - [x] T3.1: Implement Producer Pipeline
 - **Description:** Create producer.py as the orchestrator for file processing
-- **File:** `src/local_feed_generator/producer.py`
+- **File:** `src/focus_feed/producer.py`
 - **Actions:**
   - Implement `Producer` class with dependencies on Transcriber, Summarizer, and extractors
   - Create `process_file()` method that:
@@ -239,7 +241,7 @@ Implement the file processing pipeline including transcription, summarization, a
 
 - [x] T3.2: Implement Transcription Service
 - **Description:** Create transcriber.py for GPU-accelerated audio transcription
-- **File:** `src/local_feed_generator/services/transcriber.py`
+- **File:** `src/focus_feed/services/transcriber.py`
 - **Actions:**
   - Implement `Transcriber` class
   - Load `faster-whisper` model with configuration from env vars:
@@ -268,7 +270,7 @@ Implement the file processing pipeline including transcription, summarization, a
 
 - [x] T3.3: Implement Summarization Service
 - **Description:** Create summarizer.py for LLM-based summarization
-- **File:** `src/local_feed_generator/services/summarizer.py`
+- **File:** `src/focus_feed/services/summarizer.py`
 - **Actions:**
   - Implement `Summarizer` class
   - Initialize OpenAI-compatible client with configuration from env vars:
@@ -302,7 +304,7 @@ Implement the file processing pipeline including transcription, summarization, a
 
 - [x] T3.4: Implement PDF Metadata and Content Extractor
 - **Description:** Create extractor for PDF files
-- **File:** `src/local_feed_generator/services/extractors.py` (new)
+- **File:** `src/focus_feed/services/extractors.py` (new)
 - **Actions:**
   - Implement `PDFExtractor` class (or add to services package)
   - Extract metadata from PDF files using `pypdf`
@@ -329,7 +331,7 @@ Implement the file processing pipeline including transcription, summarization, a
 
 - [x] T3.5: Implement HTML Metadata and Content Extractor
 - **Description:** Create extractor for HTML files
-- **File:** `src/local_feed_generator/services/extractors.py`
+- **File:** `src/focus_feed/services/extractors.py`
 - **Actions:**
   - Implement `HTMLExtractor` class
   - Extract title from `<title>` tag using BeautifulSoup
@@ -357,7 +359,7 @@ Implement the file processing pipeline including transcription, summarization, a
 
 - [x] T3.6: Implement Audio Metadata Extractor
 - **Description:** Create function to extract audio metadata using ffprobe
-- **File:** `src/local_feed_generator/services/extractors.py`
+- **File:** `src/focus_feed/services/extractors.py`
 - **Actions:**
   - Implement `get_audio_metadata()` function
   - Use subprocess to call ffprobe command-line tool
@@ -376,7 +378,7 @@ Implement the file processing pipeline including transcription, summarization, a
 
 - [x] T3.7: Implement Remote Transcription Service
 - **Description:** Create RemoteTranscriber class for API-based transcription
-- **File:** `src/local_feed_generator/services/remote_transcriber.py` (new)
+- **File:** `src/focus_feed/services/remote_transcriber.py` (new)
 - **Actions:**
   - Implement `RemoteTranscriber` class with OpenAI-compatible client
   - Initialize client with TRANSCRIPTION_ENDPOINT and TRANSCRIPTION_API_KEY
@@ -409,7 +411,7 @@ Implement RSS feed generation for podcast and articles feeds with new features.
 
 - [x] T4.1: Implement Feed Generator Base Class
 - **Description:** Create feeds.py with base feed generation functionality
-- **File:** `src/local_feed_generator/feeds.py`
+- **File:** `src/focus_feed/feeds.py`
 - **Actions:**
   - Implement `FeedGenerator` class
   - Accept `BASE_URL` from configuration
@@ -437,7 +439,7 @@ Implement RSS feed generation for podcast and articles feeds with new features.
 
 - [x] T4.2: Implement Podcast Feed Generation
 - **Description:** Create podcast.xml feed generation
-- **File:** `src/local_feed_generator/feeds.py`
+- **File:** `src/focus_feed/feeds.py`
 - **Actions:**
   - Implement `generate_podcast_feed()` method
   - Use `feedgen` library with podcast extension
@@ -467,7 +469,7 @@ Implement RSS feed generation for podcast and articles feeds with new features.
 
 - [x] T4.3: Implement Articles Feed Generation
 - **Description:** Create articles.xml feed generation
-- **File:** `src/local_feed_generator/feeds.py`
+- **File:** `src/focus_feed/feeds.py`
 - **Actions:**
   - Implement `generate_articles_feed()` method
   - Use `feedgen` library for RSS
@@ -496,7 +498,7 @@ Implement RSS feed generation for podcast and articles feeds with new features.
 
 - [x] T4.4: Implement Feed Generation for Per-Folder Feeds
 - **Description:** Create support for feed.json-based per-folder feeds
-- **File:** `src/local_feed_generator/feeds.py`
+- **File:** `src/focus_feed/feeds.py`
 - **Actions:**
   - Implement feed.json discovery (recursive)
   - Implement metadata filtering by folder
@@ -524,7 +526,7 @@ Implement RSS feed generation for podcast and articles feeds with new features.
 
 - [x] T4.5: Implement Markdown to HTML Conversion
 - **Description:** Create markdown to HTML converter with XSS protection
-- **File:** `src/local_feed_generator/feeds.py`
+- **File:** `src/focus_feed/feeds.py`
 - **Actions:**
   - Implement `_markdown_to_html()` function using required `markdown` library
   - **UPDATED:** Removed try/except ImportError fallback - markdown is now required
@@ -540,7 +542,7 @@ Implement RSS feed generation for podcast and articles feeds with new features.
 
 - [x] T4.6: Implement Feed Generation Method
 - **Description:** Create main method to generate both feeds
-- **File:** `src/local_feed_generator/feeds.py`
+- **File:** `src/focus_feed/feeds.py`
 - **Actions:**
   - Implement `generate_all_feeds()` method
   - Generate root-level podcast and articles feeds (only if feed.json exists in root)
@@ -556,7 +558,7 @@ Implement RSS feed generation for podcast and articles feeds with new features.
 
 - [x] T4.7: Implement Root-Level Index.html Generation (NEW)
 - **Description:** Create root-level index.html generator for feed discovery
-- **File:** `src/local_feed_generator/feeds.py`
+- **File:** `src/focus_feed/feeds.py`
 - **Actions:**
   - Implement index.html generation in FeedGenerator
   - Scan for feed.json files recursively
@@ -583,9 +585,9 @@ Implement command-line interface for all processing modes.
 
 - [x] T5.1: Implement CLI Framework
 - **Description:** Create cli.py with Click framework
-- **File:** `src/local_feed_generator/cli.py`
+- **File:** `src/focus_feed/cli.py`
 - **Actions:**
-  - Create Click command group `local-feed-generator`
+  - Create Click command group `focus-feed`
   - Implement shared options: `--config-file`
   - Validate options and load configuration
   - Handle errors and exit codes appropriately
@@ -599,7 +601,7 @@ Implement command-line interface for all processing modes.
 
 - [x] T5.2: Implement Process Command
 - **Description:** Create `process` command for batch mode
-- **File:** `src/local_feed_generator/cli.py`
+- **File:** `src/focus_feed/cli.py`
 - **Actions:**
   - Implement `process` command with positional directory argument
     - Orchestrate: Scanner => Producer => Feed Generator
@@ -622,7 +624,7 @@ Implement command-line interface for all processing modes.
 
 - [x] T5.3: Implement Watch Command
 - **Description:** Create `watch` command for incremental mode
-- **File:** `src/local_feed_generator/cli.py`
+- **File:** `src/focus_feed/cli.py`
 - **Actions:**
   - Implement `watch` command with positional directory argument
   - Start watchdog Observer on the specified directory
@@ -654,7 +656,7 @@ Implement command-line interface for all processing modes.
 
 - [x] T5.4: Implement Feeds Command
 - **Description:** Create `feeds` command for feed-only generation
-- **File:** `src/local_feed_generator/cli.py`
+- **File:** `src/focus_feed/cli.py`
 - **Actions:**
   - Implement `feeds` command with positional directory argument
   - Skip file processing
@@ -675,7 +677,7 @@ Implement command-line interface for all processing modes.
 
 - [x] T5.5: Implement Validate Command
 - **Description:** Create `validate` command for metadata validation
-- **File:** `src/local_feed_generator/cli.py`
+- **File:** `src/focus_feed/cli.py`
 - **Actions:**
   - Implement `validate` command with positional directory argument
   - Scan for all JSON metadata files
@@ -703,17 +705,17 @@ Implement command-line interface for all processing modes.
 - **Description:** Configure package for CLI execution
 - **File:** `pyproject.toml`
 - **Actions:**
-  - Add entry point for `local-feed-generator` CLI
+  - Add entry point for `focus-feed` CLI
   - Configure to call CLI main function
-  - Ensure `uv run local-feed-generator` works
+  - Ensure `uv run focus-feed` works
 - **Completion Criteria:**
-  - CLI can be invoked via `uv run local-feed-generator`
+  - CLI can be invoked via `uv run focus-feed`
   - All subcommands are available
   - Help text is displayed correctly
 
 - [x] T5.7: Implement Create-Feed Command
 - **Description:** Create `create-feed` command to generate template feed.json files
-- **File:** `src/local_feed_generator/cli.py`
+- **File:** `src/focus_feed/cli.py`
 - **Actions:**
   - Implement `create-feed` command with positional directory argument
   - Generate template feed.json with placeholder title and description fields
@@ -740,7 +742,7 @@ Enhance and test the incremental processing mode with robust file watching.
 
 - [x] T6.1: Implement Initial Scan for Watch Mode
 - **Description:** Scan directory on watch mode start
-- **File:** `src/local_feed_generator/scanner.py` and `cli.py`
+- **File:** `src/focus_feed/scanner.py` and `cli.py`
 - **Actions:**
   - Implement initial scan in watch command
   - Process all files without JSON metadata on startup
@@ -761,7 +763,7 @@ Enhance and test the incremental processing mode with robust file watching.
 
 - [x] T6.2: Implement Event Debouncing
 - **Description:** Prevent rapid successive events from triggering multiple processes
-- **File:** `src/local_feed_generator/cli.py`
+- **File:** `src/focus_feed/cli.py`
 - **Actions:**
   - Implement debounce mechanism for file system events
   - Configurable debounce interval (1 second default)
@@ -775,7 +777,7 @@ Enhance and test the incremental processing mode with robust file watching.
 
 - [x] T6.3: Implement Periodic Rescan Fallback
 - **Description:** Fallback directory scanning for missed watchdog events
-- **File:** `src/local_feed_generator/cli.py`
+- **File:** `src/focus_feed/cli.py`
 - **Actions:**
   - Implement periodic rescan (every 5 minutes by default)
   - Configurable via RESCAN_INTERVAL environment variable
@@ -794,7 +796,7 @@ Enhance and test the incremental processing mode with robust file watching.
 
 - [x] T6.4: Enhanced Error Handling in Watch Mode
 - **Description:** Ensure watch mode handles errors gracefully
-- **File:** `src/local_feed_generator/cli.py`
+- **File:** `src/focus_feed/cli.py`
 - **Actions:**
   - Catch exceptions in event handlers
   - Log errors without crashing the watcher
@@ -817,7 +819,7 @@ Implement comprehensive validation and robust error handling throughout the syst
 
 - [x] T7.1: Implement Metadata Schema Validation
 - **Description:** Ensure all metadata files conform to schema
-- **File:** `src/local_feed_generator/metadata.py`
+- **File:** `src/focus_feed/metadata.py`
 - **Actions:**
   - Validate required fields for each filetype (title, filename, filepath, filetype, date)
   - Validate field types and formats (UNIX epoch float for date, float for duration, ISO8601 for creation_time)
@@ -839,7 +841,7 @@ Implement comprehensive validation and robust error handling throughout the syst
 
 - [x] T7.2: Implement XML Feed Validation
 - **Description:** Validate generated RSS feeds
-- **File:** `src/local_feed_generator/feeds.py`
+- **File:** `src/focus_feed/feeds.py`
 - **Actions:**
   - Add validation that feeds are well-formed XML
   - Validate RSS compliance
@@ -932,7 +934,7 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
 
 - [x] T8.1: Add remote transcription configuration variables
 - **Description:** Add transcription_endpoint, transcription_api_key, transcription_remote_model config variables
-- **File:** `src/local_feed_generator/config.py`
+- **File:** `src/focus_feed/config.py`
 - **Actions:**
   - Add new configuration variables for remote transcription endpoint
   - Add API key configuration for authentication
@@ -944,7 +946,7 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
 
 - [x] T8.2: Create RemoteTranscriber class for API-based transcription
 - **Description:** Implement RemoteTranscriber class that calls OpenAI-compatible API
-- **File:** `src/local_feed_generator/services/remote_transcriber.py`
+- **File:** `src/focus_feed/services/remote_transcriber.py`
 - **Actions:**
   - Implement `RemoteTranscriber` class with OpenAI-compatible client
   - Initialize client with TRANSCRIPTION_ENDPOINT and TRANSCRIPTION_API_KEY
@@ -965,7 +967,7 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
 
 - [x] T8.3: Update Transcriber to support dual-mode (local/remote) transcription
 - **Description:** Modify Transcriber to select between local and remote transcription
-- **File:** `src/local_feed_generator/services/transcriber.py`
+- **File:** `src/focus_feed/services/transcriber.py`
 - **Actions:**
   - Add mode detection based on TRANSCRIPTION_ENDPOINT configuration
   - Integrate RemoteTranscriber for remote mode
@@ -980,7 +982,7 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
 
 - [x] T8.4: Update Producer to track remote transcription in metadata
 - **Description:** Ensure metadata tracks which transcription method was used
-- **File:** `src/local_feed_generator/producer.py`
+- **File:** `src/focus_feed/producer.py`
 - **Actions:**
   - Metadata includes transcription model info in step map's model field
   - Track whether local or remote transcription was used
@@ -1035,7 +1037,7 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
   - Add logging for PDF/HTML/audio extraction start/complete and mtime fallback in extractors.py
   - Add step-level logging for all processing steps in producer.py
   - Add logging for feed generation, metadata discovery, per-folder generation in feeds.py
-  - Fix logger names in summarizer.py and extractors.py to use `"local_feed_generator"` instead of `__name__`
+  - Fix logger names in summarizer.py and extractors.py to use `"focus_feed"` instead of `__name__`
   - Ensure all logging uses consistent format with appropriate log levels
 - **Completion Criteria:**
   - All major processing steps are logged with start/complete/skip messages
@@ -1580,7 +1582,7 @@ Add review tasks to ensure all clarifications and updates are properly implement
     - `extractors.py`: Added logging for PDF/HTML/audio extraction start/complete and mtime fallback
     - `producer.py`: Added step-level logging for all processing steps
     - `feeds.py`: Added logging for feed generation, metadata discovery, per-folder generation
-    - Fixed logger names in summarizer.py and extractors.py to use `"local_feed_generator"` instead of `__name__`
+    - Fixed logger names in summarizer.py and extractors.py to use `"focus_feed"` instead of `__name__`
 
 ### Artifacts Updated
 - **tasks.md**: Added T9.0 for event logging, marked T10.1-T10.5 complete, updated T1.2 to include markdown, updated T4.5 to reflect required markdown, added notes about fixes

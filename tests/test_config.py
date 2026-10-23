@@ -5,9 +5,10 @@ import logging
 import os
 from unittest import mock
 
-from local_feed_generator.config import Settings, get_config, reload_config
 from pydantic import ValidationError
 import pytest
+
+from focus_feed.config import Settings, get_config, reload_config
 
 
 class TestRequiredFields:
@@ -329,7 +330,7 @@ class TestSingletonPattern:
         }
         with mock.patch.dict(os.environ, env, clear=False):
             # Reset singleton
-            import local_feed_generator.config as config_module
+            import focus_feed.config as config_module
 
             config_module._config_instance = None
 
@@ -351,7 +352,7 @@ class TestSingletonPattern:
             "PROMPT_TITLE": "Test title prompt",
         }
         with mock.patch.dict(os.environ, env, clear=False):
-            import local_feed_generator.config as config_module
+            import focus_feed.config as config_module
 
             config_module._config_instance = None
 
@@ -389,7 +390,7 @@ class TestSingletonPattern:
             "PROMPT_TITLE": "Test title prompt",
         }
 
-        import local_feed_generator.config as config_module
+        import focus_feed.config as config_module
 
         config_module._config_instance = None
 
@@ -482,7 +483,7 @@ class TestCriticalLogging:
         env["BASE_URL"] = ""
         with (
             mock.patch.dict(os.environ, env, clear=False),
-            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+            caplog.at_level(logging.CRITICAL, logger="focus_feed"),
             pytest.raises(ValidationError),
         ):
             get_config()
@@ -501,7 +502,7 @@ class TestCriticalLogging:
         }
         with (
             mock.patch.dict(os.environ, env, clear=False),
-            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+            caplog.at_level(logging.CRITICAL, logger="focus_feed"),
             pytest.raises(ValidationError),
         ):
             get_config()
@@ -515,7 +516,7 @@ class TestCriticalLogging:
         env = self._get_valid_env()
         with (
             mock.patch.dict(os.environ, env, clear=False),
-            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+            caplog.at_level(logging.CRITICAL, logger="focus_feed"),
             contextlib.suppress(ValidationError),
         ):
             get_config()
@@ -528,7 +529,7 @@ class TestCriticalLogging:
         env["LLM_API_KEY"] = ""
         with (
             mock.patch.dict(os.environ, env, clear=False),
-            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+            caplog.at_level(logging.CRITICAL, logger="focus_feed"),
             pytest.raises(ValidationError),
         ):
             reload_config()

@@ -1,4 +1,4 @@
-"""Feed generator for local-feed-generator.
+"""Feed generator for Focus Feed.
 
 Reads JSON metadata files from the data directory, filters out error entries,
 and generates RSS 2.0 feeds (podcast.xml and articles.xml) for consumption by
@@ -34,13 +34,13 @@ import xml.etree.ElementTree as ET
 from feedgen.feed import FeedGenerator as _FeedGenerator
 import markdown as _md
 
-from local_feed_generator.config import get_config
-from local_feed_generator.errors import log_error
-from local_feed_generator.metadata import Metadata
-from local_feed_generator.producer import _compute_file_hash
-from local_feed_generator.scanner import SUPPORTED_EXTENSIONS
+from focus_feed.config import get_config
+from focus_feed.errors import log_error
+from focus_feed.metadata import Metadata
+from focus_feed.producer import _compute_file_hash
+from focus_feed.scanner import SUPPORTED_EXTENSIONS
 
-_logger = logging.getLogger("local_feed_generator")
+_logger = logging.getLogger("focus_feed")
 
 # MIME type for podcast enclosure ``type`` attribute (design doc section 3.4).
 _PODCAST_MIME_TYPE = "audio/mp4"
@@ -425,7 +425,7 @@ class FeedGenerator:
         """Recursively discover and load all valid JSON metadata files.
 
         Walks ``data_dir`` for ``*.json`` files, attempts to parse each as a
-        :class:`~local_feed_generator.metadata.Metadata` object, and filters
+        :class:`~focus_feed.metadata.Metadata` object, and filters
         out entries where ``feed_eligible`` is ``False`` (i.e. incomplete
         processing or error state).
 
@@ -437,7 +437,7 @@ class FeedGenerator:
         generation.
 
         Returns:
-            A list of :class:`~local_feed_generator.metadata.Metadata` objects
+            A list of :class:`~focus_feed.metadata.Metadata` objects
             for all feed-eligible files, sorted by folder name then filename.
         """
         if not self.data_dir.exists():

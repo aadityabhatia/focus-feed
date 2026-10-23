@@ -1,4 +1,4 @@
-"""File scanner for local-feed-generator.
+"""File scanner for Focus Feed.
 
 Discovers content files (MP4, PDF, HTML) in the base directory and determines
 which ones need processing based on the presence, status, and freshness of
@@ -40,7 +40,7 @@ from pathlib import Path
 import re
 from typing import Any
 
-_logger = logging.getLogger("local_feed_generator")
+_logger = logging.getLogger("focus_feed")
 
 
 # Source file extensions supported by the scanner (case-insensitive).

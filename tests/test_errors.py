@@ -4,7 +4,9 @@ from io import StringIO
 import json
 import logging
 
-from local_feed_generator.errors import (
+import pytest
+
+from focus_feed.errors import (
     ProcessingError,
     SummarizationError,
     TranscriptionError,
@@ -15,7 +17,6 @@ from local_feed_generator.errors import (
     create_error_metadata,
     log_error,
 )
-import pytest
 
 
 class TestExceptionHierarchy:
@@ -449,7 +450,7 @@ class TestConfigureErrorLog:
 
     def test_returns_none_on_permission_error(self, monkeypatch, tmp_path):
         """_configure_error_log should return None on PermissionError during mkdir."""
-        import local_feed_generator.errors as errors_module
+        import focus_feed.errors as errors_module
 
         # Mock Path.mkdir to raise PermissionError, while keeping Path.cwd()
         # and other Path methods functional.
@@ -465,7 +466,7 @@ class TestConfigureErrorLog:
 
     def test_logs_critical_on_permission_error(self, monkeypatch, tmp_path, caplog):
         """_configure_error_log should log CRITICAL when error.log cannot be created."""
-        import local_feed_generator.errors as errors_module
+        import focus_feed.errors as errors_module
 
         original_path = errors_module.Path
 
@@ -474,7 +475,7 @@ class TestConfigureErrorLog:
 
         monkeypatch.setattr(original_path, "mkdir", mock_mkdir)
 
-        with caplog.at_level(logging.CRITICAL, logger="local_feed_generator"):
+        with caplog.at_level(logging.CRITICAL, logger="focus_feed"):
             handler = _configure_error_log(force=True)
         assert handler is None
         critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]

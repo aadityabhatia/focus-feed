@@ -1,4 +1,4 @@
-"""Configuration management for local-feed-generator.
+"""Configuration management for Focus Feed.
 
 Uses pydantic-settings to load configuration from environment variables
 and optional .env file. Provides a singleton accessor for global config.
@@ -11,7 +11,7 @@ from typing import Any
 from pydantic import field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-_logger = logging.getLogger("local_feed_generator")
+_logger = logging.getLogger("focus_feed")
 
 # Required configuration fields that must be non-empty.
 _REQUIRED_FIELDS: tuple[str, ...] = (
@@ -152,6 +152,6 @@ def _check_required_env_vars() -> None:
     if missing:
         _logger.critical(
             "Missing required configuration environment variables: %s. "
-            "Please set these before running local-feed-generator.",
+            "Please set these before running focus-feed.",
             ", ".join(missing),
         )

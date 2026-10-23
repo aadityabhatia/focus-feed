@@ -1,11 +1,12 @@
-"""Pytest configuration for local-feed-generator tests."""
+"""Pytest configuration for Focus Feed tests."""
 
 from collections.abc import Iterator
 import os
 from unittest import mock
 
-from local_feed_generator.errors import _configure_error_log
 import pytest
+
+from focus_feed.errors import _configure_error_log
 
 # Required env vars that may be loaded into os.environ by load_dotenv() in
 # CLI tests.  These are saved and restored around each test to prevent
@@ -66,7 +67,7 @@ def disable_env_file_loading(request: pytest.FixtureRequest) -> Iterator[None]:
         yield
         return
     # Patch Settings model_config to use a non-existent env file
-    from local_feed_generator.config import Settings
+    from focus_feed.config import Settings
 
     original_config = Settings.model_config.copy()
     # Use a path that doesn't exist

@@ -1,4 +1,4 @@
-"""Producer pipeline for local-feed-generator.
+"""Producer pipeline for Focus Feed.
 
 Orchestrates file processing based on file type. For MP4 files, it
 transcribes audio to markdown, then generates key-takeaways summary via
@@ -57,23 +57,23 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from local_feed_generator.config import get_config
-from local_feed_generator.errors import (
+from focus_feed.config import get_config
+from focus_feed.errors import (
     create_error_metadata,
     log_error,
 )
-from local_feed_generator.metadata import Metadata, StepMap
-from local_feed_generator.scanner import ScannedFile, Scanner
-from local_feed_generator.services.extractors import (
+from focus_feed.metadata import Metadata, StepMap
+from focus_feed.scanner import ScannedFile, Scanner
+from focus_feed.services.extractors import (
     HTMLExtractor,
     PDFExtractor,
     _clean_title,
     get_audio_metadata,
 )
-from local_feed_generator.services.summarizer import Summarizer
-from local_feed_generator.services.transcriber import CUDA_ERROR_MESSAGE, Transcriber
+from focus_feed.services.summarizer import Summarizer
+from focus_feed.services.transcriber import CUDA_ERROR_MESSAGE, Transcriber
 
-_logger = logging.getLogger("local_feed_generator")
+_logger = logging.getLogger("focus_feed")
 
 # File types supported by the producer, mapped to their processing methods.
 SUPPORTED_FILETYPES: frozenset[str] = frozenset({"mp4", "pdf", "html"})
@@ -149,7 +149,7 @@ def _compute_file_hash(filepath: str) -> str:
 class Producer:
     """Orchestrates file processing and metadata generation.
 
-    The Producer accepts an optional :class:`~local_feed_generator.scanner.Scanner`
+    The Producer accepts an optional :class:`~focus_feed.scanner.Scanner`
     and optional service instances. When services are not provided, singleton
     instances are created lazily so that the expensive model loading (e.g. the
     Whisper transcription model) happens only once.
@@ -228,7 +228,7 @@ class Producer:
         error is logged to stderr.
 
         Args:
-            scanned_file: A :class:`~local_feed_generator.scanner.ScannedFile`
+            scanned_file: A :class:`~focus_feed.scanner.ScannedFile`
                 instance describing the file to process.
             force: When ``True``, all processing steps are re-run even if
                 existing step maps show ``"complete"`` status. When ``None``
@@ -620,7 +620,7 @@ class Producer:
         # writing an "in_progress" status that would never complete.
         config = get_config()
         if config.transcription_device == "cuda":
-            from local_feed_generator.services.transcriber import check_cuda_available
+            from focus_feed.services.transcriber import check_cuda_available
 
             if not check_cuda_available():
                 raise RuntimeError(CUDA_ERROR_MESSAGE)

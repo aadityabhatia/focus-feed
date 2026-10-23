@@ -17,10 +17,11 @@ import json
 from pathlib import Path
 from unittest import mock
 
-from local_feed_generator.errors import ProcessingError
-from local_feed_generator.producer import Producer
-from local_feed_generator.scanner import ScannedFile
 import pytest
+
+from focus_feed.errors import ProcessingError
+from focus_feed.producer import Producer
+from focus_feed.scanner import ScannedFile
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -50,7 +51,7 @@ def _set_valid_env(monkeypatch):
     monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "")
     monkeypatch.setenv("TRANSCRIPTION_API_KEY", "")
     monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "")
-    import local_feed_generator.config as config_module
+    import focus_feed.config as config_module
 
     config_module._config_instance = None
 
@@ -62,11 +63,11 @@ def valid_env(monkeypatch):
     # Mock CUDA availability check so tests that mock the Transcriber can
     # proceed without requiring an actual CUDA installation.
     monkeypatch.setattr(
-        "local_feed_generator.services.transcriber.check_cuda_available",
+        "focus_feed.services.transcriber.check_cuda_available",
         lambda: True,
     )
     yield
-    import local_feed_generator.config as config_module
+    import focus_feed.config as config_module
 
     config_module._config_instance = None
 
@@ -190,7 +191,7 @@ class TestProducerInit:
 
     def test_init_with_scanner(self, valid_env):
         """Producer should accept a pre-configured Scanner."""
-        from local_feed_generator.scanner import Scanner
+        from focus_feed.scanner import Scanner
 
         scanner = Scanner(data_dir="/custom/data")
         p = Producer(scanner=scanner)
@@ -334,7 +335,7 @@ class TestProcessFileMP4:
         }
 
         with mock.patch(
-            "local_feed_generator.producer.get_audio_metadata",
+            "focus_feed.producer.get_audio_metadata",
             return_value=audio_meta,
         ):
             metadata = producer.process_file(scanned)
@@ -935,7 +936,7 @@ class TestProducerWithRealExtractors:
         )
 
         # Use real extractor
-        from local_feed_generator.services.extractors import PDFExtractor
+        from focus_feed.services.extractors import PDFExtractor
 
         producer.pdf_extractor = PDFExtractor()
 
@@ -964,7 +965,7 @@ class TestProducerWithRealExtractors:
         )
 
         # Use real extractor
-        from local_feed_generator.services.extractors import HTMLExtractor
+        from focus_feed.services.extractors import HTMLExtractor
 
         producer.html_extractor = HTMLExtractor()
 
@@ -994,7 +995,7 @@ class TestProducerWithRealExtractors:
         )
 
         # Use real extractor
-        from local_feed_generator.services.extractors import PDFExtractor
+        from focus_feed.services.extractors import PDFExtractor
 
         producer.pdf_extractor = PDFExtractor()
 
@@ -1050,12 +1051,12 @@ class TestIntermediateStateSaving:
         transcription_model should be the remote model name."""
         _set_valid_env(monkeypatch)
         monkeypatch.setattr(
-            "local_feed_generator.services.transcriber.check_cuda_available",
+            "focus_feed.services.transcriber.check_cuda_available",
             lambda: True,
         )
         monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "https://whisper.example.com/v1")
         monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "whisper-1")
-        import local_feed_generator.config as config_module
+        import focus_feed.config as config_module
 
         config_module._config_instance = None
 
@@ -1095,12 +1096,12 @@ class TestIntermediateStateSaving:
         transcription model should be 'remote'."""
         _set_valid_env(monkeypatch)
         monkeypatch.setattr(
-            "local_feed_generator.services.transcriber.check_cuda_available",
+            "focus_feed.services.transcriber.check_cuda_available",
             lambda: True,
         )
         monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "https://whisper.example.com/v1")
         monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "")
-        import local_feed_generator.config as config_module
+        import focus_feed.config as config_module
 
         config_module._config_instance = None
 
@@ -1710,7 +1711,7 @@ class TestMP4AudioMetadata:
         }
 
         with mock.patch(
-            "local_feed_generator.producer.get_audio_metadata",
+            "focus_feed.producer.get_audio_metadata",
             return_value=audio_meta,
         ):
             metadata = producer.process_file(scanned)
@@ -1740,7 +1741,7 @@ class TestMP4AudioMetadata:
         }
 
         with mock.patch(
-            "local_feed_generator.producer.get_audio_metadata",
+            "focus_feed.producer.get_audio_metadata",
             return_value=audio_meta,
         ):
             metadata = producer.process_file(scanned)
@@ -1764,7 +1765,7 @@ class TestMP4AudioMetadata:
         )
 
         with mock.patch(
-            "local_feed_generator.producer.get_audio_metadata",
+            "focus_feed.producer.get_audio_metadata",
             return_value=None,
         ):
             metadata = producer.process_file(scanned)
@@ -1795,7 +1796,7 @@ class TestMP4AudioMetadata:
         }
 
         with mock.patch(
-            "local_feed_generator.producer.get_audio_metadata",
+            "focus_feed.producer.get_audio_metadata",
             return_value=audio_meta,
         ):
             producer.process_file(scanned)
@@ -1824,7 +1825,7 @@ class TestMP4AudioMetadata:
         }
 
         with mock.patch(
-            "local_feed_generator.producer.get_audio_metadata",
+            "focus_feed.producer.get_audio_metadata",
             return_value=audio_meta,
         ):
             metadata = producer.process_file(scanned)
@@ -1853,7 +1854,7 @@ class TestMP4AudioMetadata:
         }
 
         with mock.patch(
-            "local_feed_generator.producer.get_audio_metadata",
+            "focus_feed.producer.get_audio_metadata",
             return_value=audio_meta,
         ):
             metadata = producer.process_file(scanned)
@@ -1884,7 +1885,7 @@ class TestMP4AudioMetadata:
         }
 
         with mock.patch(
-            "local_feed_generator.producer.get_audio_metadata",
+            "focus_feed.producer.get_audio_metadata",
             return_value=audio_meta,
         ):
             metadata = producer.process_file(scanned)
@@ -1905,7 +1906,7 @@ class TestMP4AudioMetadata:
         )
 
         with mock.patch(
-            "local_feed_generator.producer.get_audio_metadata",
+            "focus_feed.producer.get_audio_metadata",
             return_value={"type": None, "duration": 0.0, "creation_time": None, "bit_rate": None},
         ) as mock_get_meta:
             producer.process_file(scanned)

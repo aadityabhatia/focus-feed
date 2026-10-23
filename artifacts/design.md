@@ -1,6 +1,6 @@
-# Local Feed Generator - Design
+# Focus Feed - Design
 
-**Runner:** All commands run via `uv run local-feed-generator <command>` from project root.
+**Runner:** All commands run via `uv run focus-feed <command>` from project root.
 
 ## 1. Overview
 Standalone app that processes MP4, PDF, HTML files and generates private RSS feeds for personal consumption. Local-first by default; remote transcription optional.
@@ -37,7 +37,7 @@ Standalone app that processes MP4, PDF, HTML files and generates private RSS fee
 ## 3. Interfaces & Contracts
 
 **CLI**
-`uv run local-feed-generator <process|watch|feeds|validate|transcribe|summarize|extract|title|create-feed|cleanup>`
+`uv run focus-feed <process|watch|feeds|validate|transcribe|summarize|extract|title|create-feed|cleanup>`
 Flags: `--config-file`, `--force`, `--dry-run`
 
 **Environment**
@@ -100,7 +100,7 @@ Control chars → auto remove
 Missing feeds → document feed.json requirement
 
 ## 7. Assumptions & Dependencies
-- data directory exists and writable (at workspace root, alongside local-feed-generator/)
+- `data/` directory exists and is writable at the workspace root, alongside `src/` and `tests/`
 - Existing web server serves data directory
 - Python 3.14+ and uv for dependency management
 - LLM endpoint available (can be remote or local)

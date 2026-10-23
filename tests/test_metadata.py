@@ -3,9 +3,10 @@
 import json
 from typing import Any
 
-from local_feed_generator.metadata import Metadata, StepMap
 from pydantic import ValidationError
 import pytest
+
+from focus_feed.metadata import Metadata, StepMap
 
 
 class TestStepMap:

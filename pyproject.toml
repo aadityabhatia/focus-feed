@@ -1,5 +1,5 @@
 [project]
-name = "local-feed-generator"
+name = "focus-feed"
 version = "0.1.0"
 description = "A local RSS/Atom feed generator for audio, HTML and PDF files"
 requires-python = ">=3.14"
@@ -36,10 +36,10 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
-packages = ["local-feed-generator/src/local_feed_generator"]
+packages = ["src/focus_feed"]
 
 [project.scripts]
-local-feed-generator = "local_feed_generator.cli:main"
+focus-feed = "focus_feed.cli:main"
 
 # ---------------------------------------------------------------------------
 # Ruff — linter & formatter
@@ -49,6 +49,7 @@ local-feed-generator = "local_feed_generator.cli:main"
 line-length = 100
 indent-width = 4
 target-version = "py314"
+src = ["src"]
 
 [tool.ruff.lint]
 select = [
@@ -66,10 +67,6 @@ select = [
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = [
-    "S101",  # assert is fine in tests
-    "N806",  # Variable naming (MockProducer, etc. are common in tests)
-]
-"local-feed-generator/tests/**" = [
     "S101",  # assert is fine in tests
     "N806",  # Variable naming (MockProducer, etc. are common in tests)
 ]
@@ -93,6 +90,7 @@ docstring-code-line-length = 88
 
 [tool.mypy]
 python_version = "3.14"
+mypy_path = "src"
 warn_return_any = true
 warn_unused_configs = true
 disallow_untyped_defs = true
@@ -123,7 +121,8 @@ disallow_incomplete_defs = false
 # ---------------------------------------------------------------------------
 
 [tool.pytest.ini_options]
-testpaths = ["local-feed-generator/tests"]
+testpaths = ["tests"]
+pythonpath = ["src"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]

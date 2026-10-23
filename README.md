@@ -1,4 +1,4 @@
-# Local Feed Generator
+# Focus Feed
 
 **Transform your education content into mobile-friendly RSS feeds for podcast and article consumption.**
 
@@ -26,8 +26,8 @@ All processing uses your configured endpoints. Optional local transcription avai
 
 2. **Process your content** (targeting specific files or directories):
    ```bash
-   uv run local-feed-generator process ./videos/lecture.mp4
-   uv run local-feed-generator process ./documents/ ./videos/
+   uv run focus-feed process ./videos/lecture.mp4
+   uv run focus-feed process ./documents/ ./videos/
    ```
 
 3. **Access your feeds** at `{BASE_URL}/index.html`
@@ -35,7 +35,7 @@ All processing uses your configured endpoints. Optional local transcription avai
 ---
 To process all files, pass your data directory:
    ```bash
-   uv run local-feed-generator process ./data
+   uv run focus-feed process ./data
    ```
 
 ---
@@ -101,14 +101,14 @@ TRANSCRIPTION_COMPUTE_TYPE=float16
 
 Process all files at once:
 ```bash
-uv run local-feed-generator process ./data
+uv run focus-feed process ./data
 ```
 
 ### Incremental Mode
 
 Watch for new/updated files:
 ```bash
-uv run local-feed-generator watch ./data
+uv run focus-feed watch ./data
 ```
 
 ---
@@ -136,22 +136,22 @@ Target specific steps or files by passing files and directories as positional ar
 
 ```bash
 # Process a single file
-uv run local-feed-generator process ./videos/lecture.mp4
+uv run focus-feed process ./videos/lecture.mp4
 
 # Force re-transcription of a specific file
-uv run local-feed-generator transcribe ./videos/lecture.mp4 --force
+uv run focus-feed transcribe ./videos/lecture.mp4 --force
 
 # Summarize a PDF
-uv run local-feed-generator summarize ./documents/report.pdf
+uv run focus-feed summarize ./documents/report.pdf
 
 # Process all files in a directory
-uv run local-feed-generator process ./documents/
+uv run focus-feed process ./documents/
 
 # Process multiple files and directories at once
-uv run local-feed-generator process ./videos/lecture.mp4 ./documents/report.pdf ./course1/
+uv run focus-feed process ./videos/lecture.mp4 ./documents/report.pdf ./course1/
 
 # See what would be transcribed
-uv run local-feed-generator transcribe --dry-run
+uv run focus-feed transcribe --dry-run
 ```
 
 ---

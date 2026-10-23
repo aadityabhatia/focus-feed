@@ -12,15 +12,15 @@ from pathlib import Path
 from typing import Any, Literal, cast
 from unittest import mock
 
-from local_feed_generator.config import get_config, reload_config
-from local_feed_generator.errors import (
+from focus_feed.config import get_config, reload_config
+from focus_feed.errors import (
     SummarizationError,
     TranscriptionError,
     create_error_metadata,
 )
-from local_feed_generator.metadata import Metadata, StepMap
-from local_feed_generator.scanner import Scanner
-from local_feed_generator.services.extractors import (
+from focus_feed.metadata import Metadata, StepMap
+from focus_feed.scanner import Scanner
+from focus_feed.services.extractors import (
     HTMLExtractor,
     PDFExtractor,
     _clean_title,
@@ -110,7 +110,7 @@ class TestConfigMetadataIntegration:
         env = self._get_valid_env()
         with mock.patch.dict(os.environ, env, clear=False):
             # Reset singleton
-            import local_feed_generator.config as config_module
+            import focus_feed.config as config_module
 
             config_module._config_instance = None
 
@@ -160,7 +160,7 @@ class TestConfigMetadataIntegration:
         env1 = {**self._get_valid_env(), "BASE_URL": "https://first.example.com"}
         env2 = {**self._get_valid_env(), "BASE_URL": "https://second.example.com"}
 
-        import local_feed_generator.config as config_module
+        import focus_feed.config as config_module
 
         config_module._config_instance = None
 

@@ -1,4 +1,4 @@
-"""Metadata model for local-feed-generator JSON metadata files.
+"""Metadata model for Focus Feed JSON metadata files.
 
 This module defines the Metadata Pydantic model that matches the JSON schema
 specified in design doc section 3.3. Each processed source file has a
@@ -108,12 +108,12 @@ from pydantic import (
     model_validator,
 )
 
-from local_feed_generator.errors import log_error
+from focus_feed.errors import log_error
 
 # Step status values.
 _STEP_STATUS_COMPLETE = "complete"
 
-_logger = logging.getLogger("local_feed_generator")
+_logger = logging.getLogger("focus_feed")
 
 # Required keys for the title dict (design doc section 3.3).
 _TITLE_DICT_KEYS: frozenset[str] = frozenset({"filename", "extracted", "generated"})

@@ -1,4 +1,4 @@
-"""Summarization service for local-feed-generator.
+"""Summarization service for Focus Feed.
 
 Provides LLM-based summarization of audio transcripts and title generation
 for content that lacks source metadata. Uses an OpenAI-compatible client
@@ -35,10 +35,10 @@ from openai import (
     UnprocessableEntityError,
 )
 
-from local_feed_generator.config import Settings, get_config
-from local_feed_generator.errors import SummarizationError, log_error
+from focus_feed.config import Settings, get_config
+from focus_feed.errors import SummarizationError, log_error
 
-_logger = logging.getLogger("local_feed_generator")
+_logger = logging.getLogger("focus_feed")
 
 
 class LLmResponse(NamedTuple):

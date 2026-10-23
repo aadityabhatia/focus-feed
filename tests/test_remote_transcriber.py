@@ -17,9 +17,6 @@ import json
 from pathlib import Path
 from unittest import mock
 
-from local_feed_generator.config import Settings
-from local_feed_generator.errors import TranscriptionError
-from local_feed_generator.services.remote_transcriber import RemoteTranscriber
 from openai import (
     APIConnectionError,
     AuthenticationError,
@@ -28,6 +25,10 @@ from openai import (
     RateLimitError,
 )
 import pytest
+
+from focus_feed.config import Settings
+from focus_feed.errors import TranscriptionError
+from focus_feed.services.remote_transcriber import RemoteTranscriber
 
 # ---------------------------------------------------------------------------
 # Fixtures

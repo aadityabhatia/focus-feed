@@ -1,4 +1,4 @@
-"""CLI for local-feed-generator.
+"""CLI for Focus Feed.
 
 Provides a Click-based command-line interface with granular subcommands for
 each step of the processing pipeline:
@@ -16,9 +16,9 @@ each step of the processing pipeline:
 
 Files and directories are passed as positional arguments, e.g.::
 
-    uv run local-feed-generator process ./data
-    uv run local-feed-generator transcribe videos/lecture.mp4 --force
-    uv run local-feed-generator watch ./data
+    uv run focus-feed process ./data
+    uv run focus-feed transcribe videos/lecture.mp4 --force
+    uv run focus-feed watch ./data
 """
 
 from __future__ import annotations
@@ -37,12 +37,12 @@ from typing import Any
 import click
 from watchdog.events import FileSystemEventHandler
 
-from local_feed_generator.config import reload_config
-from local_feed_generator.errors import log_error
-from local_feed_generator.feeds import _is_orphaned_json
-from local_feed_generator.metadata import Metadata, StepMap
-from local_feed_generator.producer import _check_reflection_md
-from local_feed_generator.scanner import (
+from focus_feed.config import reload_config
+from focus_feed.errors import log_error
+from focus_feed.feeds import _is_orphaned_json
+from focus_feed.metadata import Metadata, StepMap
+from focus_feed.producer import _check_reflection_md
+from focus_feed.scanner import (
     _IGNORE_FILENAMES,
     _SPECIAL_CHAR_PATTERN,
     SUPPORTED_EXTENSIONS,
@@ -50,9 +50,9 @@ from local_feed_generator.scanner import (
     Scanner,
     _is_dict_feed_eligible,
 )
-from local_feed_generator.services.extractors import _clean_title
+from focus_feed.services.extractors import _clean_title
 
-_logger = logging.getLogger("local_feed_generator")
+_logger = logging.getLogger("focus_feed")
 
 
 # ---------------------------------------------------------------------------
@@ -77,8 +77,8 @@ def _configure_logging_level(log_level: str) -> None:
 
     Maps a string such as ``"DEBUG"`` or ``"INFO"`` to the corresponding
     :mod:`logging` constant and applies it to both the main application
-    logger (``local_feed_generator``) and the dedicated error-log logger
-    (``local_feed_generator.error_log``).
+    logger (``focus_feed``) and the dedicated error-log logger
+    (``focus_feed.error_log``).
 
     This is called at application startup so that the level chosen via the
     ``--log-level`` CLI option or ``LOG_LEVEL`` environment variable takes
@@ -96,7 +96,7 @@ def _configure_logging_level(log_level: str) -> None:
 
     # Error log logger always stays at ERROR level to ensure errors are
     # always written to error.log regardless of the user's log level.
-    error_log_logger = logging.getLogger("local_feed_generator.error_log")
+    error_log_logger = logging.getLogger("focus_feed.error_log")
     error_log_logger.setLevel(logging.ERROR)
 
 
@@ -281,14 +281,14 @@ def _check_special_characters(filepath: Path) -> list[str]:
 def _generate_feeds(data_dir_path: Path) -> dict[str, int]:
     """Generate both feeds and return item counts.
 
-    Creates a :class:`~local_feed_generator.feeds.FeedGenerator`, calls
+    Creates a :class:`~focus_feed.feeds.FeedGenerator`, calls
     ``generate_all_feeds()``, then reads back the JSON metadata files to
     produce a summary of how many items ended up in each feed.
 
     Returns:
         A dict with ``"podcast"`` and ``"articles"`` keys.
     """
-    from local_feed_generator.feeds import FeedGenerator
+    from focus_feed.feeds import FeedGenerator
 
     generator = FeedGenerator(data_dir=str(data_dir_path))
     generator.generate_all_feeds()
@@ -780,7 +780,7 @@ def _dry_run_option(func: Any) -> Any:
 
 
 @click.group()
-@click.version_option()
+@click.version_option(package_name="focus-feed")
 @click.option(
     "--log-level",
     "-l",
@@ -791,7 +791,7 @@ def _dry_run_option(func: Any) -> Any:
     "Can also be set via the LOG_LEVEL environment variable.",
 )
 def app(log_level: str | None) -> None:
-    """Local Feed Generator — Privacy-first RSS/Atom feed generator.
+    """Focus Feed — Privacy-first RSS/Atom feed generator.
 
     Processes PDF, HTML, and MP4 files from the given paths and generates
     RSS feeds for personal consumption through mobile applications.
@@ -864,7 +864,7 @@ def process(
     _logger.info("Found %d file(s) to process", len(files))
 
     # --- Process --------------------------------------------------------
-    from local_feed_generator.producer import Producer
+    from focus_feed.producer import Producer
 
     producer = Producer(force=force)
 
@@ -1064,7 +1064,7 @@ class _WatchHandler(FileSystemEventHandler):
             click.echo(f"Processing {scanned.filepath}...")
             self.producer.process_file(scanned)
 
-            from local_feed_generator.feeds import FeedGenerator
+            from focus_feed.feeds import FeedGenerator
 
             generator = FeedGenerator(data_dir=str(self.data_dir))
             generator.generate_all_feeds()
@@ -1104,7 +1104,7 @@ class _WatchHandler(FileSystemEventHandler):
 
         This is a fallback for file systems (NFS, network drives, etc.)
         that may not reliably trigger watchdog events.  Uses the
-        :class:`~local_feed_generator.scanner.Scanner` to find files that
+        :class:`~focus_feed.scanner.Scanner` to find files that
         need processing based on JSON metadata freshness (missing or
         outdated JSON, incomplete step statuses).  The scanner already
         handles duplicate detection via file modification times, so files
@@ -1202,7 +1202,7 @@ def watch(
             for f in scanned
         ]
 
-    from local_feed_generator.producer import Producer
+    from focus_feed.producer import Producer
 
     if files:
         click.echo(f"Initial scan: found {len(files)} file(s) to process.")
@@ -1326,7 +1326,7 @@ def feeds(
     if not feed_json_files:
         _logger.warning("No feed.json found at %s; feeds not generated", str(data_dir_path))
 
-    from local_feed_generator.feeds import FeedGenerator
+    from focus_feed.feeds import FeedGenerator
 
     generator = FeedGenerator(data_dir=str(data_dir_path))
 
@@ -1482,8 +1482,8 @@ def transcribe(
     _load_config(config_file)
     _logger.info("Starting transcribe command")
 
-    from local_feed_generator.config import get_config
-    from local_feed_generator.services.transcriber import Transcriber
+    from focus_feed.config import get_config
+    from focus_feed.services.transcriber import Transcriber
 
     resolved_paths = _resolve_paths(paths)
     data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
@@ -1509,7 +1509,7 @@ def transcribe(
 
     # Pre-emptive CUDA availability check: surface a clear, actionable error
     # before attempting to transcribe any files.
-    from local_feed_generator.services.transcriber import CUDA_ERROR_MESSAGE, check_cuda_available
+    from focus_feed.services.transcriber import CUDA_ERROR_MESSAGE, check_cuda_available
 
     config = get_config()
     if config.transcription_device == "cuda" and not check_cuda_available():
@@ -1609,8 +1609,8 @@ def summarize(
     _load_config(config_file)
     _logger.info("Starting summarize command")
 
-    from local_feed_generator.config import get_config
-    from local_feed_generator.services.summarizer import Summarizer
+    from focus_feed.config import get_config
+    from focus_feed.services.summarizer import Summarizer
 
     resolved_paths = _resolve_paths(paths)
     data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
@@ -1736,7 +1736,7 @@ def extract(
     _load_config(config_file)
     _logger.info("Starting extract command")
 
-    from local_feed_generator.services.extractors import HTMLExtractor, PDFExtractor
+    from focus_feed.services.extractors import HTMLExtractor, PDFExtractor
 
     resolved_paths = _resolve_paths(paths)
     data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
@@ -1863,8 +1863,8 @@ def title(
     _load_config(config_file)
     _logger.info("Starting title command")
 
-    from local_feed_generator.config import get_config
-    from local_feed_generator.services.summarizer import Summarizer
+    from focus_feed.config import get_config
+    from focus_feed.services.summarizer import Summarizer
 
     resolved_paths = _resolve_paths(paths)
     data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
@@ -2022,8 +2022,8 @@ def _finalize_incomplete_json(
     Returns:
         A tuple of ``(success_count, error_count)``.
     """
-    from local_feed_generator.config import get_config
-    from local_feed_generator.services.summarizer import Summarizer
+    from focus_feed.config import get_config
+    from focus_feed.services.summarizer import Summarizer
 
     if paths is not None:
         # Filter to only source files within the given paths.
@@ -2382,7 +2382,7 @@ def cleanup(config_file: str | None, paths: tuple[str, ...]) -> None:
 
 
 def main() -> None:
-    """Entry point for the ``local-feed-generator`` CLI."""
+    """Entry point for the ``focus-feed`` CLI."""
     app()
 
 

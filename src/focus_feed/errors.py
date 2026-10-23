@@ -1,4 +1,4 @@
-"""Error handling utilities for local-feed-generator.
+"""Error handling utilities for Focus Feed.
 
 Provides custom exception classes for the processing pipeline, a helper to
 create error metadata dictionaries matching the JSON schema (design doc
@@ -27,11 +27,11 @@ import click
 # Module-level loggers
 # ---------------------------------------------------------------------------
 
-_logger = logging.getLogger("local_feed_generator")
+_logger = logging.getLogger("focus_feed")
 
 # Dedicated logger for error.log file handler.  Uses propagate=False so that
 # records do not also appear on stderr via the parent logger.
-_error_log_logger = logging.getLogger("local_feed_generator.error_log")
+_error_log_logger = logging.getLogger("focus_feed.error_log")
 _error_log_logger.propagate = False
 _error_log_logger.setLevel(logging.ERROR)
 _error_log_logger.addHandler(logging.NullHandler())

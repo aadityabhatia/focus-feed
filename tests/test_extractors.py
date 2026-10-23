@@ -7,15 +7,16 @@ import subprocess
 from typing import Any
 from unittest import mock
 
-from local_feed_generator.services.extractors import (
+from pypdf import PdfWriter
+import pytest
+
+from focus_feed.services.extractors import (
     HTMLExtractor,
     PDFExtractor,
     _clean_title,
     _sanitize_content,
     get_audio_metadata,
 )
-from pypdf import PdfWriter
-import pytest
 
 # ---------------------------------------------------------------------------
 # Helper functions for creating test fixtures
@@ -900,7 +901,7 @@ class TestMetadataCompatibility:
 
     def test_pdf_result_compatible_with_metadata(self, tmp_path):
         """PDF extractor output should be usable to create a Metadata object."""
-        from local_feed_generator.metadata import Metadata, StepMap
+        from focus_feed.metadata import Metadata, StepMap
 
         pdf_path = tmp_path / "doc.pdf"
         create_test_pdf(pdf_path, title="Test Doc", author="Author Name")
@@ -939,7 +940,7 @@ class TestMetadataCompatibility:
 
     def test_html_result_compatible_with_metadata(self, tmp_path):
         """HTML extractor output should be usable to create a Metadata object."""
-        from local_feed_generator.metadata import Metadata, StepMap
+        from focus_feed.metadata import Metadata, StepMap
 
         html_path = tmp_path / "page.html"
         create_test_html(

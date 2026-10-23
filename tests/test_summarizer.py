@@ -3,9 +3,6 @@
 import os
 from unittest import mock
 
-from local_feed_generator.config import Settings
-from local_feed_generator.errors import SummarizationError
-from local_feed_generator.services.summarizer import Summarizer
 from openai import (
     APIConnectionError,
     APITimeoutError,
@@ -18,6 +15,10 @@ from openai import (
     RateLimitError,
 )
 import pytest
+
+from focus_feed.config import Settings
+from focus_feed.errors import SummarizationError
+from focus_feed.services.summarizer import Summarizer
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -98,7 +99,7 @@ class TestSummarizerInit:
         }
         with mock.patch.dict(os.environ, env, clear=False):
             # Reset the singleton
-            import local_feed_generator.config as config_module
+            import focus_feed.config as config_module
 
             config_module._config_instance = None
 
@@ -495,7 +496,7 @@ class TestRetryLogic:
         ]
 
         with mock.patch("time.sleep"):
-            with caplog.at_level("DEBUG", logger="local_feed_generator"):
+            with caplog.at_level("DEBUG", logger="focus_feed"):
                 summarizer.summarize("Test transcript")
 
             assert any("retrying" in record.message.lower() for record in caplog.records)
@@ -629,7 +630,7 @@ class TestTokenTracking:
 
     def test_chat_completion_returns_llm_response(self, summarizer, mock_response):
         """_chat_completion() should return an LLmResponse NamedTuple."""
-        from local_feed_generator.services.summarizer import LLmResponse
+        from focus_feed.services.summarizer import LLmResponse
 
         summarizer._client.chat.completions.create.return_value = mock_response
         result = summarizer._chat_completion(
@@ -781,7 +782,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_on_non_retryable_error(self, summarizer):
         """log_error should be called for non-retryable errors."""
-        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
+        with mock.patch("focus_feed.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = AuthenticationError(
                 message="Invalid API key",
                 response=mock.MagicMock(status_code=401),
@@ -799,7 +800,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_on_final_failure(self, summarizer):
         """log_error should be called when all retries are exhausted."""
-        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
+        with mock.patch("focus_feed.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = APIConnectionError(
                 message="Connection refused", request=mock.MagicMock()
             )
@@ -818,7 +819,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_for_retryable_error_during_retry(self, summarizer):
         """log_error should be called for connection errors during retries."""
-        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
+        with mock.patch("focus_feed.services.summarizer.log_error") as mock_log_error:
             # Set up the mock response for successful retry
             response = mock.MagicMock()
             response.choices[0].message.content = "Summary"
@@ -840,7 +841,7 @@ class TestSummarizerLogError:
 
     def test_log_error_not_called_for_rate_limit_during_retry(self, summarizer):
         """log_error should NOT be called for rate limit errors during retries."""
-        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
+        with mock.patch("focus_feed.services.summarizer.log_error") as mock_log_error:
             # Set up the mock response for successful retry
             response = mock.MagicMock()
             response.choices[0].message.content = "Summary"
@@ -862,7 +863,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_for_unexpected_error(self, summarizer):
         """log_error should be called for unexpected errors."""
-        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
+        with mock.patch("focus_feed.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = ValueError("Unexpected")
             with pytest.raises(SummarizationError):
                 summarizer.summarize("Test transcript")
@@ -876,7 +877,7 @@ class TestSummarizerLogError:
 
     def test_log_error_stage_is_title_generation(self, summarizer):
         """log_error should use stage='title_generation' for generate_title."""
-        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
+        with mock.patch("focus_feed.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = AuthenticationError(
                 message="Invalid API key",
                 response=mock.MagicMock(status_code=401),
@@ -891,7 +892,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_with_filepath(self, summarizer):
         """log_error should include filepath when passed to summarize()."""
-        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
+        with mock.patch("focus_feed.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = AuthenticationError(
                 message="Invalid API key",
                 response=mock.MagicMock(status_code=401),
@@ -906,7 +907,7 @@ class TestSummarizerLogError:
 
     def test_log_error_called_with_filepath_for_generate_title(self, summarizer):
         """log_error should include filepath when passed to generate_title()."""
-        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
+        with mock.patch("focus_feed.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = AuthenticationError(
                 message="Invalid API key",
                 response=mock.MagicMock(status_code=401),
@@ -944,7 +945,7 @@ class TestFinalFailureErrorTypes:
         fixture in conftest.py also handles this, but we add it here for
         explicitness and self-containment.
         """
-        from local_feed_generator.errors import _configure_error_log
+        from focus_feed.errors import _configure_error_log
 
         _configure_error_log(data_dir=tmp_path, force=True)
         yield
@@ -1048,7 +1049,7 @@ class TestFinalFailureErrorTypes:
 
     def test_rate_limit_error_print_stdout_is_false(self, summarizer):
         """RateLimitError on final failure should call log_error with print_stdout=False."""
-        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
+        with mock.patch("focus_feed.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = RateLimitError(
                 message="Rate limited",
                 response=mock.MagicMock(status_code=429),
@@ -1068,7 +1069,7 @@ class TestFinalFailureErrorTypes:
 
     def test_internal_server_error_print_stdout_is_false(self, summarizer):
         """InternalServerError on final failure should call log_error with print_stdout=False."""
-        with mock.patch("local_feed_generator.services.summarizer.log_error") as mock_log_error:
+        with mock.patch("focus_feed.services.summarizer.log_error") as mock_log_error:
             summarizer._client.chat.completions.create.side_effect = InternalServerError(
                 message="Internal server error",
                 response=mock.MagicMock(status_code=500),

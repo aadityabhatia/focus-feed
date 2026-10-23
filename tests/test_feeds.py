@@ -18,15 +18,16 @@ from pathlib import Path
 from typing import Any
 from unittest import mock
 
-from local_feed_generator.feeds import (
+import pytest
+
+from focus_feed.feeds import (
     FeedGenerator,
     FeedValidationResult,
     _get_summarization_attribution,
     _markdown_to_html,
     validate_feed,
 )
-from local_feed_generator.metadata import Metadata, StepMap
-import pytest
+from focus_feed.metadata import Metadata, StepMap
 
 # ---------------------------------------------------------------------------
 # Helper functions
@@ -221,7 +222,7 @@ class TestFeedGeneratorConstruction:
     def test_init_nonexistent_data_dir_logs_critical(self, tmp_path, caplog):
         """FeedGenerator should log CRITICAL when data_dir does not exist."""
         nonexistent = tmp_path / "nonexistent"
-        with caplog.at_level(logging.CRITICAL, logger="local_feed_generator"):
+        with caplog.at_level(logging.CRITICAL, logger="focus_feed"):
             FeedGenerator(data_dir=nonexistent, base_url="https://example.com")
         critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
         assert len(critical_records) == 1
@@ -1919,7 +1920,7 @@ class TestMarkdownToHtml:
         # Mock get_config to ensure no attribution is added (deterministic test).
         # Without this, other tests' config mocks can leak and add an attribution
         # paragraph, which would prevent <p> tag stripping for single paragraphs.
-        with mock.patch("local_feed_generator.feeds.get_config", side_effect=Exception):
+        with mock.patch("focus_feed.feeds.get_config", side_effect=Exception):
             fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
             fg.generate_articles_feed()
 
@@ -3657,7 +3658,7 @@ class TestSummarizationAttribution:
     @pytest.fixture
     def mock_config(self):
         """Mock get_config to return a config with llm_model set."""
-        with mock.patch("local_feed_generator.feeds.get_config") as mock_get_config:
+        with mock.patch("focus_feed.feeds.get_config") as mock_get_config:
             mock_config_obj = mock.MagicMock()
             mock_config_obj.llm_model = "test-llm-model"
             mock_get_config.return_value = mock_config_obj
@@ -3823,7 +3824,7 @@ class TestSummarizationAttribution:
     def test_returns_empty_when_config_unavailable(self):
         """Should return empty string when get_config() raises an exception."""
         with mock.patch(
-            "local_feed_generator.feeds.get_config",
+            "focus_feed.feeds.get_config",
             side_effect=Exception("Config not loaded"),
         ):
             metadata = make_metadata(
@@ -3929,7 +3930,7 @@ class TestAttributionInPodcastFeed:
     @pytest.fixture
     def mock_config(self):
         """Mock get_config to return a config with llm_model set."""
-        with mock.patch("local_feed_generator.feeds.get_config") as mock_get_config:
+        with mock.patch("focus_feed.feeds.get_config") as mock_get_config:
             mock_config_obj = mock.MagicMock()
             mock_config_obj.llm_model = "podcast-llm-model"
             mock_get_config.return_value = mock_config_obj
@@ -3994,7 +3995,7 @@ class TestAttributionInPodcastFeed:
     def test_podcast_feed_no_attribution_when_config_unavailable(self, tmp_path):
         """Podcast feed should still work when config is unavailable (no attribution)."""
         with mock.patch(
-            "local_feed_generator.feeds.get_config",
+            "focus_feed.feeds.get_config",
             side_effect=Exception("Config not loaded"),
         ):
             metadata = make_metadata(
@@ -4029,7 +4030,7 @@ class TestAttributionInArticlesFeed:
     @pytest.fixture
     def mock_config(self):
         """Mock get_config to return a config with llm_model set."""
-        with mock.patch("local_feed_generator.feeds.get_config") as mock_get_config:
+        with mock.patch("focus_feed.feeds.get_config") as mock_get_config:
             mock_config_obj = mock.MagicMock()
             mock_config_obj.llm_model = "articles-llm-model"
             mock_get_config.return_value = mock_config_obj
@@ -4122,7 +4123,7 @@ class TestAttributionInArticlesFeed:
     def test_articles_feed_no_attribution_when_config_unavailable(self, tmp_path):
         """Articles feed should work without attribution when config unavailable."""
         with mock.patch(
-            "local_feed_generator.feeds.get_config",
+            "focus_feed.feeds.get_config",
             side_effect=Exception("Config not loaded"),
         ):
             metadata = make_metadata(

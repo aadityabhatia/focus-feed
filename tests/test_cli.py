@@ -22,9 +22,10 @@ from unittest import mock
 import click
 from click.testing import CliRunner
 from dotenv import load_dotenv
-from local_feed_generator.cli import app, main
-from local_feed_generator.scanner import ScannedFile
 import pytest
+
+from focus_feed.cli import app, main
+from focus_feed.scanner import ScannedFile
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -68,7 +69,7 @@ def _set_valid_env(monkeypatch):
     monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "")
     monkeypatch.setenv("TRANSCRIPTION_API_KEY", "")
     monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "")
-    import local_feed_generator.config as config_module
+    import focus_feed.config as config_module
 
     config_module._config_instance = None
 
@@ -81,11 +82,11 @@ def valid_env(monkeypatch):
     # invoke the transcribe CLI command can proceed without an actual
     # CUDA installation.
     monkeypatch.setattr(
-        "local_feed_generator.services.transcriber.check_cuda_available",
+        "focus_feed.services.transcriber.check_cuda_available",
         lambda: True,
     )
     yield
-    import local_feed_generator.config as config_module
+    import focus_feed.config as config_module
 
     config_module._config_instance = None
 
@@ -99,7 +100,7 @@ def _restore_env():
     """
     yield
     # Reset the config singleton
-    import local_feed_generator.config as config_module
+    import focus_feed.config as config_module
 
     config_module._config_instance = None
 
@@ -135,10 +136,10 @@ def watch_mocks():
         if gen_return is None:
             gen_return = {"podcast": 0, "articles": 0}
         with (
-            mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen,
-            mock.patch("local_feed_generator.producer.Producer") as MockProducer,
+            mock.patch("focus_feed.cli._generate_feeds") as mock_gen,
+            mock.patch("focus_feed.producer.Producer") as MockProducer,
             mock.patch("watchdog.observers.Observer") as MockObserver,
-            mock.patch("local_feed_generator.cli.time.sleep") as mock_sleep,
+            mock.patch("focus_feed.cli.time.sleep") as mock_sleep,
         ):
             mock_gen.return_value = gen_return
             if producer_process_return is not None:
@@ -274,7 +275,7 @@ class TestCliFramework:
         """The CLI should display help text."""
         result = runner.invoke(app, ["--help"])
         assert result.exit_code == 0
-        assert "Local Feed Generator" in result.output
+        assert "Focus Feed" in result.output
 
     def test_help_text_lists_log_level_option(self, runner):
         """The --help output should mention --log-level."""
@@ -318,18 +319,18 @@ class TestCliFramework:
 
     def test_configure_logging_level_sets_debug(self):
         """_configure_logging_level should set the logger level to DEBUG."""
-        from local_feed_generator.cli import _configure_logging_level
+        from focus_feed.cli import _configure_logging_level
 
         _configure_logging_level("DEBUG")
-        _logger = logging.getLogger("local_feed_generator")
+        _logger = logging.getLogger("focus_feed")
         assert _logger.level == logging.DEBUG
 
     def test_configure_logging_level_sets_critical(self):
         """_configure_logging_level should set the logger level to CRITICAL."""
-        from local_feed_generator.cli import _configure_logging_level
+        from focus_feed.cli import _configure_logging_level
 
         _configure_logging_level("CRITICAL")
-        _logger = logging.getLogger("local_feed_generator")
+        _logger = logging.getLogger("focus_feed")
         assert _logger.level == logging.CRITICAL
 
     def test_configure_logging_level_keeps_error_log_at_error(self):
@@ -338,30 +339,30 @@ class TestCliFramework:
         The error log logger must always remain at ERROR level so that errors
         are always written to error.log regardless of the user's log level.
         """
-        from local_feed_generator.cli import _configure_logging_level
+        from focus_feed.cli import _configure_logging_level
 
         _configure_logging_level("WARNING")
-        error_log_logger = logging.getLogger("local_feed_generator.error_log")
+        error_log_logger = logging.getLogger("focus_feed.error_log")
         assert error_log_logger.level == logging.ERROR
 
         _configure_logging_level("CRITICAL")
-        error_log_logger = logging.getLogger("local_feed_generator.error_log")
+        error_log_logger = logging.getLogger("focus_feed.error_log")
         assert error_log_logger.level == logging.ERROR
 
     def test_configure_logging_level_invalid_falls_back_to_info(self):
         """_configure_logging_level should fall back to INFO for unknown levels."""
-        from local_feed_generator.cli import _configure_logging_level
+        from focus_feed.cli import _configure_logging_level
 
         _configure_logging_level("UNKNOWN")
-        _logger = logging.getLogger("local_feed_generator")
+        _logger = logging.getLogger("focus_feed")
         assert _logger.level == logging.INFO
 
     def test_configure_logging_level_case_insensitive(self):
         """_configure_logging_level should handle lowercase input."""
-        from local_feed_generator.cli import _configure_logging_level
+        from focus_feed.cli import _configure_logging_level
 
         _configure_logging_level("debug")
-        _logger = logging.getLogger("local_feed_generator")
+        _logger = logging.getLogger("focus_feed")
         assert _logger.level == logging.DEBUG
 
     def test_process_help(self, runner):
@@ -420,7 +421,7 @@ class TestCliFramework:
         ]
         for key in required_keys:
             monkeypatch.delenv(key, raising=False)
-        import local_feed_generator.config as config_module
+        import focus_feed.config as config_module
 
         config_module._config_instance = None
 
@@ -454,7 +455,7 @@ class TestCliFramework:
         env_file = tmp_path / ".env"
         env_file.write_text(env_content)
 
-        import local_feed_generator.config as config_module
+        import focus_feed.config as config_module
 
         config_module._config_instance = None
 
@@ -465,10 +466,10 @@ class TestCliFramework:
             return real_load_dotenv(env_file, override=False)
 
         with (
-            mock.patch("local_feed_generator.config._logger") as mock_logger,
+            mock.patch("focus_feed.config._logger") as mock_logger,
             mock.patch("dotenv.load_dotenv", side_effect=mock_load_dotenv),
         ):
-            from local_feed_generator.cli import _load_config
+            from focus_feed.cli import _load_config
 
             _load_config(None)
 
@@ -483,7 +484,7 @@ class TestCliFramework:
         When no .env file exists and env vars are not set, the CRITICAL
         warning should still fire.
         """
-        import local_feed_generator.config as config_module
+        import focus_feed.config as config_module
 
         config_module._config_instance = None
 
@@ -494,10 +495,10 @@ class TestCliFramework:
         # Mock load_dotenv to prevent it from finding the project root's
         # .env file via find_dotenv() parent directory search.
         with (
-            mock.patch("local_feed_generator.config._logger") as mock_logger,
+            mock.patch("focus_feed.config._logger") as mock_logger,
             mock.patch("dotenv.load_dotenv"),
         ):
-            from local_feed_generator.cli import _load_config
+            from focus_feed.cli import _load_config
 
             with pytest.raises(click.ClickException):
                 _load_config(None)
@@ -518,6 +519,7 @@ class TestCliFramework:
         """The CLI should support --version."""
         result = runner.invoke(app, ["--version"])
         assert result.exit_code == 0
+        assert "0.1.0" in result.output
 
 
 # ---------------------------------------------------------------------------
@@ -554,7 +556,7 @@ class TestNoPathsRequired:
 
     def test_resolve_paths_raises_on_empty(self):
         """_resolve_paths should raise UsageError for an empty tuple."""
-        from local_feed_generator.cli import _resolve_paths
+        from focus_feed.cli import _resolve_paths
 
         with pytest.raises(
             click.UsageError,
@@ -566,7 +568,7 @@ class TestNoPathsRequired:
         """_resolve_data_dir_from_paths should not silently fall back to CWD."""
         import tempfile
 
-        from local_feed_generator.cli import _resolve_data_dir_from_paths
+        from focus_feed.cli import _resolve_data_dir_from_paths
 
         # With a non-empty list it should still work as before.
         with tempfile.TemporaryDirectory() as d:
@@ -584,7 +586,7 @@ class TestProcessCommand:
 
     def test_process_no_files_to_process(self, runner, valid_env, tmp_data_dir):
         """Process should report no files when directory is empty."""
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
             result = runner.invoke(
                 app,
@@ -597,9 +599,9 @@ class TestProcessCommand:
         """Process should find and report files to process."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+            with mock.patch("focus_feed.producer.Producer") as MockProducer:
                 mock_producer = mock.MagicMock()
                 mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
                 MockProducer.return_value = mock_producer
@@ -618,9 +620,9 @@ class TestProcessCommand:
         """Process should generate feeds after all files are processed."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 1, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+            with mock.patch("focus_feed.producer.Producer") as MockProducer:
                 mock_producer = mock.MagicMock()
                 mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
                 MockProducer.return_value = mock_producer
@@ -638,9 +640,9 @@ class TestProcessCommand:
         """Process should exit with code 0 when all files succeed."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 1}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+            with mock.patch("focus_feed.producer.Producer") as MockProducer:
                 mock_producer = mock.MagicMock()
                 mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
                 MockProducer.return_value = mock_producer
@@ -657,9 +659,9 @@ class TestProcessCommand:
         """Process should exit with code 1 when any file fails."""
         (tmp_data_dir / "bad.mp4").write_bytes(b"bad data")
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+            with mock.patch("focus_feed.producer.Producer") as MockProducer:
                 mock_producer = mock.MagicMock()
                 mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=False)
                 MockProducer.return_value = mock_producer
@@ -678,9 +680,9 @@ class TestProcessCommand:
         (tmp_data_dir / "bad.mp4").write_bytes(b"video data")
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 1}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+            with mock.patch("focus_feed.producer.Producer") as MockProducer:
                 mock_producer = mock.MagicMock()
                 # First call (bad.mp4) returns error, second (doc.pdf) returns success
                 mock_producer.process_file.side_effect = [
@@ -704,9 +706,9 @@ class TestProcessCommand:
         (tmp_data_dir / "processed.mp4.json").write_text(json.dumps(_make_valid_metadata()))
         (tmp_data_dir / "unprocessed.pdf").write_bytes(b"pdf")
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 1}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+            with mock.patch("focus_feed.producer.Producer") as MockProducer:
                 mock_producer = mock.MagicMock()
                 mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
                 MockProducer.return_value = mock_producer
@@ -737,7 +739,7 @@ class TestProcessCommand:
             "PROMPT_TITLE=Test title prompt\n"
         )
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
             result = runner.invoke(
                 app,
@@ -756,9 +758,9 @@ class TestProcessCommand:
         (tmp_data_dir / "file1.mp4").write_bytes(b"video1")
         (tmp_data_dir / "file2.pdf").write_bytes(b"pdf2")
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+            with mock.patch("focus_feed.producer.Producer") as MockProducer:
                 mock_producer = mock.MagicMock()
                 mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
                 MockProducer.return_value = mock_producer
@@ -833,7 +835,7 @@ class TestWatchCommand:
 
     def test_watch_handler_processes_source_file(self, valid_env, tmp_data_dir):
         """Watch handler should process source files on event."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "new.mp4"
         source_file.write_bytes(b"video")
@@ -841,7 +843,7 @@ class TestWatchCommand:
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 1, "articles": 0}
             handler._handle_event(str(source_file))
 
@@ -849,7 +851,7 @@ class TestWatchCommand:
 
     def test_watch_handler_ignores_unsupported_files(self, valid_env, tmp_data_dir):
         """Watch handler should ignore non-source files."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         other_file = tmp_data_dir / "readme.txt"
         other_file.write_text("text")
@@ -863,7 +865,7 @@ class TestWatchCommand:
 
     def test_watch_handler_logs_warning_for_orphaned_json(self, valid_env, tmp_data_dir):
         """Watch handler should log warning for orphaned JSON files."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         # Create a JSON file without a source file
         json_file = tmp_data_dir / "orphan.mp4.json"
@@ -872,7 +874,7 @@ class TestWatchCommand:
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli._logger") as mock_logger:
+        with mock.patch("focus_feed.cli._logger") as mock_logger:
             handler._handle_json_event(json_file)
 
         mock_logger.warning.assert_called_once()
@@ -880,7 +882,7 @@ class TestWatchCommand:
 
     def test_watch_handler_json_with_source_no_warning(self, valid_env, tmp_data_dir):
         """Watch handler should not warn for JSON files with existing source."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "doc.pdf"
         source_file.write_bytes(b"pdf")
@@ -890,14 +892,14 @@ class TestWatchCommand:
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli._logger") as mock_logger:
+        with mock.patch("focus_feed.cli._logger") as mock_logger:
             handler._handle_json_event(json_file)
 
         mock_logger.warning.assert_not_called()
 
     def test_watch_handler_feed_json_no_orphaned_warning(self, valid_env, tmp_data_dir):
         """Watch handler should not warn for feed.json (configuration file)."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         json_file = tmp_data_dir / "feed.json"
         json_file.write_text('{"title": "My Feed"}')
@@ -905,7 +907,7 @@ class TestWatchCommand:
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli._logger") as mock_logger:
+        with mock.patch("focus_feed.cli._logger") as mock_logger:
             handler._handle_json_event(json_file)
 
         mock_logger.warning.assert_not_called()
@@ -924,7 +926,7 @@ class TestWatchCommand:
 
     def test_watch_handler_continues_after_error(self, valid_env, tmp_data_dir):
         """Watch handler should not crash when file processing raises an exception."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "bad.mp4"
         source_file.write_bytes(b"video")
@@ -934,7 +936,7 @@ class TestWatchCommand:
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
         # _handle_event should not raise; it should catch and log the error
-        with mock.patch("local_feed_generator.cli.log_error") as mock_log_error:
+        with mock.patch("focus_feed.cli.log_error") as mock_log_error:
             handler._handle_event(str(source_file))
 
         # Producer was called despite the error (the event was dispatched)
@@ -947,7 +949,7 @@ class TestWatchCommand:
 
     def test_watch_handler_logs_error_on_processing_failure(self, valid_env, tmp_data_dir):
         """Watch handler should log an error when file processing fails."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "bad.mp4"
         source_file.write_bytes(b"video")
@@ -956,7 +958,7 @@ class TestWatchCommand:
         producer.process_file.side_effect = RuntimeError("Processing failed")
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli.log_error") as mock_log_error:
+        with mock.patch("focus_feed.cli.log_error") as mock_log_error:
             handler._handle_event(str(source_file))
 
         mock_log_error.assert_called_once()
@@ -967,7 +969,7 @@ class TestWatchCommand:
 
     def test_watch_handler_error_rate_limiting(self, valid_env, tmp_data_dir):
         """Watch handler should suppress detailed errors after rate limit."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "bad.mp4"
         source_file.write_bytes(b"video")
@@ -980,8 +982,8 @@ class TestWatchCommand:
         handler._error_timestamps = [time.monotonic()] * handler._max_errors_per_minute
 
         with (
-            mock.patch("local_feed_generator.cli.log_error") as mock_log_error,
-            mock.patch("local_feed_generator.cli._logger") as mock_logger,
+            mock.patch("focus_feed.cli.log_error") as mock_log_error,
+            mock.patch("focus_feed.cli._logger") as mock_logger,
         ):
             handler._handle_event(str(source_file))
 
@@ -993,7 +995,7 @@ class TestWatchCommand:
 
     def test_watch_handler_rate_limiting_resets_after_window(self, valid_env, tmp_data_dir):
         """Watch handler should resume detailed logging after the window expires."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "bad.mp4"
         source_file.write_bytes(b"video")
@@ -1005,7 +1007,7 @@ class TestWatchCommand:
         # Pre-fill with old timestamps (outside the 60-second window)
         handler._error_timestamps = [time.monotonic() - 61] * handler._max_errors_per_minute
 
-        with mock.patch("local_feed_generator.cli.log_error") as mock_log_error:
+        with mock.patch("focus_feed.cli.log_error") as mock_log_error:
             handler._handle_event(str(source_file))
 
         # log_error SHOULD have been called because old timestamps were trimmed
@@ -1013,7 +1015,7 @@ class TestWatchCommand:
 
     def test_watch_handler_error_timestamps_trimmed(self, valid_env, tmp_data_dir):
         """Watch handler should trim old error timestamps on each error."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "bad.mp4"
         source_file.write_bytes(b"video")
@@ -1028,7 +1030,7 @@ class TestWatchCommand:
             time.monotonic() - 30,  # recent, should be kept
         ]
 
-        with mock.patch("local_feed_generator.cli.log_error"):
+        with mock.patch("focus_feed.cli.log_error"):
             handler._handle_event(str(source_file))
 
         # The old timestamp should have been trimmed, leaving only 2 entries
@@ -1036,7 +1038,7 @@ class TestWatchCommand:
 
     def test_watch_handler_continues_after_multiple_errors(self, valid_env, tmp_data_dir):
         """Watch handler should continue processing after multiple errors."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file1 = tmp_data_dir / "bad1.mp4"
         source_file1.write_bytes(b"video")
@@ -1047,7 +1049,7 @@ class TestWatchCommand:
         producer.process_file.side_effect = RuntimeError("Processing failed")
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli.log_error"):
+        with mock.patch("focus_feed.cli.log_error"):
             # First error
             handler._handle_event(str(source_file1))
             # Second error - should not crash
@@ -1060,7 +1062,7 @@ class TestWatchCommand:
 
     def test_debounce_rapid_events_same_file_single_processing(self, valid_env, tmp_data_dir):
         """Multiple rapid events for the same file should be debounced into a single processing."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "video.mp4"
         source_file.write_bytes(b"video")
@@ -1068,7 +1070,7 @@ class TestWatchCommand:
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+        with mock.patch("focus_feed.cli.time.monotonic") as mock_monotonic:
             # First event at t=0 — should process
             mock_monotonic.return_value = 0.0
             handler._handle_event(str(source_file))
@@ -1085,7 +1087,7 @@ class TestWatchCommand:
 
     def test_debounce_different_files_independent(self, valid_env, tmp_data_dir):
         """Different files should not be blocked by each other's debounce timers."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         file_a = tmp_data_dir / "file_a.mp4"
         file_a.write_bytes(b"video a")
@@ -1095,7 +1097,7 @@ class TestWatchCommand:
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+        with mock.patch("focus_feed.cli.time.monotonic") as mock_monotonic:
             # Event for file_a at t=0
             mock_monotonic.return_value = 0.0
             handler._handle_event(str(file_a))
@@ -1116,7 +1118,7 @@ class TestWatchCommand:
 
     def test_debounce_allows_reprocessing_after_interval(self, valid_env, tmp_data_dir):
         """A file should be processed again after the debounce interval expires."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "video.mp4"
         source_file.write_bytes(b"video")
@@ -1124,7 +1126,7 @@ class TestWatchCommand:
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+        with mock.patch("focus_feed.cli.time.monotonic") as mock_monotonic:
             # First event at t=0 — should process
             mock_monotonic.return_value = 0.0
             handler._handle_event(str(source_file))
@@ -1135,7 +1137,7 @@ class TestWatchCommand:
 
         assert producer.process_file.call_count == 1
 
-        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+        with mock.patch("focus_feed.cli.time.monotonic") as mock_monotonic:
             # Third event after window at t=2.0 — should process again
             mock_monotonic.return_value = 2.0
             handler._handle_event(str(source_file))
@@ -1144,7 +1146,7 @@ class TestWatchCommand:
 
     def test_debounce_extends_window_on_rapid_events(self, valid_env, tmp_data_dir):
         """Rapid events should keep extending the debounce window."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "video.mp4"
         source_file.write_bytes(b"video")
@@ -1152,7 +1154,7 @@ class TestWatchCommand:
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+        with mock.patch("focus_feed.cli.time.monotonic") as mock_monotonic:
             # First event at t=0 — should process
             mock_monotonic.return_value = 0.0
             handler._handle_event(str(source_file))
@@ -1174,13 +1176,13 @@ class TestWatchCommand:
 
     def test_debounce_default_interval_is_one_second(self, valid_env, tmp_data_dir):
         """The default debounce interval should be 1.0 second."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         assert _WatchHandler._debounce_interval == 1.0
 
     def test_debounce_configurable_interval(self, valid_env, tmp_data_dir):
         """The debounce interval should be configurable via class attribute."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "video.mp4"
         source_file.write_bytes(b"video")
@@ -1192,7 +1194,7 @@ class TestWatchCommand:
         producer = mock.MagicMock()
         handler = FastDebounceHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+        with mock.patch("focus_feed.cli.time.monotonic") as mock_monotonic:
             # First event at t=0 — should process
             mock_monotonic.return_value = 0.0
             handler._handle_event(str(source_file))
@@ -1209,7 +1211,7 @@ class TestWatchCommand:
 
     def test_debounce_does_not_block_json_events(self, valid_env, tmp_data_dir):
         """Debounce should not prevent JSON orphaned-file detection."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         json_file = tmp_data_dir / "orphan.mp4.json"
         json_file.write_text("{}")
@@ -1217,7 +1219,7 @@ class TestWatchCommand:
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+        with mock.patch("focus_feed.cli.time.monotonic") as mock_monotonic:
             # First JSON event at t=0
             mock_monotonic.return_value = 0.0
             handler._handle_event(str(json_file))
@@ -1231,7 +1233,7 @@ class TestWatchCommand:
 
     def test_debounce_first_event_always_processed(self, valid_env, tmp_data_dir):
         """The first event for a file should always be processed (no prior timestamp)."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "video.mp4"
         source_file.write_bytes(b"video")
@@ -1242,7 +1244,7 @@ class TestWatchCommand:
         # _last_event should start empty
         assert handler._last_event == {}
 
-        with mock.patch("local_feed_generator.cli.time.monotonic") as mock_monotonic:
+        with mock.patch("focus_feed.cli.time.monotonic") as mock_monotonic:
             mock_monotonic.return_value = 0.0
             handler._handle_event(str(source_file))
 
@@ -1255,13 +1257,13 @@ class TestWatchCommand:
 
     def test_rescan_interval_default_is_300_seconds(self, valid_env, tmp_data_dir):
         """The default rescan interval should be 300 seconds (5 minutes)."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         assert _WatchHandler._rescan_interval == 300
 
     def test_periodic_rescan_processes_new_files(self, valid_env, tmp_data_dir):
         """_periodic_rescan should process files found by the scanner."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         # Create a source file without JSON metadata
         source_file = tmp_data_dir / "missed.mp4"
@@ -1271,7 +1273,7 @@ class TestWatchCommand:
         producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 1, "articles": 0}
             handler._periodic_rescan()
 
@@ -1284,14 +1286,14 @@ class TestWatchCommand:
 
     def test_periodic_rescan_no_files_logs_info(self, valid_env, tmp_data_dir):
         """_periodic_rescan should handle empty directory gracefully."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.cli._logger") as mock_logger:
+            with mock.patch("focus_feed.cli._logger") as mock_logger:
                 handler._periodic_rescan()
 
         producer.process_file.assert_not_called()
@@ -1301,16 +1303,16 @@ class TestWatchCommand:
 
     def test_periodic_rescan_sets_last_rescan_time(self, valid_env, tmp_data_dir):
         """_periodic_rescan should record the timestamp of the last rescan."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
         assert handler.last_rescan_time is None
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.cli.time") as mock_time:
+            with mock.patch("focus_feed.cli.time") as mock_time:
                 mock_time.time.return_value = 1234567890.0
                 handler._periodic_rescan()
 
@@ -1318,7 +1320,7 @@ class TestWatchCommand:
 
     def test_periodic_rescan_logs_start_and_complete(self, valid_env, tmp_data_dir):
         """_periodic_rescan should log start and completion events."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         # Create a source file so the rescan has work to do
         source_file = tmp_data_dir / "new.mp4"
@@ -1328,9 +1330,9 @@ class TestWatchCommand:
         producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 1, "articles": 0}
-            with mock.patch("local_feed_generator.cli._logger") as mock_logger:
+            with mock.patch("focus_feed.cli._logger") as mock_logger:
                 handler._periodic_rescan()
 
         # Should log start
@@ -1340,7 +1342,7 @@ class TestWatchCommand:
 
     def test_periodic_rescan_continues_after_processing_error(self, valid_env, tmp_data_dir):
         """_periodic_rescan should continue processing after an error."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         source_file = tmp_data_dir / "bad.mp4"
         source_file.write_bytes(b"video")
@@ -1349,9 +1351,9 @@ class TestWatchCommand:
         producer.process_file.side_effect = RuntimeError("Processing failed")
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
-            with mock.patch("local_feed_generator.cli.log_error"):
+            with mock.patch("focus_feed.cli.log_error"):
                 # Should not raise
                 handler._periodic_rescan()
 
@@ -1361,7 +1363,7 @@ class TestWatchCommand:
 
     def test_periodic_rescan_skips_already_processed_files(self, valid_env, tmp_data_dir):
         """_periodic_rescan should not reprocess files with up-to-date JSON."""
-        from local_feed_generator.cli import _WatchHandler
+        from focus_feed.cli import _WatchHandler
 
         # Create a source file with complete JSON metadata
         source_file = tmp_data_dir / "processed.mp4"
@@ -1380,7 +1382,7 @@ class TestWatchCommand:
         producer = mock.MagicMock()
         handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
 
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
             handler._periodic_rescan()
 
@@ -1429,7 +1431,7 @@ class TestFeedsCommand:
             json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
         )
 
-        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
             mock_generator.generate_all_feeds.return_value = None
             MockGen.return_value = mock_generator
@@ -1453,7 +1455,7 @@ class TestFeedsCommand:
             json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
         )
 
-        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
             mock_generator.generate_all_feeds.return_value = None
             MockGen.return_value = mock_generator
@@ -1468,7 +1470,7 @@ class TestFeedsCommand:
 
     def test_feeds_empty_directory(self, runner, valid_env, tmp_data_dir):
         """Feeds should handle empty directory."""
-        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
             mock_generator.generate_all_feeds.return_value = None
             MockGen.return_value = mock_generator
@@ -1496,7 +1498,7 @@ class TestFeedsCommand:
             "PROMPT_TITLE=Test title prompt\n"
         )
 
-        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
             mock_generator.generate_all_feeds.return_value = None
             MockGen.return_value = mock_generator
@@ -1529,7 +1531,7 @@ class TestFeedsCommand:
         )
         (tmp_data_dir / "bad.mp4.json").write_text(json.dumps(error_meta))
 
-        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
             mock_generator.generate_all_feeds.return_value = None
             MockGen.return_value = mock_generator
@@ -1564,7 +1566,7 @@ class TestFeedsCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
             mock_generator.generate_all_feeds.return_value = None
             MockGen.return_value = mock_generator
@@ -1601,7 +1603,7 @@ class TestFeedsCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
             mock_generator.generate_all_feeds.return_value = None
             MockGen.return_value = mock_generator
@@ -1639,12 +1641,12 @@ class TestFeedsCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.generate_title.return_value = ("Generated Title", 30, 5)
             MockSummarizer.return_value = mock_summarizer
 
-            with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
                 mock_generator = mock.MagicMock()
                 mock_generator.generate_all_feeds.return_value = None
                 MockGen.return_value = mock_generator
@@ -1956,13 +1958,13 @@ class TestEntryPoint:
 
     def test_main_invokes_app(self, runner, valid_env, tmp_data_dir):
         """main() should invoke the app group."""
-        with mock.patch("local_feed_generator.cli.app") as mock_app:
+        with mock.patch("focus_feed.cli.app") as mock_app:
             main()
         mock_app.assert_called_once()
 
     def test_main_via_cli_runner(self, runner, valid_env, tmp_data_dir):
         """main() should work via CliRunner when called as the command."""
-        with mock.patch("local_feed_generator.cli._generate_feeds") as mock_gen:
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
             mock_gen.return_value = {"podcast": 0, "articles": 0}
             result = runner.invoke(app, ["validate", str(tmp_data_dir)])
         assert result.exit_code == 0
@@ -1988,12 +1990,12 @@ class TestEntryPoint:
         """The pyproject.toml should have the correct entry point."""
         import tomllib
 
-        pyproject_path = Path(__file__).resolve().parent.parent.parent / "pyproject.toml"
+        pyproject_path = Path(__file__).resolve().parent.parent / "pyproject.toml"
         with open(pyproject_path, "rb") as f:
             config = tomllib.load(f)
         scripts = config.get("project", {}).get("scripts", {})
-        assert "local-feed-generator" in scripts
-        assert scripts["local-feed-generator"] == "local_feed_generator.cli:main"
+        assert "focus-feed" in scripts
+        assert scripts["focus-feed"] == "focus_feed.cli:main"
 
 
 # ---------------------------------------------------------------------------
@@ -2008,12 +2010,12 @@ class TestCliIntegration:
         """Full workflow: process files then generate feeds."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
 
-        with mock.patch("local_feed_generator.producer.Producer") as MockProducer:
+        with mock.patch("focus_feed.producer.Producer") as MockProducer:
             mock_producer = mock.MagicMock()
             mock_producer.process_file.return_value = _make_mock_metadata(feed_eligible=True)
             MockProducer.return_value = mock_producer
 
-            with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+            with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
                 mock_generator = mock.MagicMock()
                 mock_generator.generate_all_feeds.return_value = None
                 MockGen.return_value = mock_generator
@@ -2049,7 +2051,7 @@ class TestCliIntegration:
             json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
         )
 
-        with mock.patch("local_feed_generator.feeds.FeedGenerator") as MockGen:
+        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
             mock_generator.generate_all_feeds.return_value = None
             MockGen.return_value = mock_generator
@@ -2103,7 +2105,7 @@ class TestTranscribeCommand:
         """Transcribe --dry-run should list files without processing."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
 
-        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+        with mock.patch("focus_feed.services.transcriber.Transcriber") as MockTranscriber:
             mock_transcriber = mock.MagicMock()
             MockTranscriber.return_value = mock_transcriber
 
@@ -2150,7 +2152,7 @@ class TestTranscribeCommand:
         """Transcribe should process MP4 files without transcripts."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
 
-        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+        with mock.patch("focus_feed.services.transcriber.Transcriber") as MockTranscriber:
             mock_transcriber = mock.MagicMock()
             mock_transcriber.transcribe.return_value = "This is a transcript."
             MockTranscriber.return_value = mock_transcriber
@@ -2168,7 +2170,7 @@ class TestTranscribeCommand:
         """Transcribe should write the transcript to the JSON metadata file."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
 
-        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+        with mock.patch("focus_feed.services.transcriber.Transcriber") as MockTranscriber:
             mock_transcriber = mock.MagicMock()
             mock_transcriber.transcribe.return_value = "This is a transcript."
             MockTranscriber.return_value = mock_transcriber
@@ -2193,7 +2195,7 @@ class TestTranscribeCommand:
         other_dir.mkdir()
         (other_dir / "other.mp4").write_bytes(b"other video")
 
-        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+        with mock.patch("focus_feed.services.transcriber.Transcriber") as MockTranscriber:
             mock_transcriber = mock.MagicMock()
             mock_transcriber.transcribe.return_value = "Transcript"
             MockTranscriber.return_value = mock_transcriber
@@ -2208,7 +2210,7 @@ class TestTranscribeCommand:
         """Transcribe should exit with code 1 when transcription fails."""
         (tmp_data_dir / "bad.mp4").write_bytes(b"bad data")
 
-        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+        with mock.patch("focus_feed.services.transcriber.Transcriber") as MockTranscriber:
             mock_transcriber = mock.MagicMock()
             mock_transcriber.transcribe.side_effect = RuntimeError("Transcription failed")
             MockTranscriber.return_value = mock_transcriber
@@ -2270,7 +2272,7 @@ class TestTranscribeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+        with mock.patch("focus_feed.services.transcriber.Transcriber") as MockTranscriber:
             mock_transcriber = mock.MagicMock()
             mock_transcriber.transcribe.return_value = "New transcript."
             MockTranscriber.return_value = mock_transcriber
@@ -2306,7 +2308,7 @@ class TestTranscribeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+        with mock.patch("focus_feed.services.transcriber.Transcriber") as MockTranscriber:
             mock_transcriber = mock.MagicMock()
             mock_transcriber.transcribe.return_value = "Transcript."
             MockTranscriber.return_value = mock_transcriber
@@ -2325,7 +2327,7 @@ class TestTranscribeCommand:
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
 
         with mock.patch(
-            "local_feed_generator.services.transcriber.check_cuda_available",
+            "focus_feed.services.transcriber.check_cuda_available",
             return_value=False,
         ):
             result = runner.invoke(
@@ -2343,7 +2345,7 @@ class TestTranscribeCommand:
         """Transcribe should set status to 'in_progress' before transcription, then 'complete'."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
 
-        with mock.patch("local_feed_generator.services.transcriber.Transcriber") as MockTranscriber:
+        with mock.patch("focus_feed.services.transcriber.Transcriber") as MockTranscriber:
             mock_transcriber = mock.MagicMock()
             mock_transcriber.transcribe.return_value = "This is a transcript."
             MockTranscriber.return_value = mock_transcriber
@@ -2403,7 +2405,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             MockSummarizer.return_value = mock_summarizer
 
@@ -2437,7 +2439,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
             MockSummarizer.return_value = mock_summarizer
@@ -2498,7 +2500,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
             MockSummarizer.return_value = mock_summarizer
@@ -2538,7 +2540,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.summarize.return_value = ("New summary.", 200, 60)
             MockSummarizer.return_value = mock_summarizer
@@ -2574,7 +2576,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
             MockSummarizer.return_value = mock_summarizer
@@ -2613,7 +2615,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.summarize.return_value = (
                 "Key takeaways from this video.",
@@ -2650,7 +2652,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             # "Key takeaways from this video." has 5 words
             mock_summarizer.summarize.return_value = (
@@ -2688,7 +2690,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
             MockSummarizer.return_value = mock_summarizer
@@ -2722,7 +2724,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
             MockSummarizer.return_value = mock_summarizer
@@ -2759,7 +2761,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.summarize.return_value = ("Key takeaways.", 100, 50)
             MockSummarizer.return_value = mock_summarizer
@@ -2820,7 +2822,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             MockSummarizer.return_value = mock_summarizer
 
@@ -2854,7 +2856,7 @@ class TestSummarizeCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.summarize.return_value = ("Summary.", 100, 50)
             MockSummarizer.return_value = mock_summarizer
@@ -2923,7 +2925,7 @@ class TestFindFilesNeedingSummary:
         metadata.update(extra_steps)
         (tmp_data_dir / f"{filename}.json").write_text(json.dumps(metadata))
 
-        from local_feed_generator.cli import _find_files_needing_summary
+        from focus_feed.cli import _find_files_needing_summary
 
         result = _find_files_needing_summary(tmp_data_dir)
         assert len(result) == 1
@@ -2949,7 +2951,7 @@ class TestFindFilesNeedingSummary:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_summary
+        from focus_feed.cli import _find_files_needing_summary
 
         result = _find_files_needing_summary(tmp_data_dir)
         assert len(result) == 0
@@ -2975,7 +2977,7 @@ class TestFindFilesNeedingSummary:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_summary
+        from focus_feed.cli import _find_files_needing_summary
 
         result = _find_files_needing_summary(tmp_data_dir)
         assert len(result) == 0
@@ -3001,7 +3003,7 @@ class TestFindFilesNeedingSummary:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_summary
+        from focus_feed.cli import _find_files_needing_summary
 
         result = _find_files_needing_summary(tmp_data_dir, force=True)
         assert len(result) == 1
@@ -3010,7 +3012,7 @@ class TestFindFilesNeedingSummary:
         """Should skip files without JSON metadata."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
 
-        from local_feed_generator.cli import _find_files_needing_summary
+        from focus_feed.cli import _find_files_needing_summary
 
         result = _find_files_needing_summary(tmp_data_dir)
         assert len(result) == 0
@@ -3073,7 +3075,7 @@ class TestFindFilesNeedingSummary:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_summary
+        from focus_feed.cli import _find_files_needing_summary
 
         result = _find_files_needing_summary(tmp_data_dir)
         assert len(result) == 2
@@ -3127,7 +3129,7 @@ class TestFindFilesNeedingSummary:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_summary
+        from focus_feed.cli import _find_files_needing_summary
 
         # Without paths filter: both files returned
         result = _find_files_needing_summary(tmp_data_dir)
@@ -3152,7 +3154,7 @@ class TestFindFilesNeedingTranscription:
         """Should find MP4 files with no JSON metadata."""
         (tmp_data_dir / "video.mp4").write_bytes(b"video")
 
-        from local_feed_generator.cli import _find_files_needing_transcription
+        from focus_feed.cli import _find_files_needing_transcription
 
         result = _find_files_needing_transcription(tmp_data_dir)
         assert len(result) == 1
@@ -3172,7 +3174,7 @@ class TestFindFilesNeedingTranscription:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_transcription
+        from focus_feed.cli import _find_files_needing_transcription
 
         result = _find_files_needing_transcription(tmp_data_dir)
         assert len(result) == 0
@@ -3188,7 +3190,7 @@ class TestFindFilesNeedingTranscription:
         (tmp_data_dir / "video1.mp4").write_bytes(b"video")
         (tmp_data_dir / "video2.mp4").write_bytes(b"video")
 
-        from local_feed_generator.cli import _find_files_needing_transcription
+        from focus_feed.cli import _find_files_needing_transcription
 
         # Without paths filter: both files returned
         result = _find_files_needing_transcription(tmp_data_dir)
@@ -3220,7 +3222,7 @@ class TestFindFilesNeedingMetadataExtraction:
         """Should find PDF files with no JSON metadata."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
 
-        from local_feed_generator.cli import _find_files_needing_metadata_extraction
+        from focus_feed.cli import _find_files_needing_metadata_extraction
 
         result = _find_files_needing_metadata_extraction(tmp_data_dir)
         assert len(result) == 1
@@ -3242,7 +3244,7 @@ class TestFindFilesNeedingMetadataExtraction:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_metadata_extraction
+        from focus_feed.cli import _find_files_needing_metadata_extraction
 
         result = _find_files_needing_metadata_extraction(tmp_data_dir)
         assert len(result) == 0
@@ -3258,7 +3260,7 @@ class TestFindFilesNeedingMetadataExtraction:
         (tmp_data_dir / "doc1.pdf").write_bytes(b"pdf")
         (tmp_data_dir / "doc2.pdf").write_bytes(b"pdf")
 
-        from local_feed_generator.cli import _find_files_needing_metadata_extraction
+        from focus_feed.cli import _find_files_needing_metadata_extraction
 
         # Without paths filter: both files returned
         result = _find_files_needing_metadata_extraction(tmp_data_dir)
@@ -3303,7 +3305,7 @@ class TestFindFilesNeedingMetadataExtraction:
         """Extract --dry-run should list files without processing."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
 
-        with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
+        with mock.patch("focus_feed.services.extractors.PDFExtractor") as MockExtractor:
             mock_extractor = mock.MagicMock()
             MockExtractor.return_value = mock_extractor
 
@@ -3344,7 +3346,7 @@ class TestFindFilesNeedingMetadataExtraction:
         """Extract should process PDF and HTML files without status['extract']='complete'."""
         (tmp_data_dir / filename).write_bytes(content)
 
-        extractor_target = f"local_feed_generator.services.extractors.{extractor_path}"
+        extractor_target = f"focus_feed.services.extractors.{extractor_path}"
         with mock.patch(extractor_target) as MockExtractor:
             mock_extractor = mock.MagicMock()
             mock_extractor.extract.return_value = {
@@ -3394,7 +3396,7 @@ class TestFindFilesNeedingMetadataExtraction:
         """Extract should write extracted data to JSON metadata."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
 
-        with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
+        with mock.patch("focus_feed.services.extractors.PDFExtractor") as MockExtractor:
             mock_extractor = mock.MagicMock()
             mock_extractor.extract.return_value = {
                 "title": "PDF Title",
@@ -3437,7 +3439,7 @@ class TestFindFilesNeedingMetadataExtraction:
             )
         )
 
-        with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
+        with mock.patch("focus_feed.services.extractors.PDFExtractor") as MockExtractor:
             mock_extractor = mock.MagicMock()
             mock_extractor.extract.return_value = {
                 "title": "New Title",
@@ -3463,7 +3465,7 @@ class TestFindFilesNeedingMetadataExtraction:
         """Extract should set status to 'in_progress' before extraction, then 'complete' after."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
 
-        with mock.patch("local_feed_generator.services.extractors.PDFExtractor") as MockExtractor:
+        with mock.patch("focus_feed.services.extractors.PDFExtractor") as MockExtractor:
             mock_extractor = mock.MagicMock()
             mock_extractor.extract.return_value = {
                 "title": "PDF Title",
@@ -3548,7 +3550,7 @@ class TestTitleCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             MockSummarizer.return_value = mock_summarizer
 
@@ -3580,7 +3582,7 @@ class TestTitleCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.generate_title.return_value = ("Generated Title", 30, 5)
             MockSummarizer.return_value = mock_summarizer
@@ -3612,7 +3614,7 @@ class TestTitleCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.generate_title.return_value = ("Generated Title", 30, 5)
             MockSummarizer.return_value = mock_summarizer
@@ -3651,7 +3653,7 @@ class TestTitleCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             MockSummarizer.return_value = mock_summarizer
 
@@ -3682,7 +3684,7 @@ class TestTitleCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.generate_title.return_value = ("New Title", 30, 5)
             MockSummarizer.return_value = mock_summarizer
@@ -3717,7 +3719,7 @@ class TestTitleCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.generate_title.return_value = ("Video Title", 30, 5)
             MockSummarizer.return_value = mock_summarizer
@@ -3751,7 +3753,7 @@ class TestTitleCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.generate_title.return_value = ("HTML Page Title", 30, 5)
             MockSummarizer.return_value = mock_summarizer
@@ -3797,7 +3799,7 @@ class TestTitleCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.generate_title.return_value = ("Title", 30, 5)
             MockSummarizer.return_value = mock_summarizer
@@ -3838,7 +3840,7 @@ class TestTitleCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.generate_title.return_value = ("New Title", 30, 5)
             MockSummarizer.return_value = mock_summarizer
@@ -3881,7 +3883,7 @@ class TestTitleCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.generate_title.side_effect = RuntimeError("LLM failed")
             MockSummarizer.return_value = mock_summarizer
@@ -3912,7 +3914,7 @@ class TestTitleCommand:
             )
         )
 
-        with mock.patch("local_feed_generator.services.summarizer.Summarizer") as MockSummarizer:
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
             mock_summarizer.generate_title.return_value = ("My Document Title", 30, 5)
             MockSummarizer.return_value = mock_summarizer
@@ -3947,7 +3949,7 @@ class TestFindFilesNeedingTitle:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_title
+        from focus_feed.cli import _find_files_needing_title
 
         result = _find_files_needing_title(tmp_data_dir)
         assert len(result) == 1
@@ -3971,7 +3973,7 @@ class TestFindFilesNeedingTitle:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_title
+        from focus_feed.cli import _find_files_needing_title
 
         result = _find_files_needing_title(tmp_data_dir)
         assert len(result) == 1
@@ -3994,7 +3996,7 @@ class TestFindFilesNeedingTitle:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_title
+        from focus_feed.cli import _find_files_needing_title
 
         result = _find_files_needing_title(tmp_data_dir)
         assert len(result) == 0
@@ -4017,7 +4019,7 @@ class TestFindFilesNeedingTitle:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_title
+        from focus_feed.cli import _find_files_needing_title
 
         result = _find_files_needing_title(tmp_data_dir, force=True)
         assert len(result) == 1
@@ -4039,7 +4041,7 @@ class TestFindFilesNeedingTitle:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_title
+        from focus_feed.cli import _find_files_needing_title
 
         result = _find_files_needing_title(tmp_data_dir)
         assert len(result) == 0
@@ -4062,7 +4064,7 @@ class TestFindFilesNeedingTitle:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_title
+        from focus_feed.cli import _find_files_needing_title
 
         result = _find_files_needing_title(tmp_data_dir)
         assert len(result) == 0
@@ -4101,7 +4103,7 @@ class TestFindFilesNeedingTitle:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_title
+        from focus_feed.cli import _find_files_needing_title
 
         # Without paths filter: both files returned
         result = _find_files_needing_title(tmp_data_dir)
@@ -4149,7 +4151,7 @@ class TestFindFilesNeedingTitle:
             )
         )
 
-        from local_feed_generator.cli import _find_files_needing_title
+        from focus_feed.cli import _find_files_needing_title
 
         # With paths filter for subdir: only doc1.pdf returned
         result = _find_files_needing_title(tmp_data_dir, paths=[subdir])
@@ -4172,7 +4174,7 @@ class TestGetContentForTitle:
         self, valid_env, tmp_path, filetype, metadata_dict, expected
     ):
         """Should return content from metadata for MP4, empty for unsupported types."""
-        from local_feed_generator.cli import _get_content_for_title
+        from focus_feed.cli import _get_content_for_title
 
         if filetype == "mp4":
             file_path = Path("/fake/path/lecture.mp4")
@@ -4190,7 +4192,7 @@ class TestGetContentForTitle:
     )
     def test_get_content_for_title_reads_file(self, valid_env, tmp_path, filetype, content):
         """Should read file content for PDF and HTML files."""
-        from local_feed_generator.cli import _get_content_for_title
+        from focus_feed.cli import _get_content_for_title
 
         source = tmp_path / f"file.{filetype}"
         source.write_text(content)
@@ -4200,7 +4202,7 @@ class TestGetContentForTitle:
 
     def test_get_content_for_title_truncates_long_content(self, valid_env, tmp_path):
         """Should truncate content to 8000 characters for PDF/HTML files."""
-        from local_feed_generator.cli import _get_content_for_title
+        from focus_feed.cli import _get_content_for_title
 
         source = tmp_path / "doc.pdf"
         source.write_text("x" * 20000)
@@ -4210,7 +4212,7 @@ class TestGetContentForTitle:
 
     def test_get_content_for_title_pdf_handles_read_error(self, valid_env, tmp_path):
         """Should return empty string when file cannot be read."""
-        from local_feed_generator.cli import _get_content_for_title
+        from focus_feed.cli import _get_content_for_title
 
         source = tmp_path / "doc.pdf"
         source.write_text("content")
@@ -4231,7 +4233,7 @@ class TestIsDictFeedEligible:
 
     def test_pdf_eligible_with_extract_and_summarize(self, valid_env):
         """PDF should be eligible if both extract and summarize are complete."""
-        from local_feed_generator.scanner import _is_dict_feed_eligible
+        from focus_feed.scanner import _is_dict_feed_eligible
 
         metadata = {
             "extract": {"status": "complete"},
@@ -4246,7 +4248,7 @@ class TestIsDictFeedEligible:
 
     def test_pdf_not_eligible_with_extract_only(self, valid_env):
         """PDF with only extract (no summarize) should not be eligible."""
-        from local_feed_generator.scanner import _is_dict_feed_eligible
+        from focus_feed.scanner import _is_dict_feed_eligible
 
         metadata = {
             "extract": {"status": "complete"},
@@ -4260,7 +4262,7 @@ class TestIsDictFeedEligible:
 
     def test_html_eligible_with_extract_and_summarize(self, valid_env):
         """HTML should be eligible if both extract and summarize are complete."""
-        from local_feed_generator.scanner import _is_dict_feed_eligible
+        from focus_feed.scanner import _is_dict_feed_eligible
 
         metadata = {
             "extract": {"status": "complete"},
@@ -4275,7 +4277,7 @@ class TestIsDictFeedEligible:
 
     def test_html_not_eligible_with_extract_only(self, valid_env):
         """HTML with only extract (no summarize) should not be eligible."""
-        from local_feed_generator.scanner import _is_dict_feed_eligible
+        from focus_feed.scanner import _is_dict_feed_eligible
 
         metadata = {
             "extract": {"status": "complete"},
@@ -4289,7 +4291,7 @@ class TestIsDictFeedEligible:
 
     def test_pdf_not_eligible_with_error(self, valid_env):
         """PDF with error should not be eligible."""
-        from local_feed_generator.scanner import _is_dict_feed_eligible
+        from focus_feed.scanner import _is_dict_feed_eligible
 
         metadata = {
             "extract": {"status": "complete"},
@@ -4305,7 +4307,7 @@ class TestIsDictFeedEligible:
 
     def test_pdf_not_eligible_without_extract(self, valid_env):
         """PDF without extract step should not be eligible."""
-        from local_feed_generator.scanner import _is_dict_feed_eligible
+        from focus_feed.scanner import _is_dict_feed_eligible
 
         metadata = {
             "filetype": "pdf",
@@ -4652,14 +4654,14 @@ class TestFindUnknownKeys:
 
     def test_no_unknown_keys(self):
         """Should return empty list for valid metadata."""
-        from local_feed_generator.cli import _find_unknown_keys
+        from focus_feed.cli import _find_unknown_keys
 
         data = _make_valid_metadata()
         assert _find_unknown_keys(data) == []
 
     def test_unknown_top_level_key(self):
         """Should detect unknown top-level keys."""
-        from local_feed_generator.cli import _find_unknown_keys
+        from focus_feed.cli import _find_unknown_keys
 
         data = _make_valid_metadata()
         data["unknown_field"] = "value"
@@ -4668,7 +4670,7 @@ class TestFindUnknownKeys:
 
     def test_unknown_title_key(self):
         """Should detect unknown keys in title dict."""
-        from local_feed_generator.cli import _find_unknown_keys
+        from focus_feed.cli import _find_unknown_keys
 
         data = _make_valid_metadata()
         data["title"] = {
@@ -4682,7 +4684,7 @@ class TestFindUnknownKeys:
 
     def test_unknown_step_map_key(self):
         """Should detect unknown keys in step-map dicts."""
-        from local_feed_generator.cli import _find_unknown_keys
+        from focus_feed.cli import _find_unknown_keys
 
         data = _make_valid_metadata()
         data["transcribe"]["extra_step"] = "bad"
@@ -4691,7 +4693,7 @@ class TestFindUnknownKeys:
 
     def test_string_title_not_flagged(self):
         """Should not flag string titles (backward compatibility)."""
-        from local_feed_generator.cli import _find_unknown_keys
+        from focus_feed.cli import _find_unknown_keys
 
         data = _make_valid_metadata()
         data["title"] = "String Title"
@@ -4699,7 +4701,7 @@ class TestFindUnknownKeys:
 
     def test_multiple_unknown_keys(self):
         """Should detect all unknown keys across all levels."""
-        from local_feed_generator.cli import _find_unknown_keys
+        from focus_feed.cli import _find_unknown_keys
 
         data = _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
         data["unknown_top"] = "val"

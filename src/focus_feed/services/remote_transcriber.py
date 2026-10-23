@@ -38,10 +38,10 @@ from openai import (
     RateLimitError,
 )
 
-from local_feed_generator.config import Settings, get_config
-from local_feed_generator.errors import TranscriptionError, log_error
+from focus_feed.config import Settings, get_config
+from focus_feed.errors import TranscriptionError, log_error
 
-_logger = logging.getLogger("local_feed_generator")
+_logger = logging.getLogger("focus_feed")
 
 # ---------------------------------------------------------------------------
 # Retry configuration constants

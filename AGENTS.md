@@ -1,8 +1,8 @@
-# AGENTS.md - Local Feed Generator
+# AGENTS.md - Focus Feed
 
 Purpose: Transform education content (PDF/HTML/MP4) into RSS feeds.
 
-Command: `uv run local-feed-generator <command>` from workspace root (directory containing local-feed-generator/ and data/).
+Command: `uv run focus-feed <command>` from the workspace root (directory containing `src/`, `tests/`, and `data/`).
 
 ## Core
 - MP4: Requires `transcribe` → `summarize` → feed-eligible.

@@ -16,9 +16,10 @@ import os
 from pathlib import Path
 from unittest import mock
 
-from local_feed_generator.errors import TranscriptionError
-from local_feed_generator.services.transcriber import Transcriber, check_cuda_available
 import pytest
+
+from focus_feed.errors import TranscriptionError
+from focus_feed.services.transcriber import Transcriber, check_cuda_available
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -43,7 +44,7 @@ def _set_valid_env(monkeypatch):
     monkeypatch.setenv("TRANSCRIPTION_API_KEY", "")
     monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "")
     # Reset config singleton so it picks up new env
-    import local_feed_generator.config as config_module
+    import focus_feed.config as config_module
 
     config_module._config_instance = None
 
@@ -55,12 +56,12 @@ def valid_env(monkeypatch):
     # Mock CUDA availability check so existing tests that mock WhisperModel
     # can proceed without requiring an actual CUDA installation.
     monkeypatch.setattr(
-        "local_feed_generator.services.transcriber.check_cuda_available",
+        "focus_feed.services.transcriber.check_cuda_available",
         lambda: True,
     )
     yield
     # Cleanup: reset config singleton
-    import local_feed_generator.config as config_module
+    import focus_feed.config as config_module
 
     config_module._config_instance = None
 
@@ -139,9 +140,7 @@ class TestModelSingleton:
 
         mock_model = MockWhisperModel(segments_data=["Hello world"])
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls:
             mock_whisper_cls.return_value = mock_model
 
             # Create a dummy file so transcribe doesn't fail on existence check
@@ -156,9 +155,7 @@ class TestModelSingleton:
         """Model should not be loaded until transcribe() is called."""
         transcriber = Transcriber()
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls:
             # Model should not be loaded just by creating Transcriber
             assert mock_whisper_cls.call_count == 0
 
@@ -186,9 +183,7 @@ class TestConfigLoading:
 
         mock_model = MockWhisperModel(segments_data=["Hello"])
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls:
             mock_whisper_cls.return_value = mock_model
 
             with mock.patch.object(Path, "exists", return_value=True):
@@ -203,7 +198,7 @@ class TestConfigLoading:
 
     def test_uses_config_overrides(self, valid_env):
         """Transcriber should use overridden env var values."""
-        import local_feed_generator.config as config_module
+        import focus_feed.config as config_module
 
         config_module._config_instance = None
 
@@ -216,9 +211,7 @@ class TestConfigLoading:
             transcriber = Transcriber()
             mock_model = MockWhisperModel(segments_data=["Hello"])
 
-            with mock.patch(
-                "local_feed_generator.services.transcriber.WhisperModel"
-            ) as mock_whisper_cls:
+            with mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls:
                 mock_whisper_cls.return_value = mock_model
 
                 with mock.patch.object(Path, "exists", return_value=True):
@@ -273,9 +266,7 @@ class TestTranscribeOutput:
             ]
         )
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls:
             mock_whisper_cls.return_value = mock_model
 
             with mock.patch.object(Path, "exists", return_value=True):
@@ -311,9 +302,7 @@ class TestTranscribeOutput:
 
         mock_model = MockWhisperModel(segments_data=segments_data)
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls:
             mock_whisper_cls.return_value = mock_model
 
             with mock.patch.object(Path, "exists", return_value=True):
@@ -331,7 +320,7 @@ class TestTranscribeOutput:
 class TestTranscribeSkipAlreadyComplete:
     """Tests for skipping transcription when JSON marks it as complete."""
 
-    _MPATH = "local_feed_generator.services.transcriber"
+    _MPATH = "focus_feed.services.transcriber"
 
     @pytest.mark.parametrize(
         "json_content,should_skip,expected_result",
@@ -445,9 +434,7 @@ class TestTranscribeErrorHandling:
 
         mock_model = MockWhisperModel(segments_data=["Hello"], raise_on_transcribe=True)
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls:
             mock_whisper_cls.return_value = mock_model
 
             with (
@@ -464,9 +451,7 @@ class TestTranscribeErrorHandling:
         """Model loading errors should be wrapped in TranscriptionError."""
         transcriber = Transcriber()
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls:
             mock_whisper_cls.side_effect = RuntimeError("CUDA not available")
 
             with (
@@ -493,9 +478,7 @@ class TestCleanup:
 
         mock_model = MockWhisperModel(segments_data=["Hello"])
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls:
             mock_whisper_cls.return_value = mock_model
 
             with mock.patch.object(Path, "exists", return_value=True):
@@ -513,9 +496,7 @@ class TestCleanup:
 
         mock_model = MockWhisperModel(segments_data=["Hello"])
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls:
             mock_whisper_cls.return_value = mock_model
 
             with mock.patch.object(Path, "exists", return_value=True):
@@ -538,9 +519,7 @@ class TestCleanup:
             def transcribe(self, audio, **kwargs):
                 return [MockSegment("Hello")], MockTranscriptionInfo()
 
-        with mock.patch(
-            "local_feed_generator.services.transcriber.WhisperModel"
-        ) as mock_whisper_cls:
+        with mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls:
             mock_whisper_cls.return_value = SimpleModel()
 
             with mock.patch.object(Path, "exists", return_value=True):
@@ -602,12 +581,10 @@ class TestCudaCheckInLoadModel:
 
         with (
             mock.patch(
-                "local_feed_generator.services.transcriber.check_cuda_available",
+                "focus_feed.services.transcriber.check_cuda_available",
                 return_value=cuda_available,
             ),
-            mock.patch(
-                "local_feed_generator.services.transcriber.WhisperModel"
-            ) as mock_whisper_cls,
+            mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls,
             pytest.raises(TranscriptionError) as exc_info,
         ):
             if whisper_side_effect:
@@ -629,7 +606,7 @@ class TestCudaCheckInLoadModel:
     )
     def test_device_handling(self, valid_env, device, cuda_check_called, should_succeed):
         """_load_model should check CUDA only when device is 'cuda'."""
-        import local_feed_generator.config as config_module
+        import focus_feed.config as config_module
 
         config_module._config_instance = None
         os.environ["TRANSCRIPTION_DEVICE"] = device
@@ -641,12 +618,10 @@ class TestCudaCheckInLoadModel:
 
             with (
                 mock.patch(
-                    "local_feed_generator.services.transcriber.check_cuda_available",
+                    "focus_feed.services.transcriber.check_cuda_available",
                     return_value=True,
                 ) as mock_check,
-                mock.patch(
-                    "local_feed_generator.services.transcriber.WhisperModel"
-                ) as mock_whisper_cls,
+                mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls,
             ):
                 mock_whisper_cls.return_value = mock_model
                 result = transcriber._load_model()
@@ -665,9 +640,7 @@ class TestCudaCheckInLoadModel:
         mock_model = MockWhisperModel()
 
         with (
-            mock.patch(
-                "local_feed_generator.services.transcriber.WhisperModel"
-            ) as mock_whisper_cls,
+            mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls,
             mock.patch.object(
                 mock_model,
                 "transcribe",
@@ -691,9 +664,7 @@ class TestCudaCheckInLoadModel:
         mock_model = MockWhisperModel()
 
         with (
-            mock.patch(
-                "local_feed_generator.services.transcriber.WhisperModel"
-            ) as mock_whisper_cls,
+            mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls,
             mock.patch.object(
                 mock_model, "transcribe", side_effect=RuntimeError("Some other error")
             ),
@@ -715,8 +686,8 @@ class TestFasterWhisperNotInstalled:
     def test_critical_log_when_faster_whisper_missing_in_local_mode(self, valid_env, caplog):
         """A CRITICAL log should be emitted when faster-whisper is missing in local mode."""
         with (
-            mock.patch("local_feed_generator.services.transcriber.WhisperModel", None),
-            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+            mock.patch("focus_feed.services.transcriber.WhisperModel", None),
+            caplog.at_level(logging.CRITICAL, logger="focus_feed"),
         ):
             Transcriber()
         critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
@@ -736,13 +707,13 @@ class TestFasterWhisperNotInstalled:
         monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "https://remote.example.com")
         monkeypatch.setenv("TRANSCRIPTION_API_KEY", "remote-key")
         monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "whisper-1")
-        import local_feed_generator.config as config_module
+        import focus_feed.config as config_module
 
         config_module._config_instance = None
 
         with (
-            mock.patch("local_feed_generator.services.transcriber.WhisperModel", None),
-            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+            mock.patch("focus_feed.services.transcriber.WhisperModel", None),
+            caplog.at_level(logging.CRITICAL, logger="focus_feed"),
         ):
             Transcriber()
         critical_records = [r for r in caplog.records if r.levelno == logging.CRITICAL]
@@ -751,10 +722,8 @@ class TestFasterWhisperNotInstalled:
     def test_no_critical_log_when_faster_whisper_available(self, valid_env, caplog):
         """No CRITICAL log should be emitted when faster-whisper is installed."""
         with (
-            mock.patch(
-                "local_feed_generator.services.transcriber.WhisperModel"
-            ) as mock_whisper_cls,
-            caplog.at_level(logging.CRITICAL, logger="local_feed_generator"),
+            mock.patch("focus_feed.services.transcriber.WhisperModel") as mock_whisper_cls,
+            caplog.at_level(logging.CRITICAL, logger="focus_feed"),
         ):
             mock_whisper_cls.return_value = mock.MagicMock()
             Transcriber()

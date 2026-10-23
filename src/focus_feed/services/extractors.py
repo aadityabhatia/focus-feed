@@ -38,7 +38,7 @@ from typing import Any
 from bs4 import BeautifulSoup
 from pypdf import PdfReader
 
-_logger = logging.getLogger("local_feed_generator")
+_logger = logging.getLogger("focus_feed")
 
 # Pattern matching control characters that are invalid in XML (everything
 # below 0x20 except tab \x09, newline \x0a, and carriage return \x0d).

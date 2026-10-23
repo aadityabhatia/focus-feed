@@ -20,9 +20,9 @@ from pathlib import Path
 import time
 from typing import TYPE_CHECKING
 
-from local_feed_generator.config import get_config
-from local_feed_generator.errors import TranscriptionError, log_error
-from local_feed_generator.services.remote_transcriber import RemoteTranscriber
+from focus_feed.config import get_config
+from focus_feed.errors import TranscriptionError, log_error
+from focus_feed.services.remote_transcriber import RemoteTranscriber
 
 if TYPE_CHECKING:
     from faster_whisper import WhisperModel
@@ -35,7 +35,7 @@ try:
 except ImportError:
     WhisperModel = None
 
-_logger = logging.getLogger("local_feed_generator")
+_logger = logging.getLogger("focus_feed")
 
 # Error message shown when CUDA libraries are missing but a GPU device is
 # requested.  Kept as a module-level constant so it can be reused by the
@@ -177,7 +177,7 @@ class LocalTranscriber:
         if WhisperModel is None:
             raise TranscriptionError(
                 "faster-whisper is not installed. "
-                "Install with: pip install local-feed-generator[local-transcription]"
+                "Install with: pip install focus-feed[local-transcription]"
             )
 
         # Pre-emptive CUDA availability check: surface a clear, actionable
@@ -421,7 +421,7 @@ class Transcriber(LocalTranscriber):
                 _logger.critical(
                     "faster-whisper is not installed but local transcription "
                     "mode is active (TRANSCRIPTION_ENDPOINT is not set). "
-                    "Install with: pip install local-feed-generator[local-transcription]"
+                    "Install with: pip install focus-feed[local-transcription]"
                 )
         super().__init__()
 
