@@ -2582,6 +2582,10 @@ class TestGenerateIndexHtml:
         """generate_all_feeds should create index.html in data_dir."""
         write_metadata_file(tmp_path, "videos/lecture.mp4")
         write_metadata_file(tmp_path, "documents/doc.pdf")
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Test Feed", "description": "Test Description"}),
+            encoding="utf-8",
+        )
 
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
         fg.generate_all_feeds()
@@ -2591,6 +2595,10 @@ class TestGenerateIndexHtml:
     def test_index_html_structure_and_content(self, tmp_path):
         """index.html should contain expected structure, head, sections, and CSS."""
         write_metadata_file(tmp_path, "videos/lecture.mp4")
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Test Feed", "description": "Test Description"}),
+            encoding="utf-8",
+        )
 
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
         fg.generate_all_feeds()
@@ -2615,6 +2623,11 @@ class TestGenerateIndexHtml:
 
     def test_index_html_empty_directory(self, tmp_path):
         """index.html should be generated even with no feeds (empty sections)."""
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Test Feed", "description": "Test Description"}),
+            encoding="utf-8",
+        )
+
         fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
         fg.generate_all_feeds()
 
@@ -2626,6 +2639,10 @@ class TestGenerateIndexHtml:
 
     def test_index_html_overwrites_existing(self, tmp_path):
         """generate_all_feeds should overwrite existing index.html."""
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Test Feed", "description": "Test Description"}),
+            encoding="utf-8",
+        )
         # Create an initial index.html
         (tmp_path / "index.html").write_text(
             "<html><body>Old content</body></html>",
@@ -2657,6 +2674,10 @@ class TestGenerateIndexHtml:
         # Create a folder with special characters in the name
         folder = tmp_path / "Course & Co"
         folder.mkdir(parents=True)
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Test Feed", "description": "Test Description"}),
+            encoding="utf-8",
+        )
         # Create a dummy XML file directly
         (folder / "podcast.xml").write_text("<rss></rss>", encoding="utf-8")
 

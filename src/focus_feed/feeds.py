@@ -1313,11 +1313,32 @@ class FeedGenerator:
                 metadata_items=folder_metadata,
             )
 
-        # Generate index.html listing all feeds.
-        try:
-            self._generate_index_html()
-        except Exception as exc:
-            log_error(exc, stage="index_html_generation")
+        # Generate an index in every directory containing a feed.json file,
+        # even when its contents are malformed. Index generation handles
+        # invalid configuration gracefully.
+        feed_dirs = sorted(
+            {
+                feed_json_path.parent
+                for feed_json_path in self.data_dir.rglob("feed.json")
+                if feed_json_path.is_file()
+            }
+        )
+        for folder_path in feed_dirs:
+            try:
+                self._generate_index_html(output_dir=folder_path)
+            except Exception as exc:
+                log_error(exc, filepath=str(folder_path), stage="index_html_generation")
+
+        # Remove index pages left behind when the corresponding feed.json
+        # has been removed since the previous generation.
+        for index_path in self.data_dir.rglob("index.html"):
+            if not index_path.is_file() or (index_path.parent / "feed.json").is_file():
+                continue
+            try:
+                index_path.unlink()
+                _logger.info("Removed stale index.html: %s", index_path)
+            except OSError as exc:
+                _logger.warning("Failed to remove stale index.html %s: %s", index_path, exc)
 
         # Optionally validate the generated feeds.
         if validate:
@@ -1406,55 +1427,93 @@ class FeedGenerator:
     # Index HTML generation
     # ------------------------------------------------------------------
 
-    def _generate_index_html(self) -> None:
-        """Generate or update an ``index.html`` listing all XML feed files.
+    def _generate_index_html(self, output_dir: Path | None = None) -> None:
+        """Generate or update an ``index.html`` listing subtree XML feed files.
 
-        Discovers all ``*.xml`` files in the data directory tree using
-        :meth:`Path.rglob`, categorizes them by feed type, and writes an HTML
-        index file to ``data_dir / index.html``.
+        Discovers all ``*.xml`` files in *output_dir* and its subdirectories,
+        categorizes them by feed type, and writes an HTML index to
+        ``output_dir / index.html``.  The index is generated only for
+        directories containing a ``feed.json`` configuration.
 
         The index includes:
         - A title "Feed Index".
         - Sections organized by feed type (Podcast Feeds, Articles Feeds,
           and an "Other Feeds" section for any additional XML files).
-        - Links using absolute URLs (``base_url + relative path``).
-        - HTML-escaped filenames and URLs for special characters.
+        - Links using absolute URLs (``base_url + relative path``), with
+          relative paths as link text.
+        - Feed titles and descriptions from ``feed.json`` when available.
+        - HTML-escaped titles, descriptions, filenames, and URLs.
 
-        If no XML feeds are found, an index with empty sections is still
-        generated.  An existing ``index.html`` is overwritten.
+        Paths displayed in the index are relative to *output_dir*, while
+        feed links use absolute URLs rooted at ``base_url``.  If no XML feeds
+        are found, an index with empty sections is still generated. An
+        existing ``index.html`` is overwritten.
 
         Raises:
             OSError: If the index file cannot be written.
         """
-        # Check if data directory exists.
-        if not self.data_dir.exists() or not self.data_dir.is_dir():
+        if output_dir is None:
+            output_dir = self.data_dir
+
+        # Check if target directory exists.
+        if not output_dir.exists() or not output_dir.is_dir():
             _logger.warning(
-                "Data directory does not exist, skipping index.html generation: %s",
-                self.data_dir,
+                "Index directory does not exist, skipping index.html generation: %s",
+                output_dir,
+            )
+            return
+        if not (output_dir / "feed.json").is_file():
+            _logger.debug(
+                "No feed.json in %s; skipping index.html generation",
+                output_dir,
             )
             return
 
-        _logger.info("Generating index.html")
+        _logger.info("Generating index.html in %s", output_dir)
 
-        # Discover all XML feed files in the data directory tree.
-        xml_files = sorted(self.data_dir.rglob("*.xml"))
+        # Discover XML feeds in the target directory and its subtree.
+        xml_files = sorted(output_dir.rglob("*.xml"))
 
         # Categorize feeds by type based on filename.
-        podcast_feeds: list[tuple[str, str]] = []
-        articles_feeds: list[tuple[str, str]] = []
-        other_feeds: list[tuple[str, str]] = []
+        podcast_feeds: list[tuple[str, str, str, str]] = []
+        articles_feeds: list[tuple[str, str, str, str]] = []
+        other_feeds: list[tuple[str, str, str, str]] = []
+        feed_configs: dict[Path, dict[str, Any] | None] = {}
 
         for xml_path in xml_files:
-            rel_path = str(xml_path.relative_to(self.data_dir))
-            abs_url = self._absolute_url(rel_path)
+            rel_path = str(xml_path.relative_to(output_dir))
+            data_rel_path = str(xml_path.relative_to(self.data_dir))
+            abs_url = self._absolute_url(data_rel_path)
             feed_name = xml_path.name
+            feed_dir = xml_path.parent
+            feed_json_path = feed_dir / "feed.json"
+            if feed_dir not in feed_configs:
+                try:
+                    config = (
+                        json.loads(feed_json_path.read_text(encoding="utf-8"))
+                        if feed_json_path.exists()
+                        else None
+                    )
+                    feed_configs[feed_dir] = config if isinstance(config, dict) else None
+                except (json.JSONDecodeError, OSError, UnicodeDecodeError) as exc:
+                    _logger.warning("Failed to parse feed.json at %s: %s", feed_json_path, exc)
+                    feed_configs[feed_dir] = None
+
+            config = feed_configs[feed_dir]
+            configured_title = config.get("title") if config else None
+            title = (
+                configured_title if isinstance(configured_title, str) and configured_title else ""
+            )
+            configured_description = config.get("description") if config else None
+            description = configured_description if isinstance(configured_description, str) else ""
+            feed = (rel_path, abs_url, title, description)
 
             if feed_name == "podcast.xml":
-                podcast_feeds.append((rel_path, abs_url))
+                podcast_feeds.append(feed)
             elif feed_name == "articles.xml":
-                articles_feeds.append((rel_path, abs_url))
+                articles_feeds.append(feed)
             else:
-                other_feeds.append((rel_path, abs_url))
+                other_feeds.append(feed)
 
         # Sort each category by relative path for deterministic output.
         podcast_feeds.sort(key=lambda x: x[0])
@@ -1463,6 +1522,24 @@ class FeedGenerator:
 
         # Build HTML content.
         lines: list[str] = []
+
+        def append_feed_item(feed: tuple[str, str, str, str]) -> None:
+            rel_path, abs_url, title, description = feed
+            escaped_path = html.escape(rel_path)
+            escaped_url = html.escape(abs_url, quote=True)
+            escaped_title = html.escape(title)
+            escaped_description = html.escape(description)
+            title_prefix = f"<strong>{escaped_title}</strong>: " if escaped_title else ""
+            if escaped_description:
+                lines.append(
+                    f'        <li>{title_prefix}<a href="{escaped_url}">{escaped_path}</a>'
+                    f"<br><small>{escaped_description}</small></li>"
+                )
+            else:
+                lines.append(
+                    f'        <li>{title_prefix}<a href="{escaped_url}">{escaped_path}</a></li>'
+                )
+
         lines.append("<!DOCTYPE html>")
         lines.append("<html>")
         lines.append("<head>")
@@ -1482,36 +1559,30 @@ class FeedGenerator:
         # Podcast Feeds section.
         lines.append("    <h2>Podcast Feeds</h2>")
         lines.append("    <ul>")
-        for rel_path, abs_url in podcast_feeds:
-            escaped_path = html.escape(rel_path)
-            escaped_url = html.escape(abs_url)
-            lines.append(f'        <li><a href="{escaped_url}">{escaped_path}</a></li>')
+        for feed in podcast_feeds:
+            append_feed_item(feed)
         lines.append("    </ul>")
 
         # Articles Feeds section.
         lines.append("    <h2>Articles Feeds</h2>")
         lines.append("    <ul>")
-        for rel_path, abs_url in articles_feeds:
-            escaped_path = html.escape(rel_path)
-            escaped_url = html.escape(abs_url)
-            lines.append(f'        <li><a href="{escaped_url}">{escaped_path}</a></li>')
+        for feed in articles_feeds:
+            append_feed_item(feed)
         lines.append("    </ul>")
 
         # Other feeds section (only if there are non-standard XML files).
         if other_feeds:
             lines.append("    <h2>Other Feeds</h2>")
             lines.append("    <ul>")
-            for rel_path, abs_url in other_feeds:
-                escaped_path = html.escape(rel_path)
-                escaped_url = html.escape(abs_url)
-                lines.append(f'        <li><a href="{escaped_url}">{escaped_path}</a></li>')
+            for feed in other_feeds:
+                append_feed_item(feed)
             lines.append("    </ul>")
 
         lines.append("</body>")
         lines.append("</html>")
 
         html_content = "\n".join(lines)
-        index_path = self.data_dir / "index.html"
+        index_path = output_dir / "index.html"
         try:
             index_path.write_text(html_content, encoding="utf-8")
         except OSError as exc:
