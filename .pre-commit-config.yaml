@@ -17,6 +17,5 @@ repos:
           - openai
           - feedgen
           - watchdog
-          - faster-whisper
           - pypdf
           - beautifulsoup4

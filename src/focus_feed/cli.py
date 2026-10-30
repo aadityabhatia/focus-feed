@@ -384,6 +384,9 @@ def _write_json_metadata(data: dict[str, Any], source_path: Path) -> None:
     are renamed to the final path to avoid corruption from partial writes.
     """
     json_path = source_path.with_name(source_path.name + ".json")
+    data.pop("filepath", None)
+    data.pop("extracted_title", None)
+    data["mtime"] = source_path.stat().st_mtime
     json_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
     try:
@@ -702,7 +705,10 @@ def _cleanup_json_file(json_path: Path) -> tuple[int, list[str]]:
         return 0, []
 
     unknown_keys = _find_unknown_keys(data)
-    if not unknown_keys:
+    # Legacy metadata may still contain fields intentionally removed from the
+    # current schema; strip them even when callers do not inspect the report.
+    legacy_keys_present = "filepath" in data or "extracted_title" in data
+    if not unknown_keys and not legacy_keys_present:
         return 0, []
 
     # Remove top-level unknown keys.
@@ -724,6 +730,13 @@ def _cleanup_json_file(json_path: Path) -> tuple[int, list[str]]:
             for key in list(step_map.keys()):
                 if key not in _ALLOWED_STEP_MAP_KEYS:
                     del step_map[key]
+
+    source_path = json_path.with_name(json_path.name.removesuffix(".json"))
+    data["mtime"] = (
+        source_path.stat().st_mtime
+        if source_path.exists()
+        else data.get("mtime", json_path.stat().st_mtime)
+    )
 
     # Rewrite the file with cleaned data.
     try:
@@ -1469,9 +1482,8 @@ def transcribe(
     """Transcribe MP4 files to markdown text.
 
     Scans the given paths for MP4 files that do not yet have a complete
-    transcript, transcribes each one using faster-whisper or remote
-    transcription API if configured, and writes the transcript to the
-    adjacent JSON metadata file.
+    transcript, transcribes each one using the remote transcription API,
+    and writes the transcript to the adjacent JSON metadata file.
 
     Files that already have ``transcribe.status="complete"`` are skipped
     unless ``--force`` is specified.  Use ``--dry-run`` to preview which
@@ -1507,19 +1519,7 @@ def transcribe(
 
     transcriber = Transcriber()
 
-    # Pre-emptive CUDA availability check: surface a clear, actionable error
-    # before attempting to transcribe any files.
-    from focus_feed.services.transcriber import CUDA_ERROR_MESSAGE, check_cuda_available
-
     config = get_config()
-    if config.transcription_device == "cuda" and not check_cuda_available():
-        _logger.critical(
-            "CUDA is not available but TRANSCRIPTION_DEVICE=cuda is configured. "
-            "Transcription cannot proceed. %s",
-            CUDA_ERROR_MESSAGE,
-        )
-        click.echo(f"Error: {CUDA_ERROR_MESSAGE}", err=True)
-        sys.exit(1)
 
     success_count = 0
     error_count = 0
@@ -1541,8 +1541,8 @@ def transcribe(
             metadata.update(
                 {
                     "filename": source_file.name,
-                    "filepath": str(relative_path),
                     "filetype": "mp4",
+                    "mtime": source_file.stat().st_mtime,
                 }
             )
             _write_json_metadata(metadata, source_file)
@@ -1554,11 +1554,7 @@ def transcribe(
             transcribe_step["end_time"] = int(now.timestamp())
             transcribe_step["output_size"] = len(transcript.encode("utf-8")) if transcript else 0
             transcribe_step["words"] = len(transcript.split()) if transcript else 0
-            transcribe_step["model"] = (
-                config.transcription_remote_model or "remote"
-                if config.transcription_endpoint
-                else config.transcription_model
-            )
+            transcribe_step["model"] = config.transcription_remote_model or "remote"
             metadata["transcribe"] = transcribe_step
             metadata["content"] = transcript
             _write_json_metadata(metadata, source_file)
@@ -1799,8 +1795,8 @@ def extract(
             metadata.update(
                 {
                     "filename": source_file.name,
-                    "filepath": str(relative_path),
                     "filetype": filetype,
+                    "mtime": source_file.stat().st_mtime,
                     "description": extracted.get("description") or "",
                     "date": extracted.get("date", 0),
                     "publication_date": extracted.get("publication_date"),
@@ -1920,9 +1916,9 @@ def title(
                 error_count += 1
                 continue
 
-            # Get filename and extracted_title from existing metadata for context.
+            # Get filename and extracted title from the nested title metadata.
             filename_title = _clean_title(source_file.stem)
-            extracted_title = metadata_dict.get("extracted_title")
+            extracted_title = title.get("extracted") if isinstance(title, dict) else None
 
             # Initialize the generate_title step map before the LLM call.
             now = datetime.now(UTC)
@@ -2060,9 +2056,10 @@ def _finalize_incomplete_json(
 
     for source_file in files:
         try:
-            relative_path = os.path.relpath(source_file, Path.cwd())
             json_path = source_file.with_name(source_file.name + ".json")
             metadata = _get_json_metadata(json_path) or {}
+            metadata.pop("filepath", None)
+            metadata.pop("extracted_title", None)
 
             # Skip files with errors — they should not be finalized.
             if metadata.get("error"):
@@ -2071,7 +2068,7 @@ def _finalize_incomplete_json(
             filetype = source_file.suffix.lower().lstrip(".")
             stat_result = source_file.stat()
             file_size = stat_result.st_size
-            file_mtime = int(stat_result.st_mtime)
+            file_mtime = stat_result.st_mtime
             now = datetime.now(UTC)
             config = get_config()
 
@@ -2087,7 +2084,7 @@ def _finalize_incomplete_json(
             title.setdefault("extracted", None)
             title.setdefault("generated", None)
             filename_title = title.get("filename") or _clean_title(source_file.stem)
-            extracted_title = title.get("extracted") or metadata.get("extracted_title")
+            extracted_title = title.get("extracted")
 
             # Generate title via LLM if not already present.
             title_generated_tokens: tuple[int, int] | None = None
@@ -2154,9 +2151,9 @@ def _finalize_incomplete_json(
                 "title": title,
                 "description": description,
                 "filename": source_file.name,
-                "filepath": str(relative_path),
                 "filetype": filetype,
                 "date": metadata.get("date") or file_mtime,
+                "mtime": stat_result.st_mtime,
                 "size": metadata.get("size") or file_size,
             }
 
@@ -2174,7 +2171,7 @@ def _finalize_incomplete_json(
                     "input_size": file_size,
                     "output_size": len((metadata.get("content") or "").encode("utf-8")),
                     "words": len((metadata.get("content") or "").split()),
-                    "model": config.transcription_model,
+                    "model": config.transcription_remote_model or "remote",
                 }
                 final_metadata["summarize"] = {
                     "status": "complete",

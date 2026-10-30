@@ -462,7 +462,10 @@ class Scanner:
         try:
             with json_path.open("r", encoding="utf-8") as f:
                 data: dict[str, Any] | None = json.load(f)
-                return data
+                if isinstance(data, dict):
+                    return data
+                _logger.warning("JSON metadata %s must contain an object", json_path)
+                return None
         except json.JSONDecodeError as exc:
             _logger.warning("Could not parse JSON metadata %s: %s", json_path, exc)
             return None
@@ -470,29 +473,42 @@ class Scanner:
             _logger.warning("Could not read JSON metadata %s: %s", json_path, exc)
             return None
 
-    def _is_source_newer(self, source_path: Path, json_path: Path) -> bool:
-        """Return True if *source_path* was modified after *json_path*.
+    def _is_source_newer(
+        self,
+        source_path: Path,
+        json_path: Path,
+        metadata: dict[str, Any] | None = None,
+    ) -> bool:
+        """Return True if *source_path* changed since metadata was written.
 
-        Uses file modification times. If either file cannot be stat-ed, the
-        source is assumed to be newer (i.e., processing is needed) to avoid
-        silently skipping files due to stat errors.
+        The stored ``mtime`` field is preferred because JSON writes can happen
+        after long processing steps. Legacy metadata without a valid ``mtime``
+        falls back to comparing filesystem timestamps. If either file cannot
+        be stat-ed, processing is needed to avoid silently skipping files.
 
         Args:
             source_path: Path to the source file.
             json_path: Path to the JSON metadata file.
 
         Returns:
-            ``True`` if the source file's mtime is strictly greater than the
-            JSON file's mtime, or if the mtime comparison could not be
-            performed.
+            ``True`` if the source mtime differs from the stored source mtime,
+            or if the legacy filesystem timestamp comparison says it is newer.
         """
         try:
             source_mtime = source_path.stat().st_mtime
-            json_mtime = json_path.stat().st_mtime
         except OSError as exc:
             _logger.warning("Could not stat file %s: %s", source_path, exc)
             return True
 
+        stored_mtime = metadata.get("mtime") if isinstance(metadata, dict) else None
+        if isinstance(stored_mtime, (int, float)) and not isinstance(stored_mtime, bool):
+            return source_mtime != stored_mtime
+
+        try:
+            json_mtime = json_path.stat().st_mtime
+        except OSError as exc:
+            _logger.warning("Could not stat file %s: %s", json_path, exc)
+            return True
         return source_mtime > json_mtime
 
     def _evaluate_json_status(self, source_path: Path) -> tuple[bool, str | None, bool]:
@@ -542,7 +558,7 @@ class Scanner:
                 current_stage = stage
 
         # Check freshness: if source is newer, reprocess regardless of status.
-        source_newer = self._is_source_newer(source_path, json_path)
+        source_newer = self._is_source_newer(source_path, json_path, metadata)
 
         if source_newer:
             return True, current_stage, True

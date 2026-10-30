@@ -50,6 +50,7 @@ Design references:
 - tasks.md T3.1 (Producer implementation)
 """
 
+from contextlib import suppress
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -71,7 +72,7 @@ from focus_feed.services.extractors import (
     get_audio_metadata,
 )
 from focus_feed.services.summarizer import Summarizer
-from focus_feed.services.transcriber import CUDA_ERROR_MESSAGE, Transcriber
+from focus_feed.services.transcriber import Transcriber
 
 _logger = logging.getLogger("focus_feed")
 
@@ -151,8 +152,8 @@ class Producer:
 
     The Producer accepts an optional :class:`~focus_feed.scanner.Scanner`
     and optional service instances. When services are not provided, singleton
-    instances are created lazily so that the expensive model loading (e.g. the
-    Whisper transcription model) happens only once.
+    instances are created lazily so that the configured remote transcription
+    client is initialized only when needed and reused.
 
     When a scanner is provided, :meth:`process_all` can be used to discover and
     process files in batch. Without a scanner, individual files can still be
@@ -184,7 +185,7 @@ class Producer:
                 for batch file discovery via :meth:`process_all`. When
                 ``None``, :meth:`process_all` will raise an error.
             transcriber: Optional :class:`Transcriber` instance. When
-                ``None``, a new instance is created (lazy model loading).
+                ``None``, a new instance is created (lazy client initialization).
             summarizer: Optional :class:`Summarizer` instance. When
                 ``None``, a new instance is created.
             pdf_extractor: Optional :class:`PDFExtractor` instance. When
@@ -248,6 +249,11 @@ class Producer:
         filepath: str = scanned_file.filepath
         filename: str = scanned_file.filename
         absolute_path: str = scanned_file.absolute_path
+        try:
+            source_mtime = Path(absolute_path).stat().st_mtime
+        except OSError as exc:
+            _logger.warning("Could not stat source file %s: %s", absolute_path, exc)
+            source_mtime = None
 
         if filetype not in SUPPORTED_FILETYPES:
             _logger.warning(
@@ -274,6 +280,7 @@ class Producer:
         existing_content: str | None = None
         existing_hash: str | None = None
         existing_error: str | None = None
+        existing_mtime: float | None = None
         if json_path.exists() and not force:
             try:
                 existing_data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -285,8 +292,28 @@ class Producer:
                     existing_content = existing_data.get("content")
                     existing_hash = existing_data.get("hash")
                     existing_error = existing_data.get("error")
+                    stored_mtime = existing_data.get("mtime")
+                    if isinstance(stored_mtime, (int, float)) and not isinstance(
+                        stored_mtime, bool
+                    ):
+                        existing_mtime = float(stored_mtime)
             except json.JSONDecodeError, OSError:
                 pass
+
+        mtime_matches = (
+            source_mtime is not None
+            and existing_mtime is not None
+            and source_mtime == existing_mtime
+        )
+        if not mtime_matches:
+            # A changed source invalidates every result derived from it.
+            existing_transcribe = None
+            existing_summarize = None
+            existing_extract = None
+            existing_generate_title = None
+            existing_content = None
+            existing_hash = None
+            existing_error = None
 
         # If the file is already feed-eligible and not forcing, skip processing.
         if not force:
@@ -305,36 +332,26 @@ class Producer:
                     and existing_summarize is not None
                     and existing_summarize.get("status") == "complete"
                 )
-            if is_feed_eligible:
+            if is_feed_eligible and mtime_matches:
                 _logger.debug("Skipping %s: already feed-eligible", filepath)
                 return None
 
             # If the file has an existing error state and we're not forcing,
             # skip it — the user needs --force to retry.
-            if existing_error:
+            if existing_error and (existing_mtime is None or mtime_matches):
                 _logger.warning(
                     "File %s has existing error; skipping (use --force to retry)",
                     filepath,
                 )
                 return None
 
-        # Compute SHA256 hash of the source file when processing for the first
-        # time (no existing JSON) or when the hash field is not yet present
-        # (backward compatibility with legacy files).  When force=True, always
-        # recompute the hash since the file is being reprocessed from scratch.
-        if force or existing_hash is None:
-            file_hash = _compute_file_hash(absolute_path)
-        else:
-            file_hash = existing_hash
-            _logger.debug("Reusing existing hash for %s", filepath)
-
         partial_metadata: dict[str, Any] = {
             "filename": filename,
-            "filepath": filepath,
             "filetype": filetype,
+            "mtime": source_mtime,
         }
-        if file_hash:
-            partial_metadata["hash"] = file_hash
+        if existing_hash:
+            partial_metadata["hash"] = existing_hash
         # Set the initial step status based on file type, preserving
         # existing step maps so completed steps are not overwritten.
         now_ts = _now_timestamp()
@@ -610,20 +627,10 @@ class Producer:
                     "output_tokens": 0,
                 },
                 "filename": filename,
-                "filepath": filepath,
                 "filetype": "mp4",
             }
 
-        # Pre-emptive CUDA availability check: surface a clear, actionable
-        # error before attempting to transcribe.  The Transcriber._load_model
-        # method also performs this check, but failing early here avoids
-        # writing an "in_progress" status that would never complete.
         config = get_config()
-        if config.transcription_device == "cuda":
-            from focus_feed.services.transcriber import check_cuda_available
-
-            if not check_cuda_available():
-                raise RuntimeError(CUDA_ERROR_MESSAGE)
 
         # Before transcription: set transcribe status to in_progress.
         transcribe_step = metadata_dict.get("transcribe") or {}
@@ -633,11 +640,7 @@ class Producer:
         input_size = stat_result.st_size
 
         # Determine the transcription model to use.
-        transcribe_model = (
-            config.transcription_remote_model or "remote"
-            if config.transcription_endpoint
-            else config.transcription_model
-        )
+        transcribe_model = config.transcription_remote_model or "remote"
 
         # Skip transcription if already complete (safety check at the producer
         # level; the CLI transcribe command also filters via
@@ -669,6 +672,9 @@ class Producer:
             transcribe_step["output_size"] = len(transcript.encode("utf-8")) if transcript else 0
             transcribe_step["words"] = len(transcript.split()) if transcript else 0
             metadata_dict["transcribe"] = transcribe_step
+
+        # Hash the source during its processing pipeline, after transcription.
+        metadata_dict["hash"] = _compute_file_hash(absolute_path)
 
         # After transcription, before summarization: update statuses.
         metadata_dict["content"] = transcript
@@ -814,6 +820,7 @@ class Producer:
                 "description": "",  # MP4: leave description blank, use summary instead
                 "summary": summary,
                 "date": file_date,
+                "mtime": stat_result.st_mtime,
                 "size": file_size,
                 "duration": duration,
                 "creation_time": creation_time_str,
@@ -825,13 +832,12 @@ class Producer:
         # Return a Metadata object for in-memory use.
         metadata = Metadata(
             title=title_dict,
-            extracted_title=extracted_title,
             description="",  # MP4: leave description blank, use summary instead
             summary=summary,
             filename=filename,
-            filepath=filepath,
             filetype="mp4",
             date=file_date,
+            mtime=stat_result.st_mtime,
             size=file_size,
             duration=duration,
             creation_time=creation_time_str,
@@ -841,6 +847,7 @@ class Producer:
             summarize=StepMap(**summarize_step),
             generate_title=StepMap(**generate_title_step),
         )
+        metadata._source_filepath = filepath
         return metadata
 
     def _process_pdf(
@@ -918,7 +925,6 @@ class Producer:
                     "output_tokens": 0,
                 },
                 "filename": filename,
-                "filepath": filepath,
                 "filetype": "pdf",
             }
 
@@ -939,6 +945,7 @@ class Producer:
         _logger.info("Starting extraction for %s (step 1/3)", filepath)
         # Step 1: Extract metadata from the PDF.
         extracted = self.pdf_extractor.extract(absolute_path)
+        metadata_dict["hash"] = _compute_file_hash(absolute_path)
 
         # The filename-derived title is used as the actual title.
         # The extracted title from PDF metadata is stored in the 'extracted'
@@ -1076,6 +1083,7 @@ class Producer:
                 "title": title_dict,
                 "description": description,
                 "date": file_date,
+                "mtime": stat_result.st_mtime,
                 "size": file_size,
                 "content": file_content,
             }
@@ -1087,13 +1095,12 @@ class Producer:
         # Return a Metadata object for in-memory use.
         metadata = Metadata(
             title=title_dict,
-            extracted_title=extracted_title,
             description=description,
             summary=summary,
             filename=filename,
-            filepath=filepath,
             filetype="pdf",
             date=file_date,
+            mtime=stat_result.st_mtime,
             publication_date=file_publication_date,
             size=file_size,
             content=file_content,
@@ -1104,6 +1111,7 @@ class Producer:
             if generate_title_step.get("status") == "complete"
             else None,
         )
+        metadata._source_filepath = filepath
         return metadata
 
     def _process_html(
@@ -1182,7 +1190,6 @@ class Producer:
                     "output_tokens": 0,
                 },
                 "filename": filename,
-                "filepath": filepath,
                 "filetype": "html",
             }
 
@@ -1203,6 +1210,7 @@ class Producer:
         _logger.info("Starting extraction for %s (step 1/3)", filepath)
         # Step 1: Extract metadata from the HTML.
         extracted = self.html_extractor.extract(absolute_path)
+        metadata_dict["hash"] = _compute_file_hash(absolute_path)
 
         # The filename-derived title is used as the actual title.
         # The extracted title from <title> tag is stored in the 'extracted'
@@ -1340,6 +1348,7 @@ class Producer:
                 "title": title_dict,
                 "description": description,
                 "date": file_date,
+                "mtime": stat_result.st_mtime,
                 "size": file_size,
                 "content": file_content,
             }
@@ -1351,13 +1360,12 @@ class Producer:
         # Return a Metadata object for in-memory use.
         metadata = Metadata(
             title=title_dict,
-            extracted_title=extracted_title,
             description=description,
             summary=summary,
             filename=filename,
-            filepath=filepath,
             filetype="html",
             date=file_date,
+            mtime=stat_result.st_mtime,
             publication_date=file_publication_date,
             size=file_size,
             content=file_content,
@@ -1368,6 +1376,7 @@ class Producer:
             if generate_title_step.get("status") == "complete"
             else None,
         )
+        metadata._source_filepath = filepath
         return metadata
 
     # ------------------------------------------------------------------
@@ -1421,6 +1430,14 @@ class Producer:
         json_path = Path(source_path).with_name(Path(source_path).name + ".json")
         json_path.parent.mkdir(parents=True, exist_ok=True)
 
+        metadata_dict.pop("filepath", None)
+        metadata_dict.pop("extracted_title", None)
+        if metadata_dict.get("mtime") is None:
+            try:
+                metadata_dict["mtime"] = Path(source_path).stat().st_mtime
+            except OSError:
+                metadata_dict.pop("mtime", None)
+
         # Write to a temporary file first, then rename for atomicity.
         tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
         try:
@@ -1462,11 +1479,17 @@ class Producer:
                 determine where to write the adjacent JSON metadata file.
                 Must be provided.
         """
+        mtime: float | None = None
+        if absolute_path:
+            with suppress(OSError):
+                mtime = Path(absolute_path).stat().st_mtime
+
         error_metadata = create_error_metadata(
             exc=exc,
             filename=filename,
             filepath=filepath,
             filetype=filetype,
+            mtime=mtime,
         )
 
         # Determine the absolute path for writing the error JSON.

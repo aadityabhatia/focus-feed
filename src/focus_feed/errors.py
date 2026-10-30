@@ -190,10 +190,14 @@ class ProcessingError(Exception):
         self.filepath = filepath
 
 
-class TranscriptionError(ProcessingError):
-    """Exception raised when audio transcription fails.
+class ConfigurationError(ProcessingError):
+    """Exception raised when required application configuration is missing."""
 
-    Covers corrupted audio files, GPU/CUDA errors, and model loading failures.
+
+class TranscriptionError(ProcessingError):
+    """Exception raised when remote audio transcription fails.
+
+    Covers remote API request/response failures and invalid audio input.
     """
 
 
@@ -229,6 +233,7 @@ def create_error_metadata(
     filename: str,
     filepath: str,
     filetype: str | None = None,
+    mtime: float | None = None,
 ) -> dict:
     """Create an error metadata dictionary from an exception.
 
@@ -245,15 +250,23 @@ def create_error_metadata(
     Args:
         exc: The exception that occurred during processing.
         filename: Name of the source file being processed (e.g. ``"lecture.mp4"``).
-        filepath: Relative path of the file from the data directory root
-            (e.g. ``"videos/lecture.mp4"``).
+        filepath: Path of the file being processed (used only to determine
+            its modification time; never serialized).
         filetype: File type (``"mp4"``, ``"pdf"``, ``"html"``), if known.
-            Defaults to ``"unknown"`` when not provided.
+            ``None`` when the type is not known.
+        mtime: Source modification time, if already available.
 
     Returns:
         A dictionary suitable for JSON serialization as an error metadata file.
     """
     timestamp = int(datetime.now(UTC).timestamp() * 1000) / 1000.0
+    if filetype not in {"mp4", "pdf", "html"}:
+        filetype = None
+    if mtime is None:
+        try:
+            mtime = Path(filepath).stat().st_mtime
+        except OSError:
+            mtime = timestamp
     error_message = str(exc) if str(exc) else exc.__class__.__name__
 
     # Convert string title to dict for backward compatibility.
@@ -263,16 +276,19 @@ def create_error_metadata(
         "generated": None,
     }
 
-    return {
+    error_metadata = {
         "title": title_dict,
         "description": "",
         "filename": filename,
-        "filepath": filepath,
-        "filetype": filetype or "unknown",
+        "filetype": filetype,
         "date": timestamp,
+        "mtime": mtime,
         "size": 0,
         "error": error_message,
     }
+    result = {key: value for key, value in error_metadata.items() if value is not None}
+    result["title"] = {key: value for key, value in title_dict.items() if value is not None}
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -301,7 +317,7 @@ def log_error(
         (e.g. ``"transcription"``, ``"summarization"``, ``"title_generation"``).
     - **Retry info** — retry attempt information, if provided (e.g.
         ``"attempt=1/4"``).
-    - **Endpoint** — the LLM endpoint URL, sanitized to remove credentials
+    - **Endpoint** — the API endpoint URL, sanitized to remove credentials
         and query parameters.
     - **Model** — the model name used for the request, if provided.
 
@@ -319,7 +335,7 @@ def log_error(
             where in the pipeline the error occurred.
         retry_info: Optional retry attempt information (e.g.
             ``"attempt=1/4"``).
-        endpoint: Optional LLM endpoint URL. Will be sanitized to remove
+        endpoint: Optional API endpoint URL. Will be sanitized to remove
             credentials and query parameters before logging.
         model: Optional model name used for the request.
         print_stdout: If ``True``, print a detailed multi-line error summary

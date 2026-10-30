@@ -33,13 +33,12 @@ millisecond precision.
                 "extracted": "Lecture 1",    # from source metadata (PDF/HTML/MP4)
                 "generated": "LLM Title"     # LLM-generated with filename and extracted title
             },
-            "extracted_title": "Lecture 1",  # extracted title stored separately (optional)
             "description": "string (optional, extracted from source for PDF/HTML, empty for MP4)",
             "summary": "string (optional, LLM-generated key takeaways for all file types)",
             "filename": "lecture.mp4",
-            "filepath": "videos/lecture.mp4",
             "filetype": "mp4|pdf|html",
             "date": 1728931200.123,          # UNIX epoch (float, millisecond precision)
+            "mtime": 1728931200.123,         # Source file modification time
             "publication_date": 1728931200.123,  # Document metadata date (PDF/HTML, optional)
             "size": 12345678,
             "duration": 3600.5,          # Audio duration in seconds (MP4, optional)
@@ -103,6 +102,7 @@ from pydantic import (
     BaseModel,
     ConfigDict,
     Field,
+    PrivateAttr,
     computed_field,
     field_validator,
     model_validator,
@@ -248,16 +248,14 @@ class Metadata(BaseModel):
             holds the LLM-generated title (all file types). The
             :attr:`final_title` computed property resolves the final title
             using precedence: generated > extracted > filename.
-        extracted_title: Title extracted from source metadata (PDF metadata,
-            HTML <title>), if available. Not used as the actual title for
-            PDF/HTML files; the filename-derived title is used instead.
         description: Description for feed item (optional; extracted from source
             for PDF/HTML files, empty for MP4 files where summary is used instead)
         summary: LLM-generated key takeaways summary (all file types, optional)
         filename: Original filename with extension
-        filepath: Relative path from data directory root
-        filetype: Source file type: "mp4", "pdf", or "html"
+        filetype: Source file type: "mp4", "pdf", or "html"; None when
+            unavailable for an error entry.
         date: Publication/creation date as UNIX epoch (float, millisecond precision)
+        mtime: Source file modification time as a UNIX epoch float.
         publication_date: Publication date from document metadata (PDF/HTML
             only), or None if not available
         size: File size in bytes (for podcast enclosure length)
@@ -268,7 +266,7 @@ class Metadata(BaseModel):
             for PDF/HTML files (optional)
         hash: SHA256 hash of the source file (optional; used for guid generation in
             feeds). When present, the last 12 characters are used as the feed item
-            guid. Falls back to filepath when not present.
+            guid. Falls back to the inferred source path when not present.
         transcribe: Step map for transcription (MP4 only)
         summarize: Step map for summarization (all file types)
         extract: Step map for metadata extraction (PDF/HTML only)
@@ -291,12 +289,6 @@ class Metadata(BaseModel):
         "compatibility but emits a deprecation warning. The final title "
         "uses the precedence: generated > extracted > filename.",
     )
-    extracted_title: str | None = Field(
-        default=None,
-        description="Title extracted from source metadata (PDF metadata, HTML <title>), "
-        "if available. Not used as the actual title; the filename-derived "
-        "title is used instead for PDF/HTML files.",
-    )
     description: str | None = Field(
         default=None,
         description="Description for feed item (extracted from source for PDF/HTML, "
@@ -310,19 +302,19 @@ class Metadata(BaseModel):
         ...,
         description="Original filename with extension",
     )
-    filepath: str = Field(
+    filetype: Literal["mp4", "pdf", "html"] | None = Field(
         ...,
-        description="Relative path from data directory root",
-    )
-    filetype: Literal["mp4", "pdf", "html"] = Field(
-        ...,
-        description="Source file type",
+        description="Source file type, or null when unavailable for an error entry",
     )
     date: float | None = Field(
         default=None,
         description="Publication/creation date as UNIX epoch (millisecond precision). "
         "For MP4, this is the media creation_time or file mtime. For PDF/HTML, "
         "this is the document metadata date or file mtime.",
+    )
+    mtime: float | None = Field(
+        default=None,
+        description="Source file modification time as a UNIX epoch float",
     )
     publication_date: float | None = Field(
         default=None,
@@ -374,6 +366,8 @@ class Metadata(BaseModel):
         description="Error message (only present when processing failed)",
     )
 
+    _source_filepath: str = PrivateAttr(default="")
+
     @field_validator("error")
     @classmethod
     def _validate_error(cls, v: str | None) -> str | None:
@@ -388,7 +382,7 @@ class Metadata(BaseModel):
         """Validate the title field.
 
         - If *v* is a plain string, return it unchanged (backward
-          compatibility).  A deprecation warning including the filepath is
+          compatibility).  A deprecation warning including the filename is
           emitted by :meth:`_warn_string_title` after model construction.
         - If *v* is a dict, ensure it has all three required keys
           (``filename``, ``extracted``, ``generated``).  Missing keys are
@@ -416,14 +410,14 @@ class Metadata(BaseModel):
         """Emit a deprecation warning if title is a plain string.
 
         Unlike the field validator, this runs after model construction so
-        that ``self.filepath`` is available for inclusion in the warning
+        that the source filename is available for inclusion in the warning
         message.
         """
         if isinstance(self.title, str):
             _logger.warning(
                 "Title is a plain string; string titles are deprecated for file %s. "
                 "Use a dict with 'filename', 'extracted', 'generated' keys.",
-                self.filepath,
+                self.filename,
             )
         return self
 
@@ -482,9 +476,8 @@ class Metadata(BaseModel):
         compatibility).  Returns an empty string when no suitable value
         is found.
 
-        After precedence resolution, the module prefix (derived from the
-        parent directory name of ``filepath``) is prepended if the final
-        title does not already start with the folder name.
+        After precedence resolution, prepend the parent directory name of
+        the inferred source path when the title does not already start with it.
         """
         if isinstance(self.title, dict):
             for key in ("generated", "extracted", "filename"):
@@ -497,7 +490,12 @@ class Metadata(BaseModel):
         else:
             base_title = self.title
 
-        return _apply_module_prefix_to_title(base_title, self.filepath)
+        return _apply_module_prefix_to_title(base_title, self._source_filepath)
+
+    @property
+    def source_filepath(self) -> str:
+        """Return the inferred source path used for feed URLs and grouping."""
+        return self._source_filepath
 
     # ------------------------------------------------------------------
     # Serialization / Deserialization
@@ -586,4 +584,6 @@ class Metadata(BaseModel):
             _logger.warning("Failed to parse metadata file %s: %s", path, exc)
             log_error(exc, filepath=str(path), stage="metadata_parse")
             raise
-        return cls.model_validate(data)
+        metadata = cls.model_validate(data)
+        metadata._source_filepath = str(path.with_name(path.name.removesuffix(".json")))
+        return metadata
