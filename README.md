@@ -11,7 +11,7 @@ Turn disorganized PDF, HTML, and MP4 audio files into RSS feeds for mobile apps.
 - Per-folder feeds - Organize with `feed.json` in subfolders
 - Discovery - Auto-generated `index.html` lists all available feeds
 
-All processing uses your configured endpoints. Optional local transcription available.
+All processing uses your configured endpoints. Transcription is remote-only; audio metadata extracted via PyAV.
 
 **Documentation:**
 - [Proposal](./artifacts/proposal.md) - Problem and scope
@@ -51,17 +51,14 @@ To process all files, pass your data directory:
 - `PROMPT_ARTICLE` - Article summarization prompt (PDF/HTML)
 - `PROMPT_PODCAST` - Podcast summarization prompt (MP4)
 - `PROMPT_TITLE` - Title generation prompt
+- `TRANSCRIPTION_ENDPOINT` - Remote transcription API endpoint (required, no local transcription)
+- `TRANSCRIPTION_API_KEY` - Remote transcription API key
 
 ### Optional Environment Variables
 
 - `PROMPT_ARTICLE_REFLECTION` - Article summarization with reflection questions (default: `PROMPT_ARTICLE`)
 - `PROMPT_PODCAST_REFLECTION` - Podcast summarization with reflection questions (default: `PROMPT_PODCAST`)
-- `TRANSCRIPTION_ENDPOINT` - Remote transcription API endpoint (enables remote mode)
-- `TRANSCRIPTION_API_KEY` - Remote transcription API key
 - `TRANSCRIPTION_REMOTE_MODEL` - Remote transcription model override
-- `TRANSCRIPTION_MODEL` - Local transcription model (default: `large-v3-turbo`)
-- `TRANSCRIPTION_DEVICE` - Transcription device (cuda/cpu) (default: `cuda`)
-- `TRANSCRIPTION_COMPUTE_TYPE` - Compute type for transcription (default: `float16`)
 
 ### Example `.env` File
 
@@ -71,6 +68,8 @@ BASE_URL=https://example.com
 LLM_ENDPOINT=https://llm.example.com/v1
 LLM_API_KEY=your-api-key
 LLM_MODEL=mistralai/Mistral-7B-Instruct
+TRANSCRIPTION_ENDPOINT=https://transcription.example.com/v1
+TRANSCRIPTION_API_KEY=your-transcription-api-key
 
 # Prompts
 PROMPT_ARTICLE="Summarize key takeaways from this document concisely in a few paragraphs."
@@ -80,18 +79,10 @@ PROMPT_TITLE="Generate a concise, descriptive title (5-10 words) for the given c
 # Optional
 PROMPT_ARTICLE_REFLECTION="Summarize with reflection questions: ..."
 PROMPT_PODCAST_REFLECTION="Summarize with reflection questions: ..."
-
-# Transcription (default: local faster-whisper on GPU)
-TRANSCRIPTION_MODEL=large-v3-turbo
-TRANSCRIPTION_DEVICE=cuda
-TRANSCRIPTION_COMPUTE_TYPE=float16
-
-# Remote transcription (optional - overrides local when set)
-# TRANSCRIPTION_ENDPOINT=https://transcription.example.com/v1
-# TRANSCRIPTION_API_KEY=your-transcription-api-key
+TRANSCRIPTION_REMOTE_MODEL=whisper-1
 ```
 
-**Note:** When `TRANSCRIPTION_ENDPOINT` is configured, remote transcription mode is used instead of local faster-whisper.
+**Note:** Transcription is remote-only. `TRANSCRIPTION_ENDPOINT` and `TRANSCRIPTION_API_KEY` are required.
 
 ---
 
@@ -111,13 +102,15 @@ Watch for new/updated files:
 uv run focus-feed watch ./data
 ```
 
+File modification times are stored in JSON and checked on each process. Files are skipped if already complete and unchanged. Use `--force` to override.
+
 ---
 
 ## Granular Processing
 
 Target specific steps or files by passing files and directories as positional arguments:
 
-- `transcribe` - Transcribe MP4 files to markdown
+- `transcribe` - Transcribe MP4 files to markdown (remote-only)
 - `summarize` - Generate summaries from transcripts or document content
 - `extract` - Extract metadata from PDF/HTML files
 - `title` - Generate titles for files that lack proper titles
@@ -128,7 +121,7 @@ Target specific steps or files by passing files and directories as positional ar
 
 ### Common Flags
 
-- `--force` - Force re-processing even if complete
+- `--force` - Force re-processing even if complete or unchanged
 - `--dry-run` - Preview without making changes (transcribe, summarize, extract)
 - `--config-file <path>` - Use custom `.env` file
 
@@ -155,6 +148,7 @@ uv run focus-feed transcribe --dry-run
 ```
 
 ---
+
 ## File Organization
 
 ### Directory Structure
@@ -206,18 +200,23 @@ Place a `reflection.md` file in any folder to focus summarization on specific qu
 
 ## Feed Generation Rules
 
-- **Podcast feed** (`podcast.xml`): Generated only if `feed.json` exists AND at least one MP4 file is processed
-- **Articles feed** (`articles.xml`): Generated only if `feed.json` exists AND at least one PDF/HTML file is processed
+- **Podcast feed** (`podcast.xml`): Generated only if `feed.json` exists AND at least one MP4 file is processed with transcribe+summarize complete
+- **Articles feed** (`articles.xml`): Generated only if `feed.json` exists AND at least one PDF/HTML file is processed with extract+summarize complete
 - **Root-level feeds**: Require `feed.json` in the data directory root
 - **Per-folder feeds**: Require `feed.json` in the subfolder
 - **Index page** (`index.html`): Auto-generated at root, lists all feeds from all folders
 
 ---
+
 ## Supported File Types
 
-- **MP4 (audio)** - Transcribed + summarized, Podcast feed, `description=""`, `summary`=key takeaways, `content`=transcript
+- **MP4 (audio)** - Transcribed (remote-only) + summarized, Podcast feed, `description=""`, `summary`=key takeaways, `content`=transcript
 - **PDF** - Metadata + content extracted, Articles feed, `description`=metadata, `content`=text, `summary`=null (unless summarized)
 - **HTML** - Metadata + content extracted, Articles feed, `description`=metadata, `content`=text, `summary`=null (unless summarized)
+
+### JSON Metadata
+
+Metadata JSON files are stored alongside their source files. Titles use a `title` object with `filename`, `extracted`, and `generated` values; generated titles take precedence over extracted titles, which take precedence over filenames. **Note: filepath is NOT stored in JSON metadata; it is inferred from the JSON file's location.**
 
 ---
 
@@ -227,27 +226,12 @@ Place a `reflection.md` file in any folder to focus summarization on specific qu
 - Python 3.14+
 - uv - For dependency management
 - LLM Endpoint - OpenAI-compatible API for summarization (can be remote or local)
-- Optional: `ffprobe` - For audio metadata extraction (falls back to file metadata)
-
-### Optional: Local Transcription
-- Nvidia GPU with CUDA - Required for efficient local transcription
-- CUDA Toolkit - Must be installed
-- Models: faster-whisper models (downloaded automatically, ~2-6 GB)
+- Transcription Endpoint - Remote OpenAI-compatible API for transcription (required, no local transcription)
+- PyAV (`av` package) - For audio metadata extraction
 
 ### Models
 - Summarization: Any OpenAI-compatible model with 128K+ context window recommended
-
----
-
-## Optional Dependencies
-
-### Local Transcription (GPU-accelerated)
-
-```bash
-uv sync --extra local-transcription
-```
-
-Installs `faster-whisper` and `av` for local GPU-accelerated transcription.
+- Transcription: Any OpenAI-compatible whisper model on remote endpoint
 
 ---
 
@@ -255,14 +239,8 @@ Installs `faster-whisper` and `av` for local GPU-accelerated transcription.
 
 ### Transcription Issues
 
-- **Large files take time**: No time constraints; acceptable for personal use
-- **CUDA out of memory**: Use smaller model (`medium`, `small`, `base`) or `int8` compute type
-- **Model not found**: Verify model name or installation
-
-### Remote Transcription Issues
-
+- **Remote endpoint unavailable**: Verify `TRANSCRIPTION_ENDPOINT` and `TRANSCRIPTION_API_KEY`
 - **Audio exceeds maximum duration**: Configure vLLM server with `VLLM_MAX_AUDIO_DECODE_DURATION_S=3600` (or higher)
-- **Connection errors**: Verify `TRANSCRIPTION_ENDPOINT` and `TRANSCRIPTION_API_KEY`
 
 ### Feed Issues
 
@@ -274,6 +252,7 @@ Installs `faster-whisper` and `av` for local GPU-accelerated transcription.
 
 - **Special characters**: Warnings are generated; filenames are preserved
 - **Orphaned JSON**: Delete `.json` file to re-process
+- **File modified after processing**: File modification time is stored and checked; use `--force` to reprocess
 - **Force re-processing**: Use `--force` flag
 
 ---

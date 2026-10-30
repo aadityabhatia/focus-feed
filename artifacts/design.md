@@ -3,7 +3,7 @@
 **Runner:** All commands run via `uv run focus-feed <command>` from project root.
 
 ## 1. Overview
-Standalone app that processes MP4, PDF, HTML files and generates private RSS feeds for personal consumption. Local-first by default; remote transcription optional.
+Standalone app that processes MP4, PDF, HTML files and generates private RSS feeds for personal consumption. Remote transcription only; audio metadata via PyAV.
 
 **Goals**
 - Privacy-first, local processing
@@ -17,20 +17,20 @@ Standalone app that processes MP4, PDF, HTML files and generates private RSS fee
 **Components**
 - **Scanner & Watcher (`watchdog`):** Recursively discovers files, debounced change detection, periodic rescan fallback for unreliable events
 - **Producer Pipeline:** Queue manager that decides skip/process/resume based on JSON step maps
-  - Transcription Service: MP4 → markdown via faster-whisper local CUDA or remote OpenAI-compatible API
+  - Transcription Service: MP4 → markdown via remote OpenAI-compatible API only
   - Summarization Service: LLM key takeaways from transcript/extracted text, with reflection.md injection
-  - Extraction Service: PDF/HTML metadata+plaintext via `pypdf`/`beautifulsoup4`; audio metadata via optional `ffprobe` (falls back to file metadata)
+  - Extraction Service: PDF/HTML metadata+plaintext via `pypdf`/`beautifulsoup4`; audio metadata via `av` (PyAV); hashing (SHA256) computed during first extraction
 - **Feed Generator (`feedgen`):** Aggregates eligible metadata per feed.json, builds RSS items with enclosure links, pubDate logic, and GUIDs; writes podcast.xml / articles.xml
 - **Index Generator:** Builds root index.html with links/titles/descriptions from all feed.json configs
 - **CLI (`click`) + Config (`pydantic-settings` + `.env`)**
 
 **Data Flow**
 1. Scanner discovers file recursively
-2. If JSON exists, check step statuses. Skip if all applicable steps complete; otherwise resume incomplete steps
+2. If JSON exists, check file modification time against JSON mtime. If file unchanged and all applicable steps complete, skip; otherwise resume incomplete steps
 3. Dispatch by type:
-   - MP4: load reflection.md if present → transcribe to markdown → store in content → summarize with reflection prompt → extract audio metadata via optional ffprobe → generate_title via LLM → build title dict → apply parent folder prefix
-   - PDF/HTML: extract metadata & plaintext → sanitize control chars → store description/content → generate_title via LLM → build title dict → apply folder prefix
-4. Write/update JSON with step maps, hash, timestamps
+   - MP4: load reflection.md if present → transcribe to markdown via remote API → store in content → summarize with reflection prompt → extract audio metadata via PyAV → generate_title via LLM → build title dict → apply parent folder prefix
+   - PDF/HTML: extract metadata & plaintext → sanitize control chars → compute SHA256 hash → store description/content/mtime → generate_title via LLM → build title dict → apply folder prefix
+4. Write/update JSON with step maps, hash, timestamps, mtime
 5. Feed Generator scans for feed.json, collects feed-eligible items from subtree, sorts by folder/filename, converts markdown→HTML with XSS protection, writes podcast.xml / articles.xml
 6. Index Generator updates root index.html with all feeds
 
@@ -42,11 +42,12 @@ Flags: `--config-file`, `--force`, `--dry-run`
 
 **Environment**
 Required: BASE_URL, LLM_ENDPOINT, LLM_API_KEY, LLM_MODEL, PROMPT_ARTICLE, PROMPT_PODCAST, PROMPT_TITLE
-Optional: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION, TRANSCRIPTION_ENDPOINT, TRANSCRIPTION_API_KEY, TRANSCRIPTION_MODEL, TRANSCRIPTION_DEVICE, TRANSCRIPTION_COMPUTE_TYPE, TRANSCRIPTION_REMOTE_MODEL
+Optional: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION, TRANSCRIPTION_ENDPOINT, TRANSCRIPTION_API_KEY, TRANSCRIPTION_REMOTE_MODEL
 
 **JSON Metadata**
-Per file `<name>.json` with title dict `{filename,extracted,generated}`, description, summary, content, filetype, dates ms, size, hash, step maps `transcribe/summarize/extract/generate_title` with status/timing, error.
+Per file `<name>.json` with title dict `{filename,extracted,generated}`, description, summary, content, filetype, dates ms, mtime, size, hash, step maps `transcribe/summarize/extract/generate_title` with status/timing, error.
 Title precedence: generated > extracted > filename. Parent folder name auto-prepended.
+Filepath is NOT stored; it is inferred from the JSON filename location.
 
 **Feed Eligibility**
 MP4: transcribe.complete AND summarize.complete
@@ -66,14 +67,13 @@ Optional per folder. Questions prepended to LLM summarization prompt. Uses refle
 feedgen, watchdog, openai, pydantic-settings, pydantic, click, pypdf, beautifulsoup4, av, markdown>=3.5.0, python-dotenv
 
 **Transcription**
-- Local default: faster-whisper with CUDA GPU, model large-v3-turbo float16
-- Remote optional: OpenAI-compatible API via TRANSCRIPTION_ENDPOINT. Nvidia GPU not required for remote mode.
+Remote only: OpenAI-compatible API via TRANSCRIPTION_ENDPOINT. No local mode.
 
 **Summarization**
 OpenAI-compatible endpoint. Prompts per filetype. Context 128K+ recommended.
 
 **Extraction**
-PDF: pypdf; HTML: beautifulsoup4; Audio metadata: optional ffprobe with file-metadata fallback. Control characters removed for XML safety.
+PDF: pypdf; HTML: beautifulsoup4; Audio metadata: av (PyAV). Control characters removed for XML safety. SHA256 hash computed during first extraction.
 
 ## 5. Key Decisions
 - Title as dict with provenance for fallback and display
@@ -87,6 +87,8 @@ PDF: pypdf; HTML: beautifulsoup4; Audio metadata: optional ffprobe with file-met
 - Optional reflection.md for focused summarization
 - Millisecond precision timestamps
 - Conditional generation: feed.json + eligible files required
+- Remote-only transcription
+- File modification time stored in JSON; used to detect changes and trigger reprocessing
 
 ## 6. Risks & Mitigations
 Transcription quality → use established models
@@ -94,7 +96,6 @@ LLM inconsistency → tested prompts, configurable
 Watcher misses events → periodic rescan
 Special chars → escape output, warn
 Large audio → acceptable for personal use
-GPU memory → float16, smaller models
 API unavailable → clear errors, retry
 Control chars → auto remove
 Missing feeds → document feed.json requirement
@@ -104,6 +105,6 @@ Missing feeds → document feed.json requirement
 - Existing web server serves data directory
 - Python 3.14+ and uv for dependency management
 - LLM endpoint available (can be remote or local)
-- Nvidia GPU optional for local transcription; required for best performance in local mode, not needed for remote transcription
-- No ffprobe required by default; audio metadata uses optional ffprobe and falls back to file metadata when unavailable
+- Transcription endpoint required; remote-only
+- No ffprobe required; audio metadata uses PyAV
 - Remote transcription: vLLM server requires `VLLM_MAX_AUDIO_DECODE_DURATION_S` configuration for longer audio files

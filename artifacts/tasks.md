@@ -540,6 +540,21 @@ Implement RSS feed generation for podcast and articles feeds with new features.
   - Unsafe URL schemes are rejected or textified
   - None input returns empty string
 
+- [x] T4.5.5: Implement Summarization Attribution in Feeds
+  - **Description:** Add model and timestamp attribution to feed item descriptions
+  - **File:** `src/focus_feed/feeds.py`
+  - **Actions:**
+    - Implement `_get_summarization_attribution()` helper function
+    - Returns format: "Summarized by {model} at {YYYY-MM-DD HH:MM:SS TZ}"
+    - Call in both `generate_podcast_feed()` and `generate_articles_feed()` methods
+    - Append attribution to item description content before HTML conversion
+    - Extract model from summarize step map, fallback to config LLM_MODEL
+    - Extract timestamp from summarize.end_time, fallback to metadata.date or publication_date
+  - **Completion Criteria:**
+    - Attribution appears in both podcast.xml and articles.xml feed items when available
+    - Attribution format is consistent: "Summarized by {model} at {datetime}"
+    - Attribution only shown when _get_summarization_attribution() returns non-empty string (requires both model and timestamp)
+
 - [x] T4.6: Implement Feed Generation Method
 - **Description:** Create main method to generate both feeds
 - **File:** `src/focus_feed/feeds.py`
