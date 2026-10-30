@@ -6,9 +6,8 @@ and optional .env file. Provides a singleton accessor for global config.
 
 import logging
 import os
-from typing import Any
 
-from pydantic import field_validator, model_validator
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 _logger = logging.getLogger("focus_feed")
@@ -22,6 +21,8 @@ _REQUIRED_FIELDS: tuple[str, ...] = (
     "PROMPT_ARTICLE",
     "PROMPT_PODCAST",
     "PROMPT_TITLE",
+    "TRANSCRIPTION_ENDPOINT",
+    "TRANSCRIPTION_API_KEY",
 )
 
 
@@ -49,14 +50,11 @@ class Settings(BaseSettings):
     prompt_podcast: str
     prompt_podcast_reflection: str | None = None
     prompt_title: str
+    transcription_endpoint: str
+    transcription_api_key: str
 
     # --- Optional fields with defaults ---
 
-    transcription_model: str = "large-v3-turbo"
-    transcription_device: str = "cuda"
-    transcription_compute_type: str = "float16"
-    transcription_endpoint: str | None = None
-    transcription_api_key: str | None = None
     transcription_remote_model: str | None = None
 
     # --- Validators ---
@@ -69,6 +67,8 @@ class Settings(BaseSettings):
         "prompt_article",
         "prompt_podcast",
         "prompt_title",
+        "transcription_endpoint",
+        "transcription_api_key",
     )
     @classmethod
     def validate_required_non_empty(cls, v: str) -> str:
@@ -76,30 +76,6 @@ class Settings(BaseSettings):
         if not v or not v.strip():
             raise ValueError("Field must not be empty")
         return v
-
-    @model_validator(mode="before")
-    @classmethod
-    def _fallback_old_env_vars(cls, data: Any) -> Any:
-        """Fall back to legacy environment variables if new ones are unset.
-
-        Maps old env var names to new field names so that existing
-        deployments continue to work after the rename.  New env vars
-        always take priority.
-        """
-        if isinstance(data, dict):
-            _fallback_map = {
-                "prompt_article": "SUMMARY_PROMPT",
-                "prompt_article_reflection": "SUMMARY_REFLECTION_PROMPT",
-                "prompt_podcast": "SUMMARY_PROMPT",
-                "prompt_podcast_reflection": "SUMMARY_REFLECTION_PROMPT",
-                "prompt_title": "TITLE_PROMPT",
-            }
-            for field_name, old_env_var in _fallback_map.items():
-                if not data.get(field_name):
-                    old_value = os.environ.get(old_env_var)
-                    if old_value:
-                        data[field_name] = old_value
-        return data
 
 
 # --- Singleton pattern ---

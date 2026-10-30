@@ -1,19 +1,15 @@
-"""Remote transcription service for audio files.
+"""Remote-only transcription service for audio files.
 
 Uses an OpenAI-compatible API endpoint to transcribe audio files.
-The OpenAI client is initialized once and reused for all transcription
-calls via a singleton pattern (same as the local Transcriber).
+The OpenAI client is initialized once and reused for all transcription calls.
 
 Configuration is read from environment variables via the config module:
-- TRANSCRIPTION_ENDPOINT (str | None) - OpenAI-compatible API base URL
-- TRANSCRIPTION_API_KEY (str | None) - API key for authentication
+- TRANSCRIPTION_ENDPOINT (str) - OpenAI-compatible API base URL
+- TRANSCRIPTION_API_KEY (str) - API key for authentication
 - TRANSCRIPTION_REMOTE_MODEL (str | None) - Model name passed to the API
-- TRANSCRIPTION_MODEL (str) - Fallback model name when TRANSCRIPTION_REMOTE_MODEL is not set
 
 If ``transcription_remote_model`` is configured, it is passed as the ``model``
-parameter to the API. Otherwise, ``transcription_model`` is used as the
-``model`` parameter. The OpenAI SDK requires a model parameter, so a value
-is always passed.
+parameter to the remote API. Otherwise, ``whisper-1`` is used as the default.
 """
 
 from __future__ import annotations
@@ -249,13 +245,9 @@ class RemoteTranscriber:
                     "file": path,
                     "response_format": "text",
                 }
-                # The OpenAI SDK requires a model parameter. Use
-                # transcription_remote_model if set, otherwise fall back to
-                # transcription_model (which is always set via config defaults).
-                if self._config.transcription_remote_model:
-                    kwargs["model"] = self._config.transcription_remote_model
-                else:
-                    kwargs["model"] = self._config.transcription_model
+                # The OpenAI SDK requires a model parameter. Use a standard
+                # default unless the remote model is explicitly overridden.
+                kwargs["model"] = self._config.transcription_remote_model or "whisper-1"
                 response = self._client.audio.transcriptions.create(**kwargs)
                 # response_format="text" should return a plain string, but some
                 # OpenAI-compatible endpoints (e.g. vLLM) return a JSON-encoded
@@ -351,10 +343,9 @@ class RemoteTranscriber:
     def _get_audio_duration(path: Path) -> float | None:
         """Return the audio duration in seconds, or ``None`` if it cannot be determined.
 
-        Uses the ``av`` library (already a dependency via faster-whisper) to
-        read the container's audio stream metadata without decoding the full
-        audio into memory.  All exceptions are caught so that transcription
-        can proceed even when metadata cannot be retrieved.
+        Uses PyAV to read container audio metadata without decoding the full
+        audio into memory. This metadata is informational only: failures to
+        read it do not prevent the remote transcription request.
         """
         try:
             import av

@@ -18,11 +18,6 @@ dependencies = [
     "markdown>=3.5.0",
 ]
 
-[project.optional-dependencies]
-local-transcription = [
-    "faster-whisper>=1.0.0",
-]
-
 [dependency-groups]
 dev = [
     "mypy>=1.13.0",
@@ -106,7 +101,6 @@ show_error_codes = true
 [[tool.mypy.overrides]]
 module = [
     "feedgen.*",
-    "faster_whisper.*",
     "watchdog.*",
     "markdown.*",
 ]
