@@ -108,7 +108,6 @@ class TestValidMetadata:
             title="Lecture 1",
             description="Key takeaways: Introduction to ILE concepts.",
             filename="lecture.mp4",
-            filepath="videos/lecture.mp4",
             filetype="mp4",
             date=1728931200,
             size=12345678,
@@ -149,7 +148,6 @@ class TestValidMetadata:
             title="Document 1",
             description="A PDF document",
             filename="doc.pdf",
-            filepath="documents/doc.pdf",
             filetype="pdf",
             date=1728931200,
             size=500000,
@@ -189,7 +187,6 @@ class TestValidMetadata:
             title="Web Article",
             description="An HTML article",
             filename="article.html",
-            filepath="documents/article.html",
             filetype="html",
             date=1728931200,
             size=150000,
@@ -221,7 +218,6 @@ class TestValidMetadata:
                 title="Lecture 1",
                 description="Introduction to ILE",
                 filename="lecture.mp4",
-                filepath="videos/lecture.mp4",
                 filetype="mp4",
                 date=1728931200,
                 size=12345678,
@@ -241,7 +237,6 @@ class TestValidMetadata:
                 title="Document 1",
                 description="A PDF document",
                 filename="doc.pdf",
-                filepath="documents/doc.pdf",
                 filetype="pdf",
                 date=1728931200,
                 size=500000,
@@ -257,7 +252,6 @@ class TestValidMetadata:
             title="Failed File",
             description="Processing failed",
             filename="bad.mp4",
-            filepath="videos/bad.mp4",
             filetype="mp4",
             date=1728931200,
             size=0,
@@ -282,7 +276,6 @@ class TestValidMetadata:
             title="Test",
             description="Test",
             filename="test.mp4",
-            filepath="test.mp4",
             filetype="mp4",
             date=1728931200,
             size=100,
@@ -302,7 +295,6 @@ class TestValidMetadata:
             title="Test",
             description="Test",
             filename="test.mp4",
-            filepath="test.mp4",
             filetype="mp4",
             date=1728931200,
             size=100,
@@ -382,7 +374,6 @@ class TestFeedEligible:
             title="Test",
             description="Test",
             filename="test.mp4",
-            filepath="test.mp4",
             filetype="mp4",
             date=1728931200,
             size=100,
@@ -402,7 +393,6 @@ class TestInvalidFields:
                 title="Test",
                 description="Test",
                 filename=f"test.{filetype}",
-                filepath=f"test.{filetype}",
                 filetype=filetype,
                 date=1728931200,
                 size=100,
@@ -421,7 +411,6 @@ class TestErrorFieldValidation:
                 title="Test",
                 description="Test",
                 filename="test.mp4",
-                filepath="test.mp4",
                 filetype="mp4",
                 date=1728931200,
                 size=100,
@@ -497,7 +486,6 @@ class TestSerialization:
             title="Test",
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -522,7 +510,6 @@ class TestSerialization:
             title="Test",
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -553,7 +540,6 @@ class TestSerialization:
             title="Test",
             description="Test",
             filename=f"test.{filetype}",
-            filepath=f"docs/test.{filetype}",
             filetype=filetype,
             date=1728931200,
             size=5000,
@@ -574,7 +560,6 @@ class TestSerialization:
             title="Test",
             description="Test",
             filename="test.pdf",
-            filepath="test.pdf",
             filetype="pdf",
             date=1728931200,
             size=100,
@@ -606,7 +591,6 @@ class TestSerialization:
             title="Test",
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -628,7 +612,6 @@ class TestSerialization:
             title="Test",
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -807,7 +790,6 @@ class TestExtraFields:
             title="Test",
             description="Test",
             filename="test.mp4",
-            filepath="test.mp4",
             filetype="mp4",
             date=1728931200,
             size=100,
@@ -833,7 +815,6 @@ class TestSizeValidation:
                 title="Test",
                 description="Test",
                 filename="test.mp4",
-                filepath="test.mp4",
                 filetype="mp4",
                 date=1728931200,
                 size=-1,
@@ -845,7 +826,6 @@ class TestSizeValidation:
             title="Test",
             description="Test",
             filename="test.mp4",
-            filepath="test.mp4",
             filetype="mp4",
             date=1728931200,
             size=0,
@@ -868,7 +848,6 @@ class TestJsonFileIO:
             title="Test",
             description="Test",
             filename="doc.pdf",
-            filepath="subdir/doc.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -896,9 +875,9 @@ class TestJsonFileIO:
                 title="Round Trip",
                 description="Test round trip",
                 filename="roundtrip.mp4",
-                filepath="videos/roundtrip.mp4",
                 filetype="mp4",
                 date=1728931200,
+                mtime=1728931201,
                 size=999999,
                 content="Original transcript",
             )
@@ -918,9 +897,9 @@ class TestJsonFileIO:
                 title="PDF Round Trip",
                 description="Test round trip",
                 filename="doc.pdf",
-                filepath="docs/doc.pdf",
                 filetype="pdf",
                 date=1728931200,
+                mtime=1728931201,
                 size=5000,
                 content="This is the extracted plaintext content.",
             )
@@ -931,7 +910,6 @@ class TestJsonFileIO:
         assert loaded.title == original.title
         assert loaded.description == original.description
         assert loaded.filename == original.filename
-        assert loaded.filepath == original.filepath
         assert loaded.filetype == original.filetype
         assert loaded.size == original.size
         assert loaded.content == original.content
@@ -974,9 +952,9 @@ class TestSchemaCompliance:
             "title",
             "description",
             "filename",
-            "filepath",
             "filetype",
             "date",
+            "mtime",
             "size",
             "content",
             "duration",
@@ -985,6 +963,7 @@ class TestSchemaCompliance:
             "error",
         }
         assert expected_fields.issubset(set(properties.keys()))
+        assert "filepath" not in properties
 
     def test_schema_does_not_have_old_fields(self):
         """Model should not have old status dict or removed fields."""
@@ -993,7 +972,7 @@ class TestSchemaCompliance:
         assert "status" not in properties
         assert "transcript" not in properties
         assert "processing_date" not in properties
-        assert "transcription_model" not in properties
+        assert "transcription_remote_model" not in properties
         assert "started_at" not in properties
         assert "completed_at" not in properties
 
@@ -1013,7 +992,6 @@ class TestSchemaCompliance:
             title="Test",
             description="Test",
             filename="test.mp4",
-            filepath="test.mp4",
             filetype="mp4",
             date=1728931200,
             size=100,
@@ -1080,7 +1058,6 @@ class TestSchemaCompliance:
             title={"filename": "test", "extracted": None, "generated": None},
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -1098,7 +1075,6 @@ class TestSchemaCompliance:
             title={"filename": "test", "extracted": None, "generated": None},
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             publication_date=1728931200.0,
@@ -1117,7 +1093,6 @@ class TestSchemaCompliance:
             title={"filename": "test", "extracted": None, "generated": None},
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             publication_date=1728931200.0,
@@ -1138,7 +1113,6 @@ class TestSchemaCompliance:
             title={"filename": "test", "extracted": None, "generated": None},
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -1162,7 +1136,6 @@ class TestSchemaCompliance:
             title={"filename": "test", "extracted": None, "generated": None},
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -1180,7 +1153,6 @@ class TestSchemaCompliance:
             title={"filename": "test", "extracted": None, "generated": None},
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -1199,7 +1171,6 @@ class TestSchemaCompliance:
             title={"filename": "test", "extracted": None, "generated": None},
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -1220,7 +1191,6 @@ class TestSchemaCompliance:
             title={"filename": "test", "extracted": None, "generated": None},
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -1239,7 +1209,6 @@ class TestSchemaCompliance:
             title={"filename": "test", "extracted": None, "generated": None},
             description="Test",
             filename="test.pdf",
-            filepath="docs/test.pdf",
             filetype="pdf",
             date=1728931200,
             size=5000,
@@ -1250,6 +1219,25 @@ class TestSchemaCompliance:
 
         loaded = Metadata.from_json_file(json_path)
         assert loaded.hash == original.hash
+
+    def test_mtime_roundtrip(self, tmp_path):
+        """mtime should survive a write/read roundtrip."""
+        original = Metadata(
+            extract=StepMap(status="complete", input_size=5000, output_size=1234),
+            summarize=StepMap(status="complete", input_size=1234, output_size=500),
+            title={"filename": "test", "extracted": None, "generated": None},
+            description="Test",
+            filename="test.pdf",
+            filetype="pdf",
+            date=1728931200,
+            mtime=1728931234.5,
+            size=5000,
+        )
+        json_path = tmp_path / "test.pdf.json"
+        original.to_json_file(json_path)
+
+        loaded = Metadata.from_json_file(json_path)
+        assert loaded.mtime == original.mtime
 
 
 # ---------------------------------------------------------------------------
@@ -1262,17 +1250,18 @@ class TestTitleDict:
 
     def _make_base_metadata(self, title: dict[str, str | None] | str) -> Metadata:
         """Create a Metadata instance with the given title."""
-        return Metadata(
+        metadata = Metadata(
             extract=StepMap(status="complete", input_size=100, output_size=50),
             summarize=StepMap(status="complete", input_size=50, output_size=20),
             title=title,
             description="Test",
             filename="test.pdf",
-            filepath="test.pdf",
             filetype="pdf",
             date=1728931200,
             size=100,
         )
+        metadata._source_filepath = "test.pdf"
+        return metadata
 
     def test_title_dict_has_all_three_keys(self):
         """Title dict should have filename, extracted, and generated keys."""
@@ -1378,8 +1367,8 @@ class TestTitleDict:
             if record.levelno >= 30
         )
 
-    def test_string_title_warning_includes_filepath(self, caplog):
-        """String title deprecation warning should include the filepath."""
+    def test_string_title_warning_includes_filename(self, caplog):
+        """String title deprecation warning should include the source filename."""
         with caplog.at_level("WARNING"):
             metadata = self._make_base_metadata("Plain String Title")
         string_title_warnings = [
@@ -1390,7 +1379,7 @@ class TestTitleDict:
             and "string titles are deprecated" in record.message.lower()
         ]
         assert string_title_warnings, "Expected a string title deprecation warning"
-        assert metadata.filepath in string_title_warnings[0].message
+        assert metadata.filename in string_title_warnings[0].message
 
     def test_title_dict_missing_keys_emits_warning(self, caplog):
         """Title dict missing keys should emit a warning."""
@@ -1474,27 +1463,28 @@ class TestModulePrefix:
     def _make_metadata(
         self,
         title: dict[str, str | None] | str,
-        filepath: str,
         filename: str,
+        filepath: str = "",
     ) -> Metadata:
         """Create a Metadata instance with the given title and filepath."""
-        return Metadata(
+        metadata = Metadata(
             extract=StepMap(status="complete", input_size=100, output_size=50),
             title=title,
             description="Test",
             filename=filename,
-            filepath=filepath,
             filetype="pdf",
             date=1728931200,
             size=100,
         )
+        metadata._source_filepath = filepath
+        return metadata
 
     def test_module_prefix_applied_when_title_does_not_start_with_module(self):
         """Module prefix should be applied when title doesn't start with folder name."""
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
-            filepath="videos/lecture.mp4",
             filename="lecture.mp4",
+            filepath="videos/lecture.mp4",
         )
         assert metadata.final_title == "videos: My Lecture"
 
@@ -1502,7 +1492,6 @@ class TestModulePrefix:
         """Module prefix should NOT be applied when title already starts with folder name."""
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": None, "generated": "Videos My Lecture"},
-            filepath="videos/lecture.mp4",
             filename="lecture.mp4",
         )
         # Title "Videos My Lecture" starts with "Videos" (case-insensitive),
@@ -1513,8 +1502,8 @@ class TestModulePrefix:
         """Module prefix should be applied after precedence resolution (generated)."""
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": "Extracted", "generated": "Generated"},
-            filepath="course1/lecture.mp4",
             filename="lecture.mp4",
+            filepath="course1/lecture.mp4",
         )
         assert metadata.final_title == "course1: Generated"
 
@@ -1522,8 +1511,8 @@ class TestModulePrefix:
         """Module prefix should be applied after precedence resolution (extracted)."""
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": "Extracted", "generated": ""},
-            filepath="course1/lecture.mp4",
             filename="lecture.mp4",
+            filepath="course1/lecture.mp4",
         )
         assert metadata.final_title == "course1: Extracted"
 
@@ -1531,8 +1520,8 @@ class TestModulePrefix:
         """Module prefix should be applied after precedence resolution (filename)."""
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": "", "generated": ""},
-            filepath="course1/lecture.mp4",
             filename="lecture.mp4",
+            filepath="course1/lecture.mp4",
         )
         assert metadata.final_title == "course1: lecture"
 
@@ -1540,7 +1529,6 @@ class TestModulePrefix:
         """Module prefix should not be applied when file is at root level (no parent dir)."""
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
-            filepath="lecture.mp4",
             filename="lecture.mp4",
         )
         assert metadata.final_title == "My Lecture"
@@ -1549,8 +1537,8 @@ class TestModulePrefix:
         """Module prefix should handle underscores in folder name (replaced with spaces)."""
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": None, "generated": "My Lecture"},
-            filepath="my_course/lecture.mp4",
             filename="lecture.mp4",
+            filepath="my_course/lecture.mp4",
         )
         assert metadata.final_title == "my course: My Lecture"
 
@@ -1562,8 +1550,8 @@ class TestModulePrefix:
         """
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": None, "generated": "Videos My Lecture"},
-            filepath="Videos/lecture.mp4",
             filename="lecture.mp4",
+            filepath="Videos/lecture.mp4",
         )
         # Title "Videos My Lecture" starts with "Videos" (case-insensitive),
         # so no prefix is applied to avoid duplication.
@@ -1577,8 +1565,8 @@ class TestModulePrefix:
         """
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": None, "generated": "Videos_my_topic"},
-            filepath="videos/lecture.mp4",
             filename="lecture.mp4",
+            filepath="videos/lecture.mp4",
         )
         # Title "Videos_my_topic" → normalized "videos my topic" starts with "videos",
         # so no prefix is applied to avoid duplication.
@@ -1588,8 +1576,8 @@ class TestModulePrefix:
         """Module prefix should be applied to string titles (backward compat)."""
         metadata = self._make_metadata(
             "Plain Title",
-            filepath="videos/lecture.mp4",
             filename="lecture.mp4",
+            filepath="videos/lecture.mp4",
         )
         assert metadata.final_title == "videos: Plain Title"
 
@@ -1597,7 +1585,6 @@ class TestModulePrefix:
         """Module prefix should NOT be applied when string title starts with module name."""
         metadata = self._make_metadata(
             "Videos Lecture",
-            filepath="videos/lecture.mp4",
             filename="lecture.mp4",
         )
         assert metadata.final_title == "Videos Lecture"

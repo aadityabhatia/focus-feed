@@ -51,7 +51,7 @@ def mock_config() -> Settings:
         prompt_title="Generate a concise title.",
         transcription_endpoint="https://transcribe.example.com/v1",
         transcription_api_key="transcribe-key",
-        transcription_model="whisper-1",
+        transcription_remote_model=None,
     )
 
 
@@ -173,21 +173,19 @@ class TestTranscribeOutput:
         assert result == expected_result
 
     @pytest.mark.parametrize(
-        "remote_model,transcription_model,expected_model",
+        "remote_model,expected_model",
         [
-            (None, "whisper-1", "whisper-1"),  # Falls back to transcription_model
-            ("whisper-1", "large-v3-turbo", "whisper-1"),  # Remote model takes precedence
+            (None, "whisper-1"),
+            ("custom-whisper", "custom-whisper"),
         ],
     )
     def test_transcribe_model_selection(
         self,
         mock_config: Settings,
         remote_model: str | None,
-        transcription_model: str,
         expected_model: str,
     ) -> None:
         """transcribe() should select the correct model based on config."""
-        mock_config.transcription_model = transcription_model
         mock_config.transcription_remote_model = remote_model
         with mock.patch.object(OpenAI, "__init__", return_value=None):
             t = RemoteTranscriber(config=mock_config)

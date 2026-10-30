@@ -117,13 +117,11 @@ class TestConfigMetadataIntegration:
             config = get_config()
             assert config.base_url == "https://example.com/feeds"
 
-            # Create metadata using config values for filepath
-            relative_path = "videos/test.mp4"
+            # Metadata stores file identity but infers the source path from its sidecar.
             metadata = Metadata(
                 title="Test Video",
                 description="Test description",
                 filename="test.mp4",
-                filepath=relative_path,
                 filetype="mp4",
                 date=1728931200,
                 size=1234,
@@ -133,9 +131,9 @@ class TestConfigMetadataIntegration:
                 summarize=StepMap(status="complete", input_size=0, output_size=0),
             )
 
-            # Verify metadata can be serialized and includes config-derived path
+            # File paths are inferred from the metadata sidecar location, not serialized.
             data = metadata.to_dict()
-            assert data["filepath"] == relative_path
+            assert "filepath" not in data
             assert data["filename"] == "test.mp4"
 
     def test_metadata_feed_eligible_from_config_context(self) -> None:
@@ -146,7 +144,6 @@ class TestConfigMetadataIntegration:
                 title="Test",
                 description="Test",
                 filename="test.pdf",
-                filepath="docs/test.pdf",
                 filetype="pdf",
                 date=1728931200,
                 size=100,
@@ -177,7 +174,6 @@ class TestConfigMetadataIntegration:
                 title="Test",
                 description="Test",
                 filename="test.html",
-                filepath="docs/test.html",
                 filetype="html",
                 date=1728931200,
                 size=100,
@@ -222,7 +218,6 @@ class TestScannerMetadataIntegration:
             title="Lecture",
             description="Test lecture",
             filename=scanned.filename,
-            filepath=scanned.filepath,
             filetype=cast(Literal["mp4", "pdf", "html"], scanned.filetype),
             date=int(stat.st_mtime),
             size=stat.st_size,
@@ -231,7 +226,7 @@ class TestScannerMetadataIntegration:
         )
 
         assert metadata.filename == "lecture.mp4"
-        assert metadata.filepath == "videos/lecture.mp4"
+        assert "filepath" not in metadata.to_dict()
         assert metadata.filetype == "mp4"
         assert metadata.feed_eligible is True
 
@@ -251,7 +246,6 @@ class TestScannerMetadataIntegration:
             title="Doc",
             description="Test",
             filename="doc.pdf",
-            filepath="docs/doc.pdf",
             filetype="pdf",
             date=1728931200,
             size=100,
@@ -280,7 +274,6 @@ class TestScannerMetadataIntegration:
             title="Old",
             description="Old",
             filename="page.html",
-            filepath="page.html",
             filetype="html",
             date=1728931200,
             size=100,
@@ -380,7 +373,6 @@ class TestProducerComponent:
             title="Lecture",
             description=summary,
             filename="lecture.mp4",
-            filepath="lecture.mp4",
             filetype="mp4",
             date=int(stat.st_mtime),
             size=stat.st_size,
@@ -411,10 +403,13 @@ class TestProducerComponent:
         extracted = extractor.extract(str(pdf_file))
 
         metadata = Metadata(
-            title=extracted["title"],
+            title={
+                "filename": extracted["title"],
+                "extracted": extracted["extracted_title"],
+                "generated": "",
+            },
             description=extracted["description"] or "",
             filename="doc.pdf",
-            filepath="doc.pdf",
             filetype="pdf",
             date=extracted["date"],
             size=extracted["size"],
@@ -423,7 +418,7 @@ class TestProducerComponent:
         )
 
         assert metadata.filetype == "pdf"
-        assert metadata.title == "doc"  # Fallback to filename
+        assert metadata.final_title == "doc"  # Fallback to filename
         assert metadata.content is None
         assert metadata.summary is None
         assert metadata.feed_eligible is True
@@ -439,11 +434,13 @@ class TestProducerComponent:
         extracted = extractor.extract(str(html_file))
 
         metadata = Metadata(
-            title=extracted["title"],
-            extracted_title=extracted.get("extracted_title"),
+            title={
+                "filename": extracted["title"],
+                "extracted": extracted["extracted_title"],
+                "generated": "",
+            },
             description=extracted["description"] or "",
             filename="page.html",
-            filepath="page.html",
             filetype="html",
             date=extracted["date"],
             size=extracted["size"],
@@ -452,8 +449,9 @@ class TestProducerComponent:
         )
 
         assert metadata.filetype == "html"
-        assert metadata.final_title == "page"
-        assert metadata.extracted_title == "Test Page"
+        assert metadata.final_title == "Test Page"
+        assert isinstance(metadata.title, dict)
+        assert metadata.title["extracted"] == "Test Page"
         assert metadata.description == ""  # No meta description tag in HTML
         assert metadata.content is None
         assert metadata.summary is None
@@ -503,7 +501,7 @@ class TestErrorPathHandling:
             error_meta = create_error_metadata(
                 exc=exc,
                 filename="bad.mp4",
-                filepath="videos/bad.mp4",
+                filepath=str(mp4_file),
                 filetype="mp4",
             )
 
@@ -540,7 +538,6 @@ class TestErrorPathHandling:
             title="Failed",
             description="",
             filename="bad.mp4",
-            filepath="videos/bad.mp4",
             filetype="mp4",
             date=1728931200,
             size=0,
@@ -551,7 +548,6 @@ class TestErrorPathHandling:
             title="Good",
             description="",
             filename="good.mp4",
-            filepath="videos/good.mp4",
             filetype="mp4",
             date=1728931200,
             size=100,
@@ -582,7 +578,6 @@ class TestErrorPathHandling:
             "title",
             "description",
             "filename",
-            "filepath",
             "filetype",
             "date",
             "size",
@@ -591,8 +586,9 @@ class TestErrorPathHandling:
         for field in required_fields:
             assert field in error_dict
 
+        assert "filepath" not in error_dict
         assert error_dict["error"] == "Test error"
-        assert error_dict["title"] == {"filename": "test", "extracted": None, "generated": None}
+        assert error_dict["title"] == {"filename": "test"}
         assert error_dict["size"] == 0
 
     def test_producer_handles_error_gracefully(self, tmp_path):
@@ -608,7 +604,6 @@ class TestErrorPathHandling:
                 title="Test",
                 description="Test",
                 filename="bad.mp4",
-                filepath="bad.mp4",
                 filetype="mp4",
                 date=1728931200,
                 size=100,
@@ -623,7 +618,6 @@ class TestErrorPathHandling:
                 title="bad.mp4",
                 description="",
                 filename="bad.mp4",
-                filepath="bad.mp4",
                 filetype="mp4",
                 date=1728931200,
                 size=0,

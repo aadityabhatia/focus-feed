@@ -1,5 +1,6 @@
 """Tests for the file scanner."""
 
+import json
 import logging
 import os
 from pathlib import Path
@@ -471,6 +472,45 @@ class TestIntegrationScenarios:
             assert len(result) == 1
         else:
             assert result == []
+
+    def test_stored_mtime_detects_source_change_even_when_json_is_newer(self, tmp_path):
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        old_mtime = time.time() - 100
+        os.utime(source, (old_mtime, old_mtime))
+        json_file = tmp_path / "lecture.mp4.json"
+        json_file.write_text(
+            json.dumps(
+                {
+                    "mtime": old_mtime,
+                    "transcribe": {"status": "complete"},
+                    "summarize": {"status": "complete"},
+                }
+            )
+        )
+        source.write_bytes(b"updated video data")
+        new_mtime = time.time()
+        os.utime(source, (new_mtime, new_mtime))
+        os.utime(json_file, (new_mtime + 100, new_mtime + 100))
+
+        result = Scanner(tmp_path).scan_directory()
+
+        assert len(result) == 1
+
+    def test_invalid_stored_mtime_falls_back_to_json_timestamp(self, tmp_path):
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        json_file = tmp_path / "lecture.mp4.json"
+        json_file.write_text(
+            '{"mtime": "invalid", "transcribe": {"status": "complete"}, '
+            '"summarize": {"status": "complete"}}'
+        )
+        old_time = time.time() - 100
+        new_time = time.time()
+        os.utime(source, (old_time, old_time))
+        os.utime(json_file, (new_time, new_time))
+
+        assert Scanner(tmp_path).scan_directory() == []
 
 
 class TestStepStatusBasedScanning:

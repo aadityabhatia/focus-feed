@@ -101,9 +101,8 @@ class TestCreateErrorMetadata:
         metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
         assert metadata["error"] == "disk full"
         assert metadata["filename"] == "lecture.mp4"
-        assert metadata["filepath"] == "videos/lecture.mp4"
         assert metadata["filetype"] == "mp4"
-        assert metadata["title"] == {"filename": "lecture", "extracted": None, "generated": None}
+        assert metadata["title"] == {"filename": "lecture"}
         assert "date" in metadata
         assert metadata["date"] is not None
         assert "processing_date" not in metadata
@@ -111,13 +110,13 @@ class TestCreateErrorMetadata:
             "title",
             "description",
             "filename",
-            "filepath",
             "filetype",
             "date",
             "size",
             "error",
         }
         assert expected_fields.issubset(set(metadata.keys()))
+        assert "filepath" not in metadata
         assert "status" not in metadata
 
     @pytest.mark.parametrize(
@@ -136,11 +135,21 @@ class TestCreateErrorMetadata:
         metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4", "mp4")
         assert metadata["error"] == exc_msg
 
-    def test_filetype_defaults_to_unknown(self):
-        """Error metadata filetype should default to 'unknown' when not provided."""
+    def test_filetype_is_omitted_when_unknown(self):
+        """Unknown filetype should be omitted instead of serialized as null."""
         exc = ProcessingError("failed")
         metadata = create_error_metadata(exc, "lecture.mp4", "videos/lecture.mp4")
-        assert metadata["filetype"] == "unknown"
+        assert "filetype" not in metadata
+        assert "filepath" not in metadata
+
+    def test_none_values_are_omitted(self, tmp_path):
+        """No null-valued top-level or title fields should be emitted."""
+        source = tmp_path / "missing.pdf"
+        metadata = create_error_metadata(
+            ProcessingError("failed"), "missing.pdf", str(source), mtime=None
+        )
+        assert all(value is not None for value in metadata.values())
+        assert all(value is not None for value in metadata["title"].values())
 
     def test_empty_message_uses_class_name(self):
         """Error metadata should use exception class name when message is empty."""

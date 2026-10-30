@@ -21,6 +21,8 @@ _REQUIRED_ENV_VARS: tuple[str, ...] = (
     "PROMPT_PODCAST",
     "PROMPT_PODCAST_REFLECTION",
     "PROMPT_TITLE",
+    "TRANSCRIPTION_ENDPOINT",
+    "TRANSCRIPTION_API_KEY",
 )
 
 
@@ -44,6 +46,24 @@ def restore_required_env_vars() -> Iterator[None]:
             os.environ.pop(key, None)
         else:
             os.environ[key] = value
+
+
+@pytest.fixture(autouse=True)
+def provide_default_transcription_env() -> Iterator[None]:
+    """Provide valid remote transcription credentials unless a test overrides them."""
+    endpoint = os.environ.get("TRANSCRIPTION_ENDPOINT")
+    api_key = os.environ.get("TRANSCRIPTION_API_KEY")
+    os.environ.setdefault("TRANSCRIPTION_ENDPOINT", "https://transcribe.example.com/v1")
+    os.environ.setdefault("TRANSCRIPTION_API_KEY", "transcribe-test-key")
+    yield
+    if endpoint is None:
+        os.environ.pop("TRANSCRIPTION_ENDPOINT", None)
+    else:
+        os.environ["TRANSCRIPTION_ENDPOINT"] = endpoint
+    if api_key is None:
+        os.environ.pop("TRANSCRIPTION_API_KEY", None)
+    else:
+        os.environ["TRANSCRIPTION_API_KEY"] = api_key
 
 
 @pytest.fixture(autouse=True)

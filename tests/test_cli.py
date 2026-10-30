@@ -41,6 +41,8 @@ REQUIRED_ENV_KEYS = [
     "PROMPT_PODCAST",
     "PROMPT_PODCAST_REFLECTION",
     "PROMPT_TITLE",
+    "TRANSCRIPTION_ENDPOINT",
+    "TRANSCRIPTION_API_KEY",
 ]
 
 
@@ -63,11 +65,8 @@ def _set_valid_env(monkeypatch):
     monkeypatch.setenv("PROMPT_PODCAST", "Test podcast prompt")
     monkeypatch.setenv("PROMPT_PODCAST_REFLECTION", "Test podcast reflection prompt")
     monkeypatch.setenv("PROMPT_TITLE", "Test title prompt")
-    # Clear transcription endpoint to force local mode (not remote).
-    # Using setenv with empty string overrides the .env file value (env vars
-    # take precedence over .env in pydantic-settings).
-    monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "")
-    monkeypatch.setenv("TRANSCRIPTION_API_KEY", "")
+    monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "https://transcribe.example.com/v1")
+    monkeypatch.setenv("TRANSCRIPTION_API_KEY", "transcribe-test-key")
     monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "")
     import focus_feed.config as config_module
 
@@ -78,13 +77,6 @@ def _set_valid_env(monkeypatch):
 def valid_env(monkeypatch):
     """Provide valid environment variables for all required config fields."""
     _set_valid_env(monkeypatch)
-    # Mock CUDA availability check so tests that mock the Transcriber or
-    # invoke the transcribe CLI command can proceed without an actual
-    # CUDA installation.
-    monkeypatch.setattr(
-        "focus_feed.services.transcriber.check_cuda_available",
-        lambda: True,
-    )
     yield
     import focus_feed.config as config_module
 
@@ -201,7 +193,6 @@ def _make_valid_metadata(
         "title": "Test Title",
         "description": "Test description",
         "filename": filename,
-        "filepath": filepath,
         "filetype": filetype,
         "date": 1728931200,
         "size": 12345,
@@ -451,6 +442,8 @@ class TestCliFramework:
             "PROMPT_PODCAST=Podcast prompt\n"
             "PROMPT_PODCAST_REFLECTION=Podcast reflection prompt\n"
             "PROMPT_TITLE=Title prompt\n"
+            "TRANSCRIPTION_ENDPOINT=https://transcribe.example.com/v1\n"
+            "TRANSCRIPTION_API_KEY=transcribe-test-key\n"
         )
         env_file = tmp_path / ".env"
         env_file.write_text(env_content)
@@ -2322,23 +2315,6 @@ class TestTranscribeCommand:
         # Only lecture.mp4 should be transcribed
         mock_transcriber.transcribe.assert_called_once_with(str(tmp_data_dir / "lecture.mp4"))
 
-    def test_transcribe_cuda_unavailable_shows_error(self, runner, valid_env, tmp_data_dir):
-        """Transcribe should show a clear error when CUDA is unavailable."""
-        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
-
-        with mock.patch(
-            "focus_feed.services.transcriber.check_cuda_available",
-            return_value=False,
-        ):
-            result = runner.invoke(
-                app,
-                ["transcribe", str(tmp_data_dir)],
-            )
-
-        assert result.exit_code == 1
-        assert "CUDA libraries not found" in result.output
-        assert "TRANSCRIPTION_DEVICE=cpu" in result.output
-
     def test_transcribe_sets_in_progress_before_and_complete_after(
         self, runner, valid_env, tmp_data_dir
     ):
@@ -3673,7 +3649,12 @@ class TestTitleCommand:
             json.dumps(
                 {
                     "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "title": {"filename": "doc", "generated": "Existing Title"},
+                    "title": {
+                        "filename": "doc",
+                        "extracted": "Extracted title",
+                        "generated": "Existing Title",
+                    },
+                    "extracted_title": "Stale top-level title",
                     "description": "",
                     "filename": "doc.pdf",
                     "filepath": "doc.pdf",
@@ -3697,6 +3678,8 @@ class TestTitleCommand:
         assert result.exit_code == 0
         assert "Found 1 file(s) to generate titles for." in result.output
         mock_summarizer.generate_title.assert_called_once()
+        call_kwargs = mock_summarizer.generate_title.call_args.kwargs
+        assert call_kwargs["extracted_title"] == "Extracted title"
 
     def test_title_processes_mp4_with_transcript(self, runner, valid_env, tmp_data_dir):
         """Title should process MP4 files using the transcript as content."""

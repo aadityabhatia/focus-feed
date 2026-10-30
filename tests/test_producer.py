@@ -45,11 +45,8 @@ def _set_valid_env(monkeypatch):
         "Summarize key takeaways from this podcast with reflection.",
     )
     monkeypatch.setenv("PROMPT_TITLE", "Generate a concise, descriptive title.")
-    # Clear transcription endpoint to force local mode (not remote).
-    # Using setenv with empty string overrides the .env file value (env vars
-    # take precedence over .env in pydantic-settings).
-    monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "")
-    monkeypatch.setenv("TRANSCRIPTION_API_KEY", "")
+    monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "https://transcribe.example.com/v1")
+    monkeypatch.setenv("TRANSCRIPTION_API_KEY", "transcribe-test-key")
     monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "")
     import focus_feed.config as config_module
 
@@ -60,12 +57,6 @@ def _set_valid_env(monkeypatch):
 def valid_env(monkeypatch):
     """Provide valid environment variables for all required config fields."""
     _set_valid_env(monkeypatch)
-    # Mock CUDA availability check so tests that mock the Transcriber can
-    # proceed without requiring an actual CUDA installation.
-    monkeypatch.setattr(
-        "focus_feed.services.transcriber.check_cuda_available",
-        lambda: True,
-    )
     yield
     import focus_feed.config as config_module
 
@@ -285,7 +276,7 @@ class TestProcessFileMP4:
         assert metadata.description == ""  # MP4: description is blank
         assert metadata.summary == "Key takeaways: test summary."  # summary holds the LLM output
         assert metadata.filename == "lecture.mp4"
-        assert metadata.filepath == "lecture.mp4"
+        assert metadata.mtime == source.stat().st_mtime
         assert metadata.filetype == "mp4"
         assert metadata.content == "This is a test transcript."
         assert metadata.size == len(b"video data")
@@ -344,7 +335,7 @@ class TestProcessFileMP4:
         title = metadata.title
         assert isinstance(title, dict)
         assert title["extracted"] == "Audio Title"
-        assert metadata.extracted_title == "Audio Title"
+        assert metadata.title.get("extracted") == "Audio Title"
 
     def test_mp4_filename_sanitized_no_extension_no_underscores(self, producer, tmp_path):
         """MP4 title filename key should have no extension and no underscores."""
@@ -434,8 +425,8 @@ class TestProcessFileMP4:
                     "summarize": {"status": None, "input_size": 0, "output_size": 0},
                     "content": existing_transcript,
                     "filename": "lecture.mp4",
-                    "filepath": "lecture.mp4",
                     "filetype": "mp4",
+                    "mtime": source.stat().st_mtime,
                 }
             )
         )
@@ -495,7 +486,7 @@ class TestProcessFilePDF:
         assert metadata.final_title == "Generated Title"  # LLM-generated title
         assert metadata.description == "PDF Description"
         assert metadata.filename == "document.pdf"
-        assert metadata.filepath == "document.pdf"
+        assert metadata.source_filepath == "document.pdf"
         assert metadata.filetype == "pdf"
         assert metadata.size == 1024
         # PDF should NOT have content from MP4 fields
@@ -523,7 +514,7 @@ class TestProcessFilePDF:
 
         metadata = producer.process_file(scanned)
 
-        assert metadata.extracted_title == "Custom PDF Title"
+        assert metadata.title.get("extracted") == "Custom PDF Title"
         assert metadata.final_title == "doc"
 
     def test_pdf_calls_llm_for_title_when_content_available(
@@ -679,7 +670,7 @@ class TestProcessFileHTML:
         assert metadata.final_title == "Generated Title"  # LLM-generated title
         assert metadata.description == "HTML Description"
         assert metadata.filename == "article.html"
-        assert metadata.filepath == "article.html"
+        assert metadata.source_filepath == "article.html"
         assert metadata.filetype == "html"
         assert metadata.size == 512
         # HTML should have content from the extractor
@@ -1044,16 +1035,12 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert data["transcribe"]["model"] == "large-v3-turbo"
+        assert data["transcribe"]["model"] == "remote"
 
     def test_mp4_transcription_model_remote_with_remote_model(self, monkeypatch, tmp_path):
         """When transcription_endpoint is set and transcription_remote_model is configured,
         transcription_model should be the remote model name."""
         _set_valid_env(monkeypatch)
-        monkeypatch.setattr(
-            "focus_feed.services.transcriber.check_cuda_available",
-            lambda: True,
-        )
         monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "https://whisper.example.com/v1")
         monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "whisper-1")
         import focus_feed.config as config_module
@@ -1095,10 +1082,6 @@ class TestIntermediateStateSaving:
         """When transcription_endpoint is set but transcription_remote_model is not configured,
         transcription model should be 'remote'."""
         _set_valid_env(monkeypatch)
-        monkeypatch.setattr(
-            "focus_feed.services.transcriber.check_cuda_available",
-            lambda: True,
-        )
         monkeypatch.setenv("TRANSCRIPTION_ENDPOINT", "https://whisper.example.com/v1")
         monkeypatch.setenv("TRANSCRIPTION_REMOTE_MODEL", "")
         import focus_feed.config as config_module
@@ -1136,8 +1119,8 @@ class TestIntermediateStateSaving:
 
         config_module._config_instance = None
 
-    def test_mp4_transcription_model_local(self, producer, tmp_path):
-        """When transcription_endpoint is not set, use config.transcription_model."""
+    def test_mp4_transcription_model_remote_default(self, producer, tmp_path):
+        """When no remote model override is set, model is recorded as remote."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         scanned = _make_scanned_file(
@@ -1147,11 +1130,11 @@ class TestIntermediateStateSaving:
 
         metadata = producer.process_file(scanned)
 
-        assert metadata.transcribe.model == "large-v3-turbo"
+        assert metadata.transcribe.model == "remote"
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert data["transcribe"]["model"] == "large-v3-turbo"
+        assert data["transcribe"]["model"] == "remote"
 
     @pytest.mark.parametrize(
         "filetype,content",
@@ -1352,6 +1335,36 @@ class TestIntermediateStateSaving:
         assert data["error"] is not None
         assert "extract" in data
 
+    def test_handle_error_when_source_disappears(self, producer, tmp_path):
+        """Error handling should write metadata even if source stat fails."""
+        source = tmp_path / "removed.pdf"
+
+        producer._handle_error(
+            RuntimeError("source removed"),
+            filepath="removed.pdf",
+            filename="removed.pdf",
+            filetype=None,
+            absolute_path=str(source),
+        )
+
+        metadata = json.loads((tmp_path / "removed.pdf.json").read_text())
+        assert metadata["error"] == "source removed"
+        assert "filetype" not in metadata
+        assert "mtime" in metadata
+        assert metadata["mtime"] is not None
+
+    def test_partial_metadata_omits_mtime_when_source_disappears(self, producer, tmp_path):
+        """Partial metadata should not serialize a null mtime for a missing source."""
+        source = tmp_path / "removed.pdf"
+
+        producer._write_metadata_partial(
+            {"filename": "removed.pdf", "mtime": None},
+            str(source),
+        )
+
+        metadata = json.loads((tmp_path / "removed.pdf.json").read_text())
+        assert "mtime" not in metadata
+
     def test_final_state_excludes_none_fields(self, producer, tmp_path):
         """Final JSON state should exclude None fields for PDF."""
         source = tmp_path / "doc.pdf"
@@ -1409,7 +1422,7 @@ class TestIntermediateStateSaving:
         assert metadata is not None
         assert metadata.transcribe.status == "complete"
         assert metadata.summarize.status == "complete"
-        assert metadata.transcribe.model == "large-v3-turbo"
+        assert metadata.transcribe.model == "remote"
         assert metadata.feed_eligible is True
 
     @pytest.mark.parametrize(
@@ -2194,17 +2207,16 @@ class TestHashComputation:
                     "description": "",
                     "summary": "Summary",
                     "date": 1728931200,
+                    "mtime": source.stat().st_mtime,
                     "size": 10,
                 }
             )
         )
 
-        # Reprocess without force — file is already feed-eligible so it is skipped
+        # Unchanged, eligible metadata with a matching mtime is skipped.
         metadata = producer.process_file(scanned)
 
-        # File is skipped (returns None) because it is already feed-eligible
         assert metadata is None
-        # Hash is preserved in the JSON file since the file was not reprocessed
         data = json.loads(json_path.read_text())
         assert data["hash"] == existing_hash
 
@@ -2302,10 +2314,10 @@ class TestHashComputation:
         assert metadata is not None
         assert metadata.hash == expected_hash
 
-    def test_hash_preserved_in_error_metadata(self, producer, mock_transcriber, tmp_path):
-        """Hash should be preserved in error metadata when an error occurs."""
-        import hashlib
-
+    def test_hash_is_not_computed_before_transcription_succeeds(
+        self, producer, mock_transcriber, tmp_path
+    ):
+        """MP4 hashing occurs after transcription, so failures have no new hash."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         scanned = _make_scanned_file(
@@ -2320,8 +2332,7 @@ class TestHashComputation:
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        expected_hash = hashlib.sha256(b"video data").hexdigest()
-        assert data["hash"] == expected_hash
+        assert "hash" not in data
         assert data["error"] is not None
 
     def test_hash_is_64_char_hex_digest(self, producer, tmp_path):
@@ -2367,6 +2378,29 @@ class TestHashComputation:
         expected_hash = hashlib.sha256(content).hexdigest()
         assert metadata is not None
         assert metadata.hash == expected_hash
+
+    def test_changed_mtime_reprocesses_and_recomputes_hash(self, producer, tmp_path):
+        """Changed sources must not skip, and must get a hash for new bytes."""
+        import hashlib
+        import os
+        import time
+
+        source = tmp_path / "document.pdf"
+        source.write_bytes(b"first PDF")
+        scanned = _make_scanned_file("document.pdf", absolute_path=str(source))
+        first = producer.process_file(scanned)
+        assert first is not None
+
+        original_mtime = source.stat().st_mtime
+        source.write_bytes(b"changed PDF")
+        changed_mtime = max(time.time(), original_mtime + 10)
+        os.utime(source, (changed_mtime, changed_mtime))
+
+        second = producer.process_file(scanned)
+
+        assert second is not None
+        assert second.hash == hashlib.sha256(b"changed PDF").hexdigest()
+        assert second.mtime == changed_mtime
 
 
 # ---------------------------------------------------------------------------

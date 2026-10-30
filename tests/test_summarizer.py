@@ -38,6 +38,8 @@ def mock_config():
         prompt_podcast="Summarize key takeaways from this podcast.",
         prompt_podcast_reflection="Summarize key takeaways from this podcast with reflection.",
         prompt_title="Generate a title for the given content.",
+        transcription_endpoint="https://transcribe.example.com/v1",
+        transcription_api_key="transcribe-test-key",
     )
 
 

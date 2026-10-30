@@ -25,6 +25,8 @@ class TestRequiredFields:
             "PROMPT_PODCAST": "Test podcast prompt",
             "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
 
     def test_missing_all_required_fields_raises_error(self) -> None:
@@ -54,6 +56,8 @@ class TestRequiredFields:
             "PROMPT_PODCAST": "Test podcast prompt",
             "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
         with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
             Settings()  # type: ignore[call-arg]
@@ -69,6 +73,8 @@ class TestRequiredFields:
             "PROMPT_PODCAST": "Test podcast prompt",
             "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
         with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
             Settings()  # type: ignore[call-arg]
@@ -84,6 +90,8 @@ class TestRequiredFields:
             "PROMPT_PODCAST": "Test podcast prompt",
             "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
         with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
             Settings()  # type: ignore[call-arg]
@@ -100,7 +108,7 @@ class TestRequiredFields:
             "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
             "PROMPT_TITLE": "Test title prompt",
         }
-        with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
+        with mock.patch.dict(os.environ, env, clear=True), pytest.raises(ValidationError):
             Settings()  # type: ignore[call-arg]
 
     def test_missing_prompt_article_raises_error(self) -> None:
@@ -133,13 +141,15 @@ class TestOptionalFields:
             "PROMPT_PODCAST": "Test podcast prompt",
             "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
 
     def test_llm_model_required(self) -> None:
         """LLM_MODEL should be required (no default)."""
         env = self._get_valid_env()
         del env["LLM_MODEL"]
-        with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
+        with mock.patch.dict(os.environ, env, clear=True), pytest.raises(ValidationError):
             Settings()  # type: ignore[call-arg]
 
     def test_llm_model_override(self) -> None:
@@ -149,23 +159,24 @@ class TestOptionalFields:
             settings = Settings()  # type: ignore[call-arg]
             assert settings.llm_model == "mistralai/Mistral-7B-Instruct"
 
-    def test_transcription_model_default(self) -> None:
-        """TRANSCRIPTION_MODEL should default to 'large-v3-turbo'."""
-        with mock.patch.dict(os.environ, self._get_valid_env(), clear=False):
-            settings = Settings()  # type: ignore[call-arg]
-            assert settings.transcription_model == "large-v3-turbo"
+    @pytest.mark.parametrize("field", ["TRANSCRIPTION_ENDPOINT", "TRANSCRIPTION_API_KEY"])
+    def test_transcription_credentials_required(self, field: str) -> None:
+        """Remote transcription endpoint and key should both be required."""
+        env = self._get_valid_env()
+        del env[field]
+        with mock.patch.dict(os.environ, env, clear=True), pytest.raises(ValidationError):
+            Settings()  # type: ignore[call-arg]
 
-    def test_transcription_device_default(self) -> None:
-        """TRANSCRIPTION_DEVICE should default to 'cuda'."""
-        with mock.patch.dict(os.environ, self._get_valid_env(), clear=False):
-            settings = Settings()  # type: ignore[call-arg]
-            assert settings.transcription_device == "cuda"
+    @pytest.mark.parametrize("field", ["TRANSCRIPTION_ENDPOINT", "TRANSCRIPTION_API_KEY"])
+    def test_config_loading_fails_without_transcription_credentials(self, field: str) -> None:
+        """get_config() should reject missing remote transcription settings."""
+        env = self._get_valid_env()
+        del env[field]
+        import focus_feed.config as config_module
 
-    def test_transcription_compute_type_default(self) -> None:
-        """TRANSCRIPTION_COMPUTE_TYPE should default to 'float16'."""
-        with mock.patch.dict(os.environ, self._get_valid_env(), clear=False):
-            settings = Settings()  # type: ignore[call-arg]
-            assert settings.transcription_compute_type == "float16"
+        config_module._config_instance = None
+        with mock.patch.dict(os.environ, env, clear=True), pytest.raises(ValidationError):
+            get_config()
 
     def test_prompt_title_required(self) -> None:
         """PROMPT_TITLE should be required (no default)."""
@@ -295,9 +306,9 @@ class TestEnvironmentVariables:
             "PROMPT_PODCAST": "Custom podcast prompt from env",
             "PROMPT_PODCAST_REFLECTION": "Custom podcast reflection prompt from env",
             "PROMPT_TITLE": "Custom title prompt from env",
-            "TRANSCRIPTION_MODEL": "tiny",
-            "TRANSCRIPTION_DEVICE": "cpu",
-            "TRANSCRIPTION_COMPUTE_TYPE": "int8",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
+            "TRANSCRIPTION_REMOTE_MODEL": "whisper-1",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             settings = Settings()  # type: ignore[call-arg]
@@ -307,9 +318,9 @@ class TestEnvironmentVariables:
             assert settings.llm_model == "env-model"
             assert settings.prompt_article == "Custom article prompt from env"
             assert settings.prompt_title == "Custom title prompt from env"
-            assert settings.transcription_model == "tiny"
-            assert settings.transcription_device == "cpu"
-            assert settings.transcription_compute_type == "int8"
+            assert settings.transcription_endpoint == "https://transcribe.example.com/v1"
+            assert settings.transcription_api_key == "transcribe-test-key"
+            assert settings.transcription_remote_model == "whisper-1"
 
 
 class TestSingletonPattern:
@@ -327,6 +338,8 @@ class TestSingletonPattern:
             "PROMPT_PODCAST": "Test podcast prompt",
             "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             # Reset singleton
@@ -407,10 +420,10 @@ class TestSingletonPattern:
 
 
 class TestBackwardsCompatibility:
-    """Tests for backwards compatibility with old environment variable names."""
+    """Tests that legacy prompt environment names are not used as fallbacks."""
 
-    def test_fallback_to_summary_prompt_for_article(self):
-        """If PROMPT_ARTICLE is unset but SUMMARY_PROMPT is set, use the old value."""
+    def test_legacy_prompt_names_do_not_replace_required_prompts(self):
+        """Legacy prompt names should not be used when modern names are missing."""
         env = {
             "BASE_URL": "https://example.com",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
@@ -419,15 +432,14 @@ class TestBackwardsCompatibility:
             "SUMMARY_PROMPT": "Old summary prompt",
             "SUMMARY_REFLECTION_PROMPT": "Old reflection prompt",
             "TITLE_PROMPT": "Old title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
-        with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()  # type: ignore[call-arg]
-            assert settings.prompt_article == "Old summary prompt"
-            assert settings.prompt_podcast == "Old summary prompt"
-            assert settings.prompt_title == "Old title prompt"
+        with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
+            Settings()  # type: ignore[call-arg]
 
-    def test_fallback_to_summary_reflection_prompt(self):
-        """If PROMPT_*_REFLECTION is unset but SUMMARY_REFLECTION_PROMPT is set, use old value."""
+    def test_legacy_reflection_prompt_does_not_replace_required_prompts(self):
+        """Legacy names do not satisfy missing modern prompt configuration."""
         env = {
             "BASE_URL": "https://example.com",
             "LLM_ENDPOINT": "https://llm.example.com/v1",
@@ -436,31 +448,11 @@ class TestBackwardsCompatibility:
             "SUMMARY_PROMPT": "Old summary prompt",
             "SUMMARY_REFLECTION_PROMPT": "Old reflection prompt",
             "TITLE_PROMPT": "Old title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
-        with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()  # type: ignore[call-arg]
-            assert settings.prompt_article_reflection == "Old reflection prompt"
-            assert settings.prompt_podcast_reflection == "Old reflection prompt"
-
-    def test_new_vars_take_priority_over_old(self):
-        """New env vars should take priority over old ones."""
-        env = {
-            "BASE_URL": "https://example.com",
-            "LLM_ENDPOINT": "https://llm.example.com/v1",
-            "LLM_API_KEY": "test-key",
-            "LLM_MODEL": "test-model",
-            "SUMMARY_PROMPT": "Old summary prompt",
-            "SUMMARY_REFLECTION_PROMPT": "Old reflection prompt",
-            "TITLE_PROMPT": "Old title prompt",
-            "PROMPT_ARTICLE": "New article prompt",
-            "PROMPT_PODCAST": "New podcast prompt",
-            "PROMPT_TITLE": "New title prompt",
-        }
-        with mock.patch.dict(os.environ, env, clear=False):
-            settings = Settings()  # type: ignore[call-arg]
-            assert settings.prompt_article == "New article prompt"
-            assert settings.prompt_podcast == "New podcast prompt"
-            assert settings.prompt_title == "New title prompt"
+        with mock.patch.dict(os.environ, env, clear=False), pytest.raises(ValidationError):
+            Settings()  # type: ignore[call-arg]
 
 
 class TestCriticalLogging:
@@ -475,6 +467,8 @@ class TestCriticalLogging:
             "PROMPT_ARTICLE": "Test article prompt",
             "PROMPT_PODCAST": "Test podcast prompt",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
 
     def test_missing_required_field_logs_critical(self, caplog):
@@ -499,6 +493,8 @@ class TestCriticalLogging:
             "LLM_ENDPOINT": "",
             "LLM_MODEL": "test-model",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
         with (
             mock.patch.dict(os.environ, env, clear=False),
