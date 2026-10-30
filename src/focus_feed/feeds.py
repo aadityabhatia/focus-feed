@@ -22,6 +22,7 @@ Design references:
 
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
+import hashlib
 import html
 import json
 import logging
@@ -37,7 +38,6 @@ import markdown as _md
 from focus_feed.config import get_config
 from focus_feed.errors import log_error
 from focus_feed.metadata import Metadata
-from focus_feed.producer import _compute_file_hash
 from focus_feed.scanner import SUPPORTED_EXTENSIONS
 
 _logger = logging.getLogger("focus_feed")
@@ -114,6 +114,17 @@ def _markdown_to_html(text: str | None) -> str:
     """
     if text is None:
         return ""
+
+    # A sequence of standalone `---` lines is common in LLM-generated
+    # summaries, but Python-Markdown can interpret the second line as a
+    # setext heading underline (e.g. `---\n---` becomes `<h2>---</h2>`).
+    # Use an equivalent horizontal-rule marker only for consecutive runs;
+    # leave single `---` lines untouched so valid setext headings still work.
+    text = re.sub(
+        r"(?m)(^[ \t]*---[ \t]*(?:\r?\n|$)){2,}",
+        lambda match: match.group().replace("---", "***"),
+        text,
+    )
 
     # Use the markdown library with the nl2br extension (single newlines → <br>).
     # Deregister the html_block preprocessor and html inline pattern so that
@@ -477,6 +488,8 @@ class FeedGenerator:
 
                 try:
                     metadata = Metadata.from_json_file(json_path)
+                    source_path = json_path.with_name(json_path.name.removesuffix(".json"))
+                    metadata._source_filepath = str(source_path.relative_to(self.data_dir))
                 except Exception as exc:
                     _logger.warning(
                         "Failed to parse metadata file %s: %s",
@@ -502,96 +515,6 @@ class FeedGenerator:
         )
         return metadata_list
 
-    def _update_missing_hashes(self) -> int:
-        """Scan all JSON metadata files and add missing hash fields.
-
-        Walks ``data_dir`` recursively for ``*.json`` files (excluding
-        ``feed.json`` configuration files).  For each metadata file that:
-
-        - Has a corresponding source file that exists (not orphaned), **and**
-        - Does **not** already have a non-empty ``hash`` field,
-
-        computes the SHA256 hash of the source file and writes it back to
-        the JSON file.  This ensures all feed items can use hash-based
-        guids, eliminating legacy files without hashes.
-
-        Files that cannot be parsed as valid JSON, or whose source file
-        cannot be read, are logged as warnings and skipped so that a single
-        corrupt file does not abort the update pass.
-
-        Returns:
-            The number of JSON files that were updated with a hash.
-        """
-        if not self.data_dir.exists() or not self.data_dir.is_dir():
-            return 0
-
-        updated_count = 0
-
-        for root, _dirs, files in os.walk(self.data_dir):
-            root_path = Path(root)
-            for filename in files:
-                if not filename.lower().endswith(".json"):
-                    continue
-                if filename == "feed.json":
-                    continue
-
-                json_path = root_path / filename
-
-                # Skip orphaned JSON files (no corresponding source file).
-                if _is_orphaned_json(json_path):
-                    continue
-
-                try:
-                    data = json.loads(json_path.read_text(encoding="utf-8"))
-                except (json.JSONDecodeError, OSError) as exc:
-                    _logger.warning(
-                        "Failed to read JSON file %s during hash update: %s",
-                        json_path,
-                        exc,
-                    )
-                    continue
-
-                # Skip if hash is already present and non-empty.
-                if data.get("hash"):
-                    _logger.debug("Hash already present in %s, skipping", json_path)
-                    continue
-
-                # Determine the source file path (strip .json suffix).
-                source_filename = filename[: -len(".json")]
-                source_path = root_path / source_filename
-
-                # Compute the SHA256 hash of the source file.
-                file_hash = _compute_file_hash(str(source_path))
-
-                if not file_hash:
-                    _logger.warning(
-                        "Failed to compute hash for %s; skipping hash update",
-                        source_path,
-                    )
-                    continue
-
-                # Update the JSON dict with the hash.
-                data["hash"] = file_hash
-
-                # Write back atomically (write to temp file, then rename).
-                try:
-                    tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
-                    tmp_path.write_text(
-                        json.dumps(data, indent=2),
-                        encoding="utf-8",
-                    )
-                    tmp_path.replace(json_path)
-                    updated_count += 1
-                    _logger.info("Added hash to %s", json_path)
-                except OSError as exc:
-                    _logger.warning(
-                        "Failed to write updated JSON to %s: %s",
-                        json_path,
-                        exc,
-                    )
-
-        return updated_count
-
     @staticmethod
     def _sort_key(metadata: Metadata) -> tuple[str, str]:
         """Sort key: folder name (ascending), then filename (ascending).
@@ -607,7 +530,7 @@ class FeedGenerator:
         Returns:
             A tuple of ``(folder_name, filename)`` for sorting.
         """
-        filepath = Path(metadata.filepath)
+        filepath = Path(metadata.source_filepath)
         folder_name = filepath.parent.name if filepath.parent.name else ""
         filename = filepath.name
         return (folder_name, filename)
@@ -644,7 +567,32 @@ class FeedGenerator:
         """
         if metadata.hash:
             return metadata.hash[-12:]
-        return self._absolute_url(metadata.filepath)
+        return self._absolute_url(metadata.source_filepath)
+
+    def _ensure_hashes(self, metadata_items: list[Metadata]) -> None:
+        """Compute and persist missing source hashes before feed generation."""
+        for metadata in metadata_items:
+            if metadata.hash:
+                continue
+
+            source_path = self.data_dir / metadata.source_filepath
+            try:
+                digest = hashlib.sha256()
+                with source_path.open("rb") as source_file:
+                    for chunk in iter(lambda: source_file.read(8192), b""):
+                        digest.update(chunk)
+                metadata.hash = digest.hexdigest()
+
+                metadata_path = source_path.with_name(source_path.name + ".json")
+                stored_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
+                if isinstance(stored_metadata, dict):
+                    stored_metadata["hash"] = metadata.hash
+                    metadata_path.write_text(
+                        json.dumps(stored_metadata, indent=2),
+                        encoding="utf-8",
+                    )
+            except (OSError, json.JSONDecodeError) as exc:
+                _logger.warning("Failed to compute or store hash for %s: %s", source_path, exc)
 
     def _feed_rel_path(self, output_dir: Path, feed_filename: str) -> str:
         """Compute the feed file path relative to ``data_dir``.
@@ -731,7 +679,7 @@ class FeedGenerator:
             return list(metadata_list)
 
         prefix = folder_str + "/"
-        return [m for m in metadata_list if m.filepath.startswith(prefix)]
+        return [m for m in metadata_list if m.source_filepath.startswith(prefix)]
 
     # ------------------------------------------------------------------
     # Podcast feed (MP4 files)
@@ -809,6 +757,8 @@ class FeedGenerator:
             _logger.info("No MP4 files found; skipping podcast feed generation for %s", output_dir)
             return []
 
+        self._ensure_hashes(mp4_items)
+
         fg = _FeedGenerator()
         fg.load_extension("podcast")
 
@@ -837,7 +787,7 @@ class FeedGenerator:
                 )
                 continue
             entry = fg.add_entry()
-            entry.id(str(metadata.filepath))
+            entry.id(metadata.source_filepath)
             entry.guid(self._compute_guid(metadata))
             entry.title(metadata.final_title)
 
@@ -855,7 +805,7 @@ class FeedGenerator:
             )
 
             # Link to the source file.
-            source_url = self._absolute_url(metadata.filepath)
+            source_url = self._absolute_url(metadata.source_filepath)
             entry.link(href=source_url)
 
             # Enclosure with URL, type, and length.
@@ -957,6 +907,8 @@ class FeedGenerator:
             )
             return []
 
+        self._ensure_hashes(article_items)
+
         fg = _FeedGenerator()
 
         # Compute the feed file path relative to data_dir for the self-link.
@@ -984,7 +936,7 @@ class FeedGenerator:
                 )
                 continue
             entry = fg.add_entry()
-            entry.id(str(metadata.filepath))
+            entry.id(metadata.source_filepath)
             entry.guid(self._compute_guid(metadata))
             entry.title(metadata.final_title)
 
@@ -1002,7 +954,7 @@ class FeedGenerator:
             )
 
             # Link to the source file.
-            source_url = self._absolute_url(metadata.filepath)
+            source_url = self._absolute_url(metadata.source_filepath)
             entry.link(href=source_url)
 
             pub_date = datetime.fromtimestamp(metadata.summarize.end_time, tz=UTC)
@@ -1145,26 +1097,13 @@ class FeedGenerator:
 
         This method performs three phases:
 
-         0. **Hash update**: Scans all JSON metadata files for missing
-            ``hash`` fields and computes the SHA256 of the corresponding
-            source file, writing the hash back to disk.  This ensures all
-            feed items use hash-based guids (FR-020).
+        1. **Root-level feeds**: Generates ``podcast.xml`` and
+           ``articles.xml`` in ``data_dir``. Root-level feeds are only
+           generated if a ``data_dir/feed.json`` file exists; its title,
+           description, and optional link are used for the root-level feeds.
 
-          1. **Root-level feeds**: Generates ``podcast.xml`` and
-             ``articles.xml`` in ``data_dir``.  Root-level feeds are only
-             generated if a ``data_dir/feed.json`` file exists; its
-             ``title``, ``description``, and optional ``link`` are used
-             for the root-level feeds.  When ``link`` is omitted in
-              ``feed.json``, the channel link defaults to ``base_url``.
-             ``podcast.xml`` is only created if MP4 files are present;
-             ``articles.xml`` is only created if PDF/HTML files are present.
-
-          2. **Per-folder feeds**: Walks ``data_dir`` recursively for
-             ``feed.json`` files.  For each folder containing a
-             ``feed.json``, generates ``podcast.xml`` (only if MP4 files
-             are present in that folder tree) and ``articles.xml`` (only
-             if PDF/HTML files are present).  Feeds are written to the
-             folder containing the ``feed.json``.
+        2. **Per-folder feeds**: Walks ``data_dir`` recursively for
+           ``feed.json`` files and generates feeds in each configured folder.
 
         If any individual feed generation fails, the error is logged and
         other feeds continue to be generated.
@@ -1192,12 +1131,6 @@ class FeedGenerator:
             "podcast": [],
             "articles": [],
         }
-
-        # --- Phase 0: Update missing hash fields in JSON metadata ---
-        # Before generating feeds, ensure all existing JSON metadata files
-        # have a hash field by computing the SHA256 of the source file.
-        # This ensures all feed items use hash-based guids.
-        self._update_missing_hashes()
 
         _logger.info("Starting feed generation for all folders")
 
