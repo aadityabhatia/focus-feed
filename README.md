@@ -72,6 +72,24 @@ uv run focus-feed process ./data
 # Access your feeds at {BASE_URL}/index.html in your browser
 ```
 
+## Environment Variables
+
+Required configuration:
+- BASE_URL - base URL for your feeds
+- LLM_ENDPOINT - OpenAI-compatible API endpoint
+- LLM_API_KEY - API key for the LLM service
+- LLM_MODEL - model identifier for the LLM service
+- PROMPT_ARTICLE - article summarization prompt
+- PROMPT_PODCAST - podcast/audio summarization prompt
+- PROMPT_TITLE - title generation prompt
+- TRANSCRIPTION_ENDPOINT - transcription API endpoint
+- TRANSCRIPTION_API_KEY - API key for transcription service
+
+Optional:
+- PROMPT_ARTICLE_REFLECTION - reflection-aware article prompt
+- PROMPT_PODCAST_REFLECTION - reflection-aware podcast prompt
+- TRANSCRIPTION_REMOTE_MODEL - transcription model override
+
 ## Processing Modes
 
 ### Batch Mode

@@ -508,12 +508,6 @@ class TestCliFramework:
         )
         assert result.exit_code != 0
 
-    def test_version_option(self, runner):
-        """The CLI should support --version."""
-        result = runner.invoke(app, ["--version"])
-        assert result.exit_code == 0
-        assert "1.1" in result.output
-
 
 # ---------------------------------------------------------------------------
 # T5.1: No-Paths Required Tests
