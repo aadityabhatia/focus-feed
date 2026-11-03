@@ -2,7 +2,8 @@
 
 Reads JSON metadata files from the data directory, filters out error entries,
 and generates RSS 2.0 feeds (podcast.xml and articles.xml) for consumption by
-mobile podcast apps (e.g., Antennapod) and RSS readers.
+mobile podcast apps (e.g., Antennapod) and RSS readers. Podcast feeds include
+supported audio and video media files.
 
 Design references:
     - design.md section 3.4 (Feed Output)
@@ -42,8 +43,51 @@ from focus_feed.scanner import SUPPORTED_EXTENSIONS
 
 _logger = logging.getLogger("focus_feed")
 
-# MIME type for podcast enclosure ``type`` attribute (design doc section 3.4).
-_PODCAST_MIME_TYPE = "audio/mp4"
+MEDIA_FILETYPES: frozenset[str] = frozenset(
+    {
+        "mp3",
+        "m4a",
+        "wav",
+        "webm",
+        "aac",
+        "flac",
+        "ogg",
+        "opus",
+        "mp4",
+        "mpeg",
+        "mpga",
+        "mkv",
+        "mov",
+        "avi",
+        "wmv",
+    }
+)
+
+
+def get_mime_type(filetype: str) -> str:
+    """Return the appropriate MIME type for a media filetype."""
+    mime_map: dict[str, str] = {
+        "mp4": "audio/mp4",
+        "m4a": "audio/mp4",
+        "mp3": "audio/mpeg",
+        "mpeg": "audio/mpeg",
+        "mpga": "audio/mpeg",
+        "wav": "audio/wav",
+        "webm": "audio/webm",
+        "aac": "audio/aac",
+        "ogg": "audio/ogg",
+        "flac": "audio/flac",
+        "opus": "audio/opus",
+        # Audio is extracted from video formats for podcast playback.
+        "mkv": "audio/mp4",
+        "mov": "audio/mp4",
+        "avi": "audio/mp4",
+        "wmv": "audio/mp4",
+    }
+    return mime_map.get(filetype, "application/octet-stream")
+
+
+_PODCAST_MIME_TYPES = frozenset(get_mime_type(filetype) for filetype in MEDIA_FILETYPES)
 
 # Feed titles for the two generated feeds.
 _PODCAST_FEED_TITLE = "Local Podcast Feed"
@@ -114,6 +158,9 @@ def _markdown_to_html(text: str | None) -> str:
     """
     if text is None:
         return ""
+
+    # Fix 3-space indentation for nested list items (LLM quirk)
+    text = re.sub(r'\n   ([-*+])', r'\n    \1', text)
 
     # A sequence of standalone `---` lines is common in LLM-generated
     # summaries, but Python-Markdown can interpret the second line as a
@@ -261,7 +308,7 @@ def validate_feed(
       ``<title>``, ``<link>``, ``<guid>``, and a ``<pubDate>`` *or*
       ``<dc:date>``.
     - **Podcasts** — each ``<item>`` has an ``<enclosure>`` tag with
-      ``url``, ``type="audio/mp4"``, and ``length`` attributes.
+      ``url``, a supported media MIME type, and ``length`` attributes.
     - **Articles** — no enclosure validation is performed.
 
     Args:
@@ -366,9 +413,10 @@ def _validate_item(
                 result.errors.append(f"{prefix}: enclosure missing 'url' attribute")
             if not enc_type:
                 result.errors.append(f"{prefix}: enclosure missing 'type' attribute")
-            elif enc_type != _PODCAST_MIME_TYPE:
+            elif enc_type not in _PODCAST_MIME_TYPES:
                 result.errors.append(
-                    f"{prefix}: enclosure type is '{enc_type}', expected '{_PODCAST_MIME_TYPE}'"
+                    f"{prefix}: enclosure type is '{enc_type}', "
+                    "expected a supported media MIME type"
                 )
             if not enc_length:
                 result.errors.append(f"{prefix}: enclosure missing 'length' attribute")
@@ -391,7 +439,8 @@ class FeedGenerator:
     Scans the data directory for ``*.json`` metadata files, filters out
     error entries, and produces two RSS feeds:
 
-    - ``podcast.xml`` — one item per MP4 file with an audio enclosure.
+    - ``podcast.xml`` — one item per supported audio/video file with an audio
+      enclosure.
     - ``articles.xml`` — one item per PDF or HTML file.
 
     Supports per-folder feed generation: when a folder contains a
@@ -682,7 +731,7 @@ class FeedGenerator:
         return [m for m in metadata_list if m.source_filepath.startswith(prefix)]
 
     # ------------------------------------------------------------------
-    # Podcast feed (MP4 files)
+    # Podcast feed (audio/video media files)
     # ------------------------------------------------------------------
 
     def generate_podcast_feed(
@@ -699,16 +748,16 @@ class FeedGenerator:
         """Generate the podcast RSS feed (``podcast.xml``).
 
         Uses the ``feedgen`` library with the podcast extension to produce
-        a valid RSS 2.0 feed with iTunes podcast extensions. Only MP4 files
-        with ``feed_eligible == True`` are included.
+        a valid RSS 2.0 feed with iTunes podcast extensions. Only supported
+        media files with ``feed_eligible == True`` are included.
 
         For each item:
             - **title**: from metadata ``final_title`` computed property.
             - **description**: from metadata ``summary`` (LLM-generated key
-              takeaways for MP4 files), falling back to ``description``
+              takeaways for media files), falling back to ``description``
               for backward compatibility.  Markdown is converted to HTML.
-            - **link**: absolute URL to the source MP4 file.
-            - **enclosure**: URL, type ``audio/mp4``, and length (file size).
+            - **link**: absolute URL to the source media file.
+            - **enclosure**: URL, media-specific MIME type, and length (file size).
             - **publication date**: from ``summarize.end_time``.
             - **GUID**: last 12 characters of the ``hash`` field when present,
               otherwise the absolute URL of the file path (FR-020).
@@ -749,15 +798,18 @@ class FeedGenerator:
 
         if metadata_items is None:
             all_metadata = self._discover_metadata_files()
-            mp4_items = [m for m in all_metadata if m.filetype == "mp4"]
+            media_items = [m for m in all_metadata if m.filetype in MEDIA_FILETYPES]
         else:
-            mp4_items = [m for m in metadata_items if m.filetype == "mp4"]
+            media_items = [m for m in metadata_items if m.filetype in MEDIA_FILETYPES]
 
-        if not mp4_items:
-            _logger.info("No MP4 files found; skipping podcast feed generation for %s", output_dir)
+        if not media_items:
+            _logger.info(
+                "No media files found; skipping podcast feed generation for %s",
+                output_dir,
+            )
             return []
 
-        self._ensure_hashes(mp4_items)
+        self._ensure_hashes(media_items)
 
         fg = _FeedGenerator()
         fg.load_extension("podcast")
@@ -778,7 +830,7 @@ class FeedGenerator:
         if image:
             fg.image(url=image["url"], title=image.get("title", ""), link=image.get("link", ""))
 
-        for metadata in mp4_items:
+        for metadata in media_items:
             # Publication date: from summarize.end_time (no fallback).
             if metadata.summarize is None or metadata.summarize.end_time is None:
                 _logger.error(
@@ -791,7 +843,7 @@ class FeedGenerator:
             entry.guid(self._compute_guid(metadata))
             entry.title(metadata.final_title)
 
-            # Description from summary field (holds LLM key takeaways for MP4),
+            # Description from summary field (holds LLM key takeaways for media),
             # falling back to description for backward compatibility.
             # Convert markdown to HTML for safe rendering in feed readers.
             desc_text = metadata.summary or metadata.description or ""
@@ -812,7 +864,7 @@ class FeedGenerator:
             entry.enclosure(
                 url=source_url,
                 length=metadata.size,
-                type=_PODCAST_MIME_TYPE,
+                type=get_mime_type(metadata.filetype or ""),
             )
 
             pub_date = datetime.fromtimestamp(metadata.summarize.end_time, tz=UTC)
@@ -826,9 +878,9 @@ class FeedGenerator:
             log_error(exc, filepath=str(output_path), stage="feed_write")
             raise
         _logger.debug("Wrote feed file: %s", output_path)
-        _logger.info("Generated podcast feed: %s (%d items)", output_path, len(mp4_items))
+        _logger.info("Generated podcast feed: %s (%d items)", output_path, len(media_items))
 
-        return mp4_items
+        return media_items
 
     # ------------------------------------------------------------------
     # Articles feed (PDF/HTML files)
@@ -996,8 +1048,8 @@ class FeedGenerator:
         This method is used for per-folder feed generation when a folder
         contains a ``feed.json`` file.  It generates:
 
-        - ``podcast.xml`` — only if MP4 files are present in the folder's
-          subtree.
+        - ``podcast.xml`` — only if audio/video media files are present in
+          the folder's subtree.
         - ``articles.xml`` — only if PDF or HTML files are present in the
           folder's subtree.
 
@@ -1030,13 +1082,13 @@ class FeedGenerator:
             "articles": [],
         }
 
-        mp4_items = [m for m in metadata_items if m.filetype == "mp4"]
+        media_items = [m for m in metadata_items if m.filetype in MEDIA_FILETYPES]
         article_items = [m for m in metadata_items if m.filetype in ("pdf", "html")]
 
         _logger.info("Generating feeds for folder: %s", folder)
 
-        # Generate podcast.xml only if MP4 files are present.
-        if mp4_items:
+        # Generate podcast.xml only if supported media files are present.
+        if media_items:
             try:
                 results["podcast"] = self.generate_podcast_feed(
                     output_dir=folder,
@@ -1055,7 +1107,7 @@ class FeedGenerator:
                     stage="podcast_feed_generation",
                 )
         else:
-            _logger.debug("Skipping podcast feed for %s: no MP4 items", folder)
+            _logger.debug("Skipping podcast feed for %s: no media items", folder)
 
         # Generate articles.xml only if PDF/HTML files are present.
         if article_items:
@@ -1081,7 +1133,7 @@ class FeedGenerator:
 
         # Warn if no feed-eligible files were found in this folder despite
         # having a feed.json configuration file.
-        if not mp4_items and not article_items:
+        if not media_items and not article_items:
             _logger.warning("No feed-eligible files found in %s", str(folder))
 
         _logger.info(
@@ -1172,7 +1224,7 @@ class FeedGenerator:
                 root_author = None
                 root_image = None
 
-            # Generate podcast feed (only if MP4 files exist - handled in generate_podcast_feed)
+            # Generate podcast feed (media presence is handled by the generator)
             try:
                 results["podcast"] = self.generate_podcast_feed(
                     output_dir=self.data_dir,

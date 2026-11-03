@@ -396,11 +396,12 @@ class HTMLExtractor:
 # ---------------------------------------------------------------------------
 
 
-def get_audio_metadata(filepath: str | Path) -> dict[str, Any] | None:
+def get_audio_metadata(filepath: str | Path, filetype: str | None = None) -> dict[str, Any] | None:
     """Get audio file metadata using ``ffprobe``.
 
     Runs the ``ffprobe`` command-line tool to extract container and stream
-    metadata from an audio/video file (typically MP4).  The function returns
+    metadata from an audio/video file. The optional *filetype* identifies the
+    source extension for diagnostic context. The function returns
     a structured dictionary suitable for inclusion in the JSON metadata file.
 
     Returns a dict with the following keys:
@@ -420,6 +421,7 @@ def get_audio_metadata(filepath: str | Path) -> dict[str, Any] | None:
 
     Args:
         filepath: Path to the audio/video file to probe.
+        filetype: Optional source extension without a leading dot.
 
     Returns:
         A metadata dictionary, or ``None`` if probing fails.
@@ -431,7 +433,11 @@ def get_audio_metadata(filepath: str | Path) -> dict[str, Any] | None:
         _logger.warning("ffprobe not found on PATH; cannot extract audio metadata")
         return None
 
-    _logger.debug("Extracting audio metadata for %s using ffprobe", filepath)
+    _logger.debug(
+        "Extracting media metadata for %s (filetype: %s) using ffprobe",
+        filepath,
+        filetype or "unknown",
+    )
 
     cmd = [
         "ffprobe",
@@ -491,8 +497,7 @@ def get_audio_metadata(filepath: str | Path) -> dict[str, Any] | None:
 
     tags = format_info.get("tags", {})
 
-    # Extract title from metadata tags if available (MP4 files may have a
-    # 'title' tag in their container metadata).
+    # Extract title from metadata tags if available.
     title: str | None = tags.get("title")
     if title:
         title = _clean_title(title)
