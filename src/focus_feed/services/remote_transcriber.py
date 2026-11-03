@@ -36,6 +36,7 @@ from openai import (
 
 from focus_feed.config import Settings, get_config
 from focus_feed.errors import TranscriptionError, log_error
+from focus_feed.services.audio_extractor import ensure_compatible_format
 
 _logger = logging.getLogger("focus_feed")
 
@@ -185,9 +186,10 @@ class RemoteTranscriber:
             _logger.info("Transcribing %s", path.name)
 
         start_time = time.time()
+        compatible_path = Path(ensure_compatible_format(path))
 
         try:
-            transcript = self._create_transcription(path, str(filepath))
+            transcript = self._create_transcription(compatible_path, str(filepath))
 
             elapsed = time.time() - start_time
             word_count = len(transcript.split())
@@ -209,6 +211,15 @@ class RemoteTranscriber:
             )
             log_error(error, filepath=str(filepath), logger=_logger, stage="transcription")
             raise error from exc
+        finally:
+            if compatible_path != path:
+                _logger.info("Removing temporary audio file %s", compatible_path)
+                try:
+                    compatible_path.unlink(missing_ok=True)
+                except OSError as exc:
+                    _logger.warning(
+                        "Could not remove temporary audio file %s: %s", compatible_path, exc
+                    )
 
     # ------------------------------------------------------------------
     # Internal helpers
