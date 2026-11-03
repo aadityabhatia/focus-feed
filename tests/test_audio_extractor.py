@@ -49,9 +49,7 @@ def test_partial_output_is_removed_when_extraction_fails(
     source.touch()
     output = tmp_path / "lecture.flac"
 
-    def fail_after_writing(
-        _source: Path, destination: Path, _codec: str, _format: str
-    ) -> None:
+    def fail_after_writing(_source: Path, destination: Path, _codec: str, _format: str) -> None:
         destination.write_bytes(b"partial")
         raise OSError("encoding failed")
 

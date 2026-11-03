@@ -80,9 +80,7 @@ def ensure_compatible_format(filepath: str | os.PathLike[str]) -> str:
     return str(_extract_audio_to_supported_format(source_path))
 
 
-def _extract_audio_to_supported_format(
-    source_path: Path, output_path: Path | None = None
-) -> Path:
+def _extract_audio_to_supported_format(source_path: Path, output_path: Path | None = None) -> Path:
     """Extract the first audio stream without loss when its codec is supported.
 
     Args:
@@ -177,9 +175,7 @@ def _convert_audio(
                     output_container.mux(packet)
                 return
 
-            output_stream = output_container.add_stream(
-                "flac", rate=input_stream.rate or 44100
-            )
+            output_stream = output_container.add_stream("flac", rate=input_stream.rate or 44100)
             for frame in input_container.decode(input_stream):
                 for packet in output_stream.encode(frame):
                     output_container.mux(packet)

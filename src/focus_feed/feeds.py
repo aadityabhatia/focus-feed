@@ -160,7 +160,7 @@ def _markdown_to_html(text: str | None) -> str:
         return ""
 
     # Fix 3-space indentation for nested list items (LLM quirk)
-    text = re.sub(r'\n   ([-*+])', r'\n    \1', text)
+    text = re.sub(r"\n   ([-*+])", r"\n    \1", text)
 
     # A sequence of standalone `---` lines is common in LLM-generated
     # summaries, but Python-Markdown can interpret the second line as a
