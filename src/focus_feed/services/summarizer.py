@@ -160,7 +160,7 @@ class Summarizer:
         questions are prepended to the transcript.
 
         Prompt selection:
-            - ``filetype == "mp4"``: ``config.prompt_podcast`` (or
+            - Media file types: ``config.prompt_podcast`` (or
               ``config.prompt_podcast_reflection`` when reflection_questions
               is provided)
             - ``filetype == "pdf"`` or ``"html"``: ``config.prompt_article``
@@ -177,8 +177,8 @@ class Summarizer:
                 is used and the questions are prepended to the user content.
             filepath: Optional path of the file being processed, included in
                 error logging for debugging context.
-            filetype: The type of file being summarized (``"mp4"``, ``"pdf"``,
-                or ``"html"``).  Determines which prompt is used.  Defaults to
+            filetype: The type of file being summarized. Media types use
+                podcast prompts; PDF/HTML use article prompts. Defaults to
                 ``"mp4"`` if not specified.
 
         Returns:
@@ -198,7 +198,23 @@ class Summarizer:
         )
 
         # Determine which prompt set to use based on filetype.
-        if filetype == "mp4":
+        if filetype in {
+            "mp3",
+            "m4a",
+            "wav",
+            "webm",
+            "aac",
+            "flac",
+            "ogg",
+            "opus",
+            "mp4",
+            "mpeg",
+            "mpga",
+            "mkv",
+            "mov",
+            "avi",
+            "wmv",
+        }:
             regular_prompt = self._config.prompt_podcast
             reflection_prompt = self._config.prompt_podcast_reflection
         else:
