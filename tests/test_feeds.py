@@ -22,10 +22,12 @@ from unittest import mock
 import pytest
 
 from focus_feed.feeds import (
+    MEDIA_FILETYPES,
     FeedGenerator,
     FeedValidationResult,
     _get_summarization_attribution,
     _markdown_to_html,
+    get_mime_type,
     validate_feed,
 )
 from focus_feed.metadata import Metadata, StepMap
@@ -54,11 +56,11 @@ def make_metadata(
 
     Args:
         filepath: Relative path from data directory root.
-        filetype: One of 'mp4', 'pdf', 'html'.
+        filetype: A supported media type, 'pdf', or 'html'.
         title: Title string (defaults to filepath stem).
         description: Description string.
-        summary: Summary string (for MP4 only).
-        transcript: Transcript string (for MP4 only).
+        summary: Summary string (for media files).
+        transcript: Transcript string (for media files).
         size: File size in bytes.
         feed_eligible: If True, set status to "complete" for all applicable steps.
             If False, leave status as None.
@@ -84,12 +86,12 @@ def make_metadata(
     }
     if hash is not None:
         kwargs["hash"] = hash
-    if filetype == "mp4":
-        # For MP4, transcript maps to content, summary holds the LLM key
+    if filetype in MEDIA_FILETYPES:
+        # For media, transcript maps to content, summary holds the LLM key
         # takeaways, and description is left blank.
         kwargs["content"] = transcript
-        kwargs["description"] = ""  # MP4: description is blank
-        kwargs["summary"] = summary  # MP4: summary holds LLM key takeaways
+        kwargs["description"] = ""  # Media: description is blank
+        kwargs["summary"] = summary  # Media: summary holds LLM key takeaways
         if feed_eligible and not error:
             kwargs["transcribe"] = StepMap(
                 status="complete",
@@ -642,6 +644,44 @@ class TestPodcastFeedGeneration:
         assert 'url="https://example.com/feeds/videos/lecture.mp4"' in content
         assert 'length="12345678"' in content
         assert 'type="audio/mp4"' in content
+
+    @pytest.mark.parametrize(
+        "filetype,expected_mime_type",
+        [
+            ("mp3", "audio/mpeg"),
+            ("m4a", "audio/mp4"),
+            ("wav", "audio/wav"),
+            ("webm", "audio/webm"),
+            ("aac", "audio/aac"),
+            ("flac", "audio/flac"),
+            ("ogg", "audio/ogg"),
+            ("opus", "audio/opus"),
+            ("mp4", "audio/mp4"),
+            ("mpeg", "audio/mpeg"),
+            ("mpga", "audio/mpeg"),
+            ("mkv", "audio/mp4"),
+            ("mov", "audio/mp4"),
+            ("avi", "audio/mp4"),
+            ("wmv", "audio/mp4"),
+        ],
+    )
+    def test_podcast_feed_supports_media_types_and_mime_types(
+        self, tmp_path, filetype, expected_mime_type
+    ):
+        """Every supported media type is included with its mapped enclosure MIME type."""
+        filepath = f"videos/lecture.{filetype}"
+        write_metadata_file(tmp_path, filepath, filetype=filetype)
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        items = fg.generate_podcast_feed()
+
+        assert [item.filetype for item in items] == [filetype]
+        content = parse_rss_file(tmp_path / "podcast.xml")
+        assert f'type="{expected_mime_type}"' in content
+        assert get_mime_type(filetype) == expected_mime_type
+
+    def test_get_mime_type_unknown_type_uses_binary_fallback(self):
+        assert get_mime_type("unknown") == "application/octet-stream"
 
     @pytest.mark.parametrize(
         "field,substring",
@@ -1595,8 +1635,8 @@ class TestValidateFeed:
                 "enclosure missing 'length'",
             ),
             (
-                lambda xml: xml.replace(' type="audio/mp4"', ' type="audio/mpeg"'),
-                "expected 'audio/mp4'",
+                lambda xml: xml.replace(' type="audio/mp4"', ' type="application/octet-stream"'),
+                "expected a supported media MIME type",
             ),
             (
                 lambda xml: xml.replace(' length="12345"', ' length="not-a-number"'),
@@ -1610,6 +1650,12 @@ class TestValidateFeed:
         result = validate_feed(xml, feed_name="podcast.xml", is_podcast=True)
         assert not result.is_valid
         assert any(error_substring in e for e in result.errors)
+
+    @pytest.mark.parametrize("mime_type", sorted({get_mime_type(t) for t in MEDIA_FILETYPES}))
+    def test_podcast_enclosure_accepts_supported_media_mime_types(self, mime_type):
+        xml = _VALID_PODCAST_XML.replace('type="audio/mp4"', f'type="{mime_type}"')
+        result = validate_feed(xml, feed_name="podcast.xml", is_podcast=True)
+        assert result.is_valid
 
     @pytest.mark.parametrize(
         "xml,is_podcast,should_be_valid",
@@ -1827,6 +1873,16 @@ class TestMarkdownToHtml:
         for substring in expected_substrings:
             assert substring in result
 
+    def test_three_space_indented_list_is_nested(self):
+        """Three-space-indented bullets should nest under ordered list items."""
+        md = "1. **Historical Contextual Analysis**\n   - Examines military events"
+
+        result = _markdown_to_html(md)
+
+        assert "<li><strong>Historical Contextual Analysis</strong><ul>" in result
+        assert "<li>Examines military events</li>" in result
+        assert "</ul>\n</li>\n</ol>" in result
+
     @pytest.mark.parametrize(
         "md,expected_substrings",
         [
@@ -2040,6 +2096,8 @@ class TestGenerateAllFeedsWithPerFolder:
             ("mp4", True, False, ""),  # MP4 only: podcast generated, articles skipped
             ("pdf", False, True, "Course1/"),  # Per-folder PDF: podcast skipped, articles generated
             ("mp4", True, False, "Course1/"),  # Per-folder MP4: podcast generated, articles skipped
+            ("mp3", True, False, ""),  # Audio only: podcast generated
+            ("mp3", True, False, "Course1/"),  # Per-folder audio: podcast generated
         ],
     )
     def test_conditional_feed_generation(
@@ -2604,6 +2662,24 @@ class TestGenerateIndexHtml:
         fg.generate_all_feeds()
 
         assert (tmp_path / "index.html").exists()
+
+    def test_nested_index_urls_are_relative_to_data_root(self, tmp_path):
+        """Nested feed URLs should include the folder beneath the data root."""
+        feed_dir = tmp_path / "ile"
+        feed_dir.mkdir()
+        (feed_dir / "feed.json").write_text(
+            json.dumps({"title": "ILE", "description": "ILE feed"}),
+            encoding="utf-8",
+        )
+        (feed_dir / "podcast.xml").write_text("<rss></rss>", encoding="utf-8")
+        (feed_dir / "articles.xml").write_text("<rss></rss>", encoding="utf-8")
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://feed.example.com")
+        fg._generate_index_html(output_dir=feed_dir)
+
+        content = (feed_dir / "index.html").read_text(encoding="utf-8")
+        assert 'href="https://feed.example.com/ile/podcast.xml"' in content
+        assert 'href="https://feed.example.com/ile/articles.xml"' in content
 
     def test_index_html_structure_and_content(self, tmp_path):
         """index.html should contain expected structure, head, sections, and CSS."""

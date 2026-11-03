@@ -311,6 +311,45 @@ class TestFeedEligible:
     """Tests for the feed_eligible computed property."""
 
     @pytest.mark.parametrize(
+        "filetype",
+        [
+            "mp3",
+            "m4a",
+            "wav",
+            "webm",
+            "aac",
+            "flac",
+            "ogg",
+            "opus",
+            "mp4",
+            "mpeg",
+            "mpga",
+            "mkv",
+            "mov",
+            "avi",
+            "wmv",
+        ],
+    )
+    def test_media_filetypes_require_transcribe_and_summarize(self, filetype):
+        """All media filetypes use the transcription and summarization steps."""
+        metadata = Metadata(
+            transcribe=StepMap(status="complete", input_size=100, output_size=100),
+            summarize=StepMap(status="complete", input_size=100, output_size=50),
+            title="Test",
+            filename=f"test.{filetype}",
+            filetype=filetype,
+            size=100,
+        )
+        assert metadata.feed_eligible is True
+
+        metadata.transcribe = StepMap(status="in_progress", input_size=100, output_size=0)
+        assert metadata.feed_eligible is False
+
+        metadata.transcribe = StepMap(status="complete", input_size=100, output_size=100)
+        metadata.summarize = StepMap(status="in_progress", input_size=100, output_size=0)
+        assert metadata.feed_eligible is False
+
+    @pytest.mark.parametrize(
         "filetype,step_map,expected",
         [
             ("mp4", {"transcribe": "complete", "summarize": "complete"}, True),
@@ -383,21 +422,21 @@ class TestFeedEligible:
 
 
 class TestInvalidFields:
-    """Tests for invalid field values."""
+    """Tests for fields that accept arbitrary filetype strings."""
 
     @pytest.mark.parametrize("filetype", ["txt", "docx"])
-    def test_invalid_filetype_rejected(self, filetype):
-        """filetype must be 'mp4', 'pdf', or 'html'."""
-        with pytest.raises(ValidationError) as exc_info:
-            Metadata(
-                title="Test",
-                description="Test",
-                filename=f"test.{filetype}",
-                filetype=filetype,
-                date=1728931200,
-                size=100,
-            )
-        assert "filetype" in str(exc_info.value).lower()
+    def test_unrecognized_filetype_is_stored_but_not_eligible(self, filetype):
+        """Unknown filetype strings are preserved and remain feed-ineligible."""
+        metadata = Metadata(
+            title="Test",
+            description="Test",
+            filename=f"test.{filetype}",
+            filetype=filetype,
+            date=1728931200,
+            size=100,
+        )
+        assert metadata.filetype == filetype
+        assert metadata.feed_eligible is False
 
 
 class TestErrorFieldValidation:

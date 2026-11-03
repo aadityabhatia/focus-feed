@@ -64,6 +64,15 @@ def remote_transcriber(mock_config: Settings) -> Iterator[RemoteTranscriber]:
         yield t
 
 
+@pytest.fixture(autouse=True)
+def mock_compatible_format(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Use source paths by default; conversion behavior has dedicated tests."""
+    monkeypatch.setattr(
+        "focus_feed.services.remote_transcriber.ensure_compatible_format",
+        lambda filepath: str(filepath),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Initialization tests
 # ---------------------------------------------------------------------------
@@ -208,6 +217,54 @@ class TestTranscribeOutput:
         call_kwargs = remote_transcriber._client.audio.transcriptions.create.call_args  # type: ignore[attr-defined]
         assert call_kwargs.kwargs["response_format"] == "text"
         assert call_kwargs.kwargs["file"] == Path("my_audio.mp4")
+
+    def test_transcribe_uses_and_removes_compatible_file(
+        self, remote_transcriber: RemoteTranscriber, tmp_path: Path
+    ) -> None:
+        """Converted audio should be sent to the API and removed after success."""
+        source_path = Path("my_audio.mkv")
+        compatible_path = tmp_path / "audio.mp3"
+        compatible_path.write_bytes(b"audio")
+
+        with (
+            mock.patch.object(Path, "exists", return_value=True),
+            mock.patch(
+                "focus_feed.services.remote_transcriber.ensure_compatible_format",
+                return_value=str(compatible_path),
+            ),
+            mock.patch.object(
+                remote_transcriber, "_create_transcription", return_value="text"
+            ) as create,
+        ):
+            assert remote_transcriber.transcribe(source_path) == "text"
+
+        create.assert_called_once_with(compatible_path, str(source_path))
+        assert not compatible_path.exists()
+
+    def test_transcribe_removes_compatible_file_after_failure(
+        self, remote_transcriber: RemoteTranscriber, tmp_path: Path
+    ) -> None:
+        """Converted audio should be removed even when transcription fails."""
+        source_path = Path("my_audio.mkv")
+        compatible_path = tmp_path / "audio.mp3"
+        compatible_path.write_bytes(b"audio")
+
+        with (
+            mock.patch.object(Path, "exists", return_value=True),
+            mock.patch(
+                "focus_feed.services.remote_transcriber.ensure_compatible_format",
+                return_value=str(compatible_path),
+            ),
+            mock.patch.object(
+                remote_transcriber,
+                "_create_transcription",
+                side_effect=TranscriptionError("transcription failed"),
+            ),
+            pytest.raises(TranscriptionError, match="transcription failed"),
+        ):
+            remote_transcriber.transcribe(source_path)
+
+        assert not compatible_path.exists()
 
 
 class TestTranscribeProgressOutput:

@@ -2092,7 +2092,7 @@ class TestTranscribeCommand:
             ["transcribe", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
-        assert "No MP4 files need transcription." in result.output
+        assert "No audio/video files need transcription." in result.output
 
     def test_transcribe_dry_run(self, runner, valid_env, tmp_data_dir):
         """Transcribe --dry-run should list files without processing."""
@@ -2139,7 +2139,7 @@ class TestTranscribeCommand:
             ["transcribe", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
-        assert "No MP4 files need transcription." in result.output
+        assert "No audio/video files need transcription." in result.output
 
     def test_transcribe_processes_files(self, runner, valid_env, tmp_data_dir):
         """Transcribe should process MP4 files without transcripts."""
@@ -2156,7 +2156,7 @@ class TestTranscribeCommand:
             )
 
         assert result.exit_code == 0
-        assert "Found 1 MP4 file(s) to transcribe." in result.output
+        assert "Found 1 audio/video file(s) to transcribe." in result.output
         mock_transcriber.transcribe.assert_called_once()
 
     def test_transcribe_writes_transcript_to_json(self, runner, valid_env, tmp_data_dir):
@@ -2179,6 +2179,21 @@ class TestTranscribeCommand:
         data = json.loads(json_path.read_text())
         assert data["content"] == "This is a transcript."
         assert data["transcribe"]["status"] == "complete"
+
+    def test_transcribe_persists_actual_media_filetype(self, runner, valid_env, tmp_data_dir):
+        """Transcribing an audio file should preserve its actual filetype."""
+        (tmp_data_dir / "lecture.m4a").write_bytes(b"audio data")
+
+        with mock.patch("focus_feed.services.transcriber.Transcriber") as MockTranscriber:
+            mock_transcriber = mock.MagicMock()
+            mock_transcriber.transcribe.return_value = "This is an audio transcript."
+            MockTranscriber.return_value = mock_transcriber
+
+            result = runner.invoke(app, ["transcribe", str(tmp_data_dir)])
+
+        assert result.exit_code == 0
+        data = json.loads((tmp_data_dir / "lecture.m4a.json").read_text())
+        assert data["filetype"] == "m4a"
 
     def test_transcribe_uses_positional_arg_for_directory(self, runner, valid_env, tmp_data_dir):
         """Transcribe should use the directory passed as a positional argument."""
@@ -2276,7 +2291,7 @@ class TestTranscribeCommand:
             )
 
         assert result.exit_code == 0
-        assert "Found 1 MP4 file(s) to transcribe." in result.output
+        assert "Found 1 audio/video file(s) to transcribe." in result.output
         mock_transcriber.transcribe.assert_called_once()
 
     def test_transcribe_file_flag_processes_specific_file(self, runner, valid_env, tmp_data_dir):
@@ -2860,6 +2875,13 @@ class TestFindFilesNeedingSummary:
                 {"transcribe": {"status": "complete", "input_size": 0, "output_size": 0}},
             ),
             (
+                "lecture.m4a",
+                "m4a",
+                "content",
+                "Some audio transcript",
+                {"transcribe": {"status": "complete", "input_size": 0, "output_size": 0}},
+            ),
+            (
                 "doc.pdf",
                 "pdf",
                 "content",
@@ -3135,6 +3157,18 @@ class TestFindFilesNeedingTranscription:
         result = _find_files_needing_transcription(tmp_data_dir)
         assert len(result) == 1
         assert result[0].name == "video.mp4"
+
+    def test_find_files_needing_transcription_finds_audio_without_json(
+        self, valid_env, tmp_data_dir
+    ):
+        """Should find supported audio files with no JSON metadata."""
+        (tmp_data_dir / "lecture.m4a").write_bytes(b"audio")
+
+        from focus_feed.cli import _find_files_needing_transcription
+
+        result = _find_files_needing_transcription(tmp_data_dir)
+        assert len(result) == 1
+        assert result[0].name == "lecture.m4a"
 
     def test_find_files_needing_transcription_skips_complete(self, valid_env, tmp_data_dir):
         """Should skip MP4 files with complete transcription."""
@@ -4149,6 +4183,7 @@ class TestGetContentForTitle:
         "filetype,metadata_dict,expected",
         [
             ("mp4", {"content": "This is the transcript."}, "This is the transcript."),
+            ("m4a", {"content": "This is the audio transcript."}, "This is the audio transcript."),
             ("mp4", {}, ""),
             ("txt", {}, ""),
         ],
@@ -4156,11 +4191,11 @@ class TestGetContentForTitle:
     def test_get_content_for_title_basic(
         self, valid_env, tmp_path, filetype, metadata_dict, expected
     ):
-        """Should return content from metadata for MP4, empty for unsupported types."""
+        """Should return content from metadata for media types, empty for unsupported types."""
         from focus_feed.cli import _get_content_for_title
 
-        if filetype == "mp4":
-            file_path = Path("/fake/path/lecture.mp4")
+        if filetype in ("mp4", "m4a"):
+            file_path = Path(f"/fake/path/lecture.{filetype}")
         else:
             file_path = tmp_path / f"file.{filetype}"
         result = _get_content_for_title(file_path, metadata_dict)

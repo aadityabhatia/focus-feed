@@ -10,7 +10,49 @@ from unittest import mock
 
 import pytest
 
-from focus_feed.scanner import ScannedFile, Scanner
+from focus_feed.scanner import (
+    DIRECT_TRANSCRIBE_EXTENSIONS,
+    SUPPORTED_EXTENSIONS,
+    VIDEO_EXTRACTION_EXTENSIONS,
+    ScannedFile,
+    Scanner,
+    _is_audio_filetype,
+    _is_video_filetype,
+)
+
+
+class TestSupportedMediaExtensions:
+    """Tests for supported audio and video extension classification."""
+
+    def test_supported_extensions_include_audio_video_and_documents(self):
+        assert (
+            *DIRECT_TRANSCRIBE_EXTENSIONS,
+            *VIDEO_EXTRACTION_EXTENSIONS,
+            ".pdf",
+            ".html",
+        ) == SUPPORTED_EXTENSIONS
+
+    @pytest.mark.parametrize("filetype", ["mp3", "M4A", ".WAV", "flac", "ogg", "opus"])
+    def test_audio_filetype_is_case_insensitive(self, filetype):
+        assert _is_audio_filetype(filetype)
+        assert not _is_video_filetype(filetype)
+
+    @pytest.mark.parametrize("filetype", ["mp4", "MP4", ".MkV", "mov", "AVI", "wmv"])
+    def test_video_filetype_is_case_insensitive(self, filetype):
+        assert _is_video_filetype(filetype)
+        assert not _is_audio_filetype(filetype)
+
+    @pytest.mark.parametrize(
+        "extension", [*DIRECT_TRANSCRIBE_EXTENSIONS, *VIDEO_EXTRACTION_EXTENSIONS]
+    )
+    def test_scanner_discovers_supported_media_extensions(self, tmp_path, extension):
+        source = tmp_path / f"media{extension.upper()}"
+        source.write_bytes(b"media")
+
+        result = Scanner(tmp_path).scan_directory()
+
+        assert len(result) == 1
+        assert result[0].filetype == extension.removeprefix(".")
 
 
 class TestScannerConstruction:

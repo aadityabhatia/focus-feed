@@ -454,6 +454,33 @@ class TestProcessFileMP4:
 # ---------------------------------------------------------------------------
 
 
+class TestProcessFileMedia:
+    """Tests for the shared processing pipeline across media file types."""
+
+    def test_m4a_uses_actual_filetype_through_pipeline(self, producer, mock_summarizer, tmp_path):
+        source = tmp_path / "lecture.m4a"
+        source.write_bytes(b"audio data")
+        scanned = _make_scanned_file("lecture.m4a", absolute_path=str(source))
+
+        with mock.patch(
+            "focus_feed.producer.get_audio_metadata", return_value=None
+        ) as get_audio_metadata:
+            metadata = producer.process_file(scanned)
+
+        assert metadata is not None
+        assert metadata.filetype == "m4a"
+        assert metadata.feed_eligible is True
+        assert metadata.transcribe is not None
+        assert metadata.summarize is not None
+        mock_summarizer.summarize.assert_called_once_with(
+            "This is a test transcript.",
+            reflection_questions=None,
+            filepath="lecture.m4a",
+            filetype="m4a",
+        )
+        get_audio_metadata.assert_called_once_with(str(source), filetype="m4a")
+
+
 class TestProcessFilePDF:
     """Tests for process_file() with PDF files."""
 
@@ -1924,7 +1951,7 @@ class TestMP4AudioMetadata:
         ) as mock_get_meta:
             producer.process_file(scanned)
 
-        mock_get_meta.assert_called_once_with(str(source))
+        mock_get_meta.assert_called_once_with(str(source), filetype="mp4")
 
 
 # ---------------------------------------------------------------------------
