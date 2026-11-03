@@ -3,7 +3,7 @@
 **Runner:** All commands run via `uv run focus-feed <command>` from project root.
 
 ## 1. Overview
-Standalone app that processes MP4, PDF, HTML files and generates private RSS feeds for personal consumption. Remote transcription only; audio metadata via PyAV.
+Standalone app that processes supported audio/video media, PDF, and HTML files and generates private RSS feeds for personal consumption. Remote transcription only; media metadata and audio extraction use PyAV.
 
 **Goals**
 - Privacy-first, local processing
@@ -17,9 +17,10 @@ Standalone app that processes MP4, PDF, HTML files and generates private RSS fee
 **Components**
 - **Scanner & Watcher (`watchdog`):** Recursively discovers files, debounced change detection, periodic rescan fallback for unreliable events
 - **Producer Pipeline:** Queue manager that decides skip/process/resume based on JSON step maps
-  - Transcription Service: MP4 → markdown via remote OpenAI-compatible API only
+  - Transcription Service: compatible audio inputs → markdown via remote OpenAI-compatible API only
+  - **Audio Extractor (`services/audio_extractor.py`):** Passes supported audio inputs through unchanged; extracts audio from MKV, MOV, AVI, and WMV to a temporary transcription-compatible file. Uses stream copy where compatible and FLAC conversion as fallback.
   - Summarization Service: LLM key takeaways from transcript/extracted text, with reflection.md injection
-  - Extraction Service: PDF/HTML metadata+plaintext via `pypdf`/`beautifulsoup4`; audio metadata via `av` (PyAV); hashing (SHA256) computed during first extraction
+  - Extraction Service: PDF/HTML metadata+plaintext via `pypdf`/`beautifulsoup4`; media metadata via `av` (PyAV); hashing (SHA256) computed during first extraction
 - **Feed Generator (`feedgen`):** Aggregates eligible metadata per feed.json, builds RSS items with enclosure links, pubDate logic, and GUIDs; writes podcast.xml / articles.xml
 - **Index Generator:** Builds root index.html with links/titles/descriptions from all feed.json configs
 - **CLI (`click`) + Config (`pydantic-settings` + `.env`)**
@@ -28,7 +29,8 @@ Standalone app that processes MP4, PDF, HTML files and generates private RSS fee
 1. Scanner discovers file recursively
 2. If JSON exists, check file modification time against JSON mtime. If file unchanged and all applicable steps complete, skip; otherwise resume incomplete steps
 3. Dispatch by type:
-   - MP4: load reflection.md if present → transcribe to markdown via remote API → store in content → summarize with reflection prompt → extract audio metadata via PyAV → generate_title via LLM → build title dict → apply parent folder prefix
+   - Direct-submit media (`.mp3`, `.m4a`, `.wav`, `.webm`, `.aac`, `.flac`, `.ogg`, `.opus`, `.mp4`, `.mpeg`, `.mpga`): send original file to remote transcription API → store transcript in content → summarize → extract media metadata via PyAV → generate title.
+   - Video requiring extraction (`.mkv`, `.mov`, `.avi`, `.wmv`): audio_extractor selects the first audio stream and creates a temporary compatible audio file → remote transcription API → delete temporary file → store transcript in content → summarize → extract media metadata via PyAV → generate title. No-audio or extraction failures are reported as transcription errors.
    - PDF/HTML: extract metadata & plaintext → sanitize control chars → compute SHA256 hash → store description/content/mtime → generate_title via LLM → build title dict → apply folder prefix
 4. Write/update JSON with step maps, hash, timestamps, mtime
 5. Feed Generator scans for feed.json, collects feed-eligible items from subtree, sorts by folder/filename, converts markdown→HTML with XSS protection, writes podcast.xml / articles.xml
@@ -50,7 +52,7 @@ Title precedence: generated > extracted > filename. Parent folder name auto-prep
 Filepath is NOT stored; it is inferred from the JSON filename location.
 
 **Feed Eligibility**
-MP4: transcribe.complete AND summarize.complete
+Transcribed audio/video: transcribe.complete AND summarize.complete
 PDF/HTML: extract.complete AND summarize.complete
 
 Note: Nested feeds include all content from their entire subtree; inner feeds are subsets of outer feeds.
@@ -73,7 +75,7 @@ Remote only: OpenAI-compatible API via TRANSCRIPTION_ENDPOINT. No local mode.
 OpenAI-compatible endpoint. Prompts per filetype. Context 128K+ recommended.
 
 **Extraction**
-PDF: pypdf; HTML: beautifulsoup4; Audio metadata: av (PyAV). Control characters removed for XML safety. SHA256 hash computed during first extraction.
+PDF: pypdf; HTML: beautifulsoup4; media metadata and audio extraction: av (PyAV). Control characters removed for XML safety. SHA256 hash computed during first extraction. Audio extraction uses compatible stream copy/remux when possible and FLAC conversion otherwise; quality is prioritized over temporary-file size.
 
 ## 5. Key Decisions
 - Title as dict with provenance for fallback and display

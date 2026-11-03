@@ -1512,6 +1512,14 @@ Add review tasks to ensure all clarifications and updates are properly implement
 ---
 ## Completion Report
 
+### Audio Format Support
+- [x] Support 11 audio/MP4 inputs by direct submission: `.mp3`, `.m4a`, `.wav`, `.webm`, `.aac`, `.flac`, `.ogg`, `.opus`, `.mp4`, `.mpeg`, and `.mpga`.
+- [x] Support `.mkv`, `.mov`, `.avi`, and `.wmv` with audio extraction before remote transcription.
+- [x] Add `services/audio_extractor.py` smart extraction: stream-copy/remux when compatible; otherwise convert to FLAC. Remove temporary extraction output after transcription.
+- [x] Prioritize audio quality over temporary file size.
+
+Smart extraction optimization: compatible audio streams are copied without re-encoding to avoid unnecessary quality loss; FLAC is used only when stream copy is not supported.
+
 ### Artifacts Updated
 1. **README.md** - Updated with all new features, configuration, usage examples, conditional feed generation, index.html, create-feed command
 2. **proposal.md** - Updated problem statement, scope, success criteria, conditional feed generation, index.html, create-feed command
