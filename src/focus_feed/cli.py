@@ -7,7 +7,7 @@ each step of the processing pipeline:
 - ``watch``            — Watch directories for changes (incremental mode).
 - ``feeds``            — Generate RSS feeds from existing JSON metadata.
 - ``validate``         — Validate all JSON metadata files.
-- ``transcribe``       — Transcribe MP4 files to markdown text.
+- ``transcribe``       — Transcribe audio/video files to markdown text.
 - ``summarize``        — Generate summaries from existing content.
 - ``extract``          — Extract metadata from PDF/HTML files.
 - ``title``            — Generate titles for files that lack proper titles.
@@ -45,6 +45,7 @@ from focus_feed.producer import _check_reflection_md
 from focus_feed.scanner import (
     _IGNORE_FILENAMES,
     _SPECIAL_CHAR_PATTERN,
+    MEDIA_FILETYPES,
     SUPPORTED_EXTENSIONS,
     ScannedFile,
     Scanner,
@@ -195,7 +196,7 @@ def _expand_paths_to_files(paths: list[Path]) -> list[ScannedFile]:
     """Expand file and directory paths into a list of ScannedFile objects.
 
     For each path that's a file: check if it's a supported source file
-    (``.mp4``, ``.pdf``, ``.html``) and create a :class:`ScannedFile`.
+    and create a :class:`ScannedFile`.
 
     For each path that's a directory: scan it recursively for source files
     and create :class:`ScannedFile` objects for each one found.
@@ -400,28 +401,28 @@ def _write_json_metadata(data: dict[str, Any], source_path: Path) -> None:
 def _find_files_needing_transcription(
     data_dir: Path, force: bool = False, paths: list[Path] | None = None
 ) -> list[Path]:
-    """Find MP4 files that need transcription.
+    """Find media files that need transcription.
 
     A file needs transcription when:
     - No JSON metadata file exists, **or**
     - The JSON metadata file exists but the ``transcribe`` step map's
       ``status`` is not ``"complete"``.
 
-    When *force* is ``True``, all MP4 files are returned regardless of
+    When *force* is ``True``, all media files are returned regardless of
     their current transcription status.
 
     When *paths* is provided, only files that match one of the specified
     paths (or are within one of the specified directories) are returned.
     """
-    mp4_files = _find_source_files(data_dir, ("mp4",))
+    media_files = _find_source_files(data_dir, tuple(MEDIA_FILETYPES))
     needs: list[Path] = []
-    for mp4_file in mp4_files:
-        if paths is not None and not _is_path_within(mp4_file, paths):
+    for media_file in media_files:
+        if paths is not None and not _is_path_within(media_file, paths):
             continue
-        json_path = mp4_file.with_name(mp4_file.name + ".json")
+        json_path = media_file.with_name(media_file.name + ".json")
         metadata = _get_json_metadata(json_path)
         if force or metadata is None or not _is_step_complete(metadata, "transcribe"):
-            needs.append(mp4_file)
+            needs.append(media_file)
     _logger.info("Found %d files needing transcription", len(needs))
     return needs
 
@@ -429,11 +430,11 @@ def _find_files_needing_transcription(
 def _find_files_needing_summary(
     data_dir: Path, force: bool = False, paths: list[Path] | None = None
 ) -> list[Path]:
-    """Find MP4, PDF, and HTML files that have content but need a summary.
+    """Find media, PDF, and HTML files that have content but need a summary.
 
     A file needs summarization when:
     - The JSON metadata file exists, **and**
-    - It has a non-empty ``content`` field (transcript for MP4, extracted
+    - It has a non-empty ``content`` field (transcript for media, extracted
       text for PDF/HTML), **and**
     - The ``summarize`` step map's ``status`` is not ``"complete"``.
 
@@ -443,7 +444,7 @@ def _find_files_needing_summary(
     When *paths* is provided, only files that match one of the specified
     paths (or are within one of the specified directories) are returned.
     """
-    source_files = _find_source_files(data_dir, ("mp4", "pdf", "html"))
+    source_files = _find_source_files(data_dir, (*MEDIA_FILETYPES, "pdf", "html"))
     needs: list[Path] = []
     for source_file in source_files:
         if paths is not None and not _is_path_within(source_file, paths):
@@ -528,7 +529,7 @@ def _find_files_needing_title(
     A file needs a title when:
     - A JSON metadata file exists for it, **and**
     - The source file exists, **and**
-    - The source file has a supported extension (``.mp4``, ``.pdf``, ``.html``), **and**
+    - The source file has a supported extension, **and**
     - The title does not have a ``generated`` field, **or** *force* is ``True``.
 
     When *force* is ``True``, all source files with JSON metadata are returned
@@ -575,7 +576,7 @@ def _find_files_needing_title(
 def _get_content_for_title(file_path: Path, metadata_dict: dict[str, Any]) -> str:
     """Get content for title generation based on file type.
 
-    For MP4 files, uses the content (transcript) from the metadata dict.
+    For media files, uses the content (transcript) from the metadata dict.
     For PDF/HTML files, reads the first 8000 characters of the file content.
 
     Args:
@@ -587,7 +588,7 @@ def _get_content_for_title(file_path: Path, metadata_dict: dict[str, Any]) -> st
         the file type is unsupported or content cannot be retrieved.
     """
     ext = file_path.suffix.lower()
-    if ext == ".mp4":
+    if ext.lstrip(".") in MEDIA_FILETYPES:
         return str(metadata_dict.get("content", ""))
     if ext in (".pdf", ".html"):
         try:
@@ -806,8 +807,9 @@ def _dry_run_option(func: Any) -> Any:
 def app(log_level: str | None) -> None:
     """Focus Feed — Privacy-first RSS/Atom feed generator.
 
-    Processes PDF, HTML, and MP4 files from the given paths and generates
-    RSS feeds for personal consumption through mobile applications.
+    Processes audio/video files (MP3, M4A, WAV, MP4, MKV, etc.) and
+    documents (PDF, HTML) from the given paths, then generates RSS feeds
+    for personal consumption through mobile applications.
     """
     # Configure logging level early, before any subcommand logging occurs.
     # Precedence: CLI option > LOG_LEVEL env var > default INFO.
@@ -831,8 +833,8 @@ def process(
 ) -> None:
     """Process all files in the given paths (batch mode).
 
-    Scans the given paths for content files (MP4, PDF, HTML) that need
-    processing, processes each file through the Producer pipeline,
+    Scans the given paths for supported audio/video files and documents
+    (PDF, HTML) that need processing, processes each file through the Producer pipeline,
     and generates both RSS feeds afterwards.
 
     When ``--force`` is specified, all files are processed even if
@@ -918,8 +920,8 @@ class _WatchHandler(FileSystemEventHandler):
 
     On file creation or modification:
 
-    * **Source files** (``.mp4``, ``.pdf``, ``.html``) — process the file
-      and regenerate feeds.
+    * **Source files** (audio/video files and documents such as PDF/HTML) —
+      process the file and regenerate feeds.
     * **JSON files** — check whether a corresponding source file exists;
       if not, log a warning about an orphaned JSON file.
     * **Other files** — ignored.
@@ -1479,11 +1481,11 @@ def transcribe(
     dry_run: bool,
     paths: tuple[str, ...],
 ) -> None:
-    """Transcribe MP4 files to markdown text.
+    """Transcribe audio/video files (MP3, M4A, WAV, MP4, MKV, etc.) to markdown text.
 
-    Scans the given paths for MP4 files that do not yet have a complete
-    transcript, transcribes each one using the remote transcription API,
-    and writes the transcript to the adjacent JSON metadata file.
+    Scans the given paths for audio/video files that do not yet have a
+    complete transcript, transcribes each one using the remote transcription
+    API, and writes the transcript to the adjacent JSON metadata file.
 
     Files that already have ``transcribe.status="complete"`` are skipped
     unless ``--force`` is specified.  Use ``--dry-run`` to preview which
@@ -1503,10 +1505,10 @@ def transcribe(
     files = _find_files_needing_transcription(data_dir_path, force=force, paths=resolved_paths)
 
     if not files:
-        click.echo("No MP4 files need transcription.")
+        click.echo("No audio/video files need transcription.")
         return
 
-    click.echo(f"Found {len(files)} MP4 file(s) to transcribe.")
+    click.echo(f"Found {len(files)} audio/video file(s) to transcribe.")
 
     if dry_run:
         _logger.warning("Dry-run mode active; no files will be modified")
@@ -1541,7 +1543,7 @@ def transcribe(
             metadata.update(
                 {
                     "filename": source_file.name,
-                    "filetype": "mp4",
+                    "filetype": source_file.suffix.lower().lstrip("."),
                     "mtime": source_file.stat().st_mtime,
                 }
             )
@@ -1591,8 +1593,8 @@ def summarize(
 ) -> None:
     """Generate summaries from existing content.
 
-    Scans the given paths for MP4, PDF, and HTML files that have content
-    (transcript for MP4, extracted text for PDF/HTML) but no summary,
+    Scans the given paths for audio/video, PDF, and HTML files that have
+    content (transcript for audio/video, extracted text for PDF/HTML) but no summary,
     generates a key-takeaways summary via the LLM, and writes the summary
     to the adjacent JSON metadata file.
 
@@ -1679,9 +1681,9 @@ def summarize(
             summarize_step["output_tokens"] = completion_tokens
             metadata["summarize"] = summarize_step
             metadata["summary"] = summary
-            # For MP4 files, leave description blank and use summary instead.
+            # For media files, leave description blank and use summary instead.
             # For PDF/HTML files, keep the existing description from extraction.
-            if metadata.get("filetype") == "mp4":
+            if metadata.get("filetype") in MEDIA_FILETYPES:
                 metadata["description"] = ""
             _write_json_metadata(metadata, source_file)
 
