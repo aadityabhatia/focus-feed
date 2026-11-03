@@ -1,11 +1,11 @@
 """File scanner for Focus Feed.
 
-Discovers content files (MP4, PDF, HTML) in the base directory and determines
+Discovers supported audio, video, PDF, and HTML files in the base directory and determines
 which ones need processing based on the presence, status, and freshness of
 their adjacent JSON metadata files.
 Scanning logic (design doc section 5.2, tasks.md T2.3):
-- Recursively walk the base directory for files with extensions ``.mp4``,
-  ``.pdf``, ``.html`` (case-insensitive).
+- Recursively walk the base directory for files with extensions in
+  :data:`SUPPORTED_EXTENSIONS` (case-insensitive).
 - For each source file, check whether a corresponding ``.json`` metadata file
   exists in the same directory (named ``<source_filename>.json``).
     - A source file needs processing when:
@@ -43,8 +43,37 @@ from typing import Any
 _logger = logging.getLogger("focus_feed")
 
 
+# Audio formats supported directly by transcription (case-insensitive).
+DIRECT_TRANSCRIBE_EXTENSIONS: tuple[str, ...] = (
+    ".mp3",
+    ".m4a",
+    ".wav",
+    ".webm",
+    ".aac",
+    ".flac",
+    ".ogg",
+    ".opus",
+    ".mp4",
+    ".mpeg",
+    ".mpga",
+)
+
+# Video formats that require audio extraction before transcription.
+VIDEO_EXTRACTION_EXTENSIONS: tuple[str, ...] = (".mkv", ".mov", ".avi", ".wmv")
+
+# Media filetypes handled through the transcription pipeline.
+MEDIA_FILETYPES: frozenset[str] = frozenset(
+    extension.lstrip(".")
+    for extension in (*DIRECT_TRANSCRIBE_EXTENSIONS, *VIDEO_EXTRACTION_EXTENSIONS)
+)
+
 # Source file extensions supported by the scanner (case-insensitive).
-SUPPORTED_EXTENSIONS: tuple[str, ...] = (".mp4", ".pdf", ".html")
+SUPPORTED_EXTENSIONS: tuple[str, ...] = (
+    *DIRECT_TRANSCRIBE_EXTENSIONS,
+    *VIDEO_EXTRACTION_EXTENSIONS,
+    ".pdf",
+    ".html",
+)
 
 # Characters that are problematic in filenames for XML/URL contexts.
 # These trigger a warning but do not block processing.
@@ -97,7 +126,7 @@ def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
     """
     if metadata.get(_ERROR_FIELD):
         return False
-    if filetype == _MP4_FILETYPE:
+    if filetype == _MP4_FILETYPE or _is_audio_filetype(filetype) or _is_video_filetype(filetype):
         # New schema: step maps
         transcribe = metadata.get("transcribe")
         summarize = metadata.get("summarize")
@@ -173,6 +202,20 @@ def _filetype_from_path(path: Path) -> str:
     return path.suffix.lower().lstrip(".")
 
 
+def _is_audio_filetype(filetype: str) -> bool:
+    """Return whether *filetype* is a directly transcribable audio format."""
+    normalized_filetype = filetype.lower().lstrip(".")
+    return (
+        f".{normalized_filetype}" in DIRECT_TRANSCRIBE_EXTENSIONS and normalized_filetype != "mp4"
+    )
+
+
+def _is_video_filetype(filetype: str) -> bool:
+    """Return whether *filetype* is a video format, case-insensitively."""
+    normalized_filetype = filetype.lower().lstrip(".")
+    return f".{normalized_filetype}" in (".mp4", *VIDEO_EXTRACTION_EXTENSIONS)
+
+
 def _validate_filename(filename: str, absolute_path: Path) -> None:
     """Log a warning if *filename* contains special characters.
 
@@ -207,7 +250,7 @@ class Scanner:
     """Discovers content files in the base directory that need processing.
 
     The scanner walks the base directory recursively, identifies source files
-    (``.mp4``, ``.pdf``, ``.html``), and determines which ones lack up-to-date
+    (:data:`SUPPORTED_EXTENSIONS`), and determines which ones lack up-to-date
     JSON metadata. It also detects orphaned JSON files and warns about
     filenames with special characters.
 
@@ -322,7 +365,7 @@ class Scanner:
         For each path in *paths*:
 
         - **File paths**: If the file has a supported source extension
-          (``.mp4``, ``.pdf``, ``.html``), it is checked for processing
+          (see :data:`SUPPORTED_EXTENSIONS`), it is checked for processing
           need based on its adjacent JSON metadata.
         - **Directory paths**: Scanned recursively for source files that
           need processing, with the same evaluation logic as

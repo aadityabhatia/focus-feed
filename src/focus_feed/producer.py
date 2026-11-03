@@ -1,6 +1,6 @@
 """Producer pipeline for Focus Feed.
 
-Orchestrates file processing based on file type. For MP4 files, it
+Orchestrates file processing based on file type. For audio/video files, it
 transcribes audio to markdown, then generates key-takeaways summary via
 LLM. For PDF/HTML files, it extracts metadata from the source file,
 summarizes the extracted content via LLM, and uses the filename
@@ -15,7 +15,7 @@ following the schema defined in design doc section 3.3. On errors, it
 writes an error-state metadata file and logs the error to stderr.
 
 Processing progress is tracked through separate step maps:
-- ``transcribe``: StepMap for transcription (MP4 only).
+- ``transcribe``: StepMap for transcription (media files only).
 - ``summarize``: StepMap for summarization (all file types).
 - ``extract``: StepMap for metadata extraction (PDF/HTML only).
 - ``generate_title``: StepMap for LLM title generation (all file types,
@@ -29,7 +29,7 @@ millisecond precision.
 The title field is a dict with exactly three keys:
 - ``filename``: sanitized filename (no extension, underscores→spaces)
 - ``extracted``: title from source metadata (PDF metadata, HTML <title>,
-  or MP4 metadata where available)
+  or media metadata where available)
 - ``generated``: LLM-generated title (all file types when content is
   available)
 
@@ -56,7 +56,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal, cast
 
 from focus_feed.config import get_config
 from focus_feed.errors import (
@@ -76,8 +76,46 @@ from focus_feed.services.transcriber import Transcriber
 
 _logger = logging.getLogger("focus_feed")
 
+# Media file types handled through the transcription pipeline.
+MEDIA_FILETYPES: frozenset[str] = frozenset(
+    {
+        "mp3",
+        "m4a",
+        "wav",
+        "webm",
+        "aac",
+        "flac",
+        "ogg",
+        "opus",
+        "mp4",
+        "mpeg",
+        "mpga",
+        "mkv",
+        "mov",
+        "avi",
+        "wmv",
+    }
+)
+MediaFiletype = Literal[
+    "mp3",
+    "m4a",
+    "wav",
+    "webm",
+    "aac",
+    "flac",
+    "ogg",
+    "opus",
+    "mp4",
+    "mpeg",
+    "mpga",
+    "mkv",
+    "mov",
+    "avi",
+    "wmv",
+]
+
 # File types supported by the producer, mapped to their processing methods.
-SUPPORTED_FILETYPES: frozenset[str] = frozenset({"mp4", "pdf", "html"})
+SUPPORTED_FILETYPES: frozenset[str] = MEDIA_FILETYPES | frozenset({"pdf", "html"})
 
 
 def _now_timestamp() -> float:
@@ -148,7 +186,7 @@ def _compute_file_hash(filepath: str) -> str:
 
 
 class Producer:
-    """Orchestrates file processing and metadata generation.
+    """Orchestrates media and document processing and metadata generation.
 
     The Producer accepts an optional :class:`~focus_feed.scanner.Scanner`
     and optional service instances. When services are not provided, singleton
@@ -162,7 +200,7 @@ class Producer:
     Attributes:
         scanner: The optional :class:`Scanner` used for batch discovery.
             May be ``None`` when only :meth:`process_file` is used.
-        transcriber: The :class:`Transcriber` for MP4 audio transcription.
+        transcriber: The :class:`Transcriber` for media audio transcription.
         summarizer: The :class:`Summarizer` for LLM-based summarization
             and title generation.
         pdf_extractor: The :class:`PDFExtractor` for PDF metadata.
@@ -215,7 +253,7 @@ class Producer:
         Determines the file type from the extension and dispatches to the
         appropriate processing path:
 
-        - **MP4**: transcribe -> summarize -> generate title -> generate
+        - **Media**: transcribe -> summarize -> generate title -> generate
           metadata with content (transcript) and description (summary).
         - **PDF**: extract metadata -> summarize -> generate title -> generate
           metadata with content (extracted text) and summary.
@@ -318,7 +356,7 @@ class Producer:
         # If the file is already feed-eligible and not forcing, skip processing.
         if not force:
             is_feed_eligible = False
-            if filetype == "mp4":
+            if filetype in MEDIA_FILETYPES:
                 is_feed_eligible = (
                     existing_transcribe is not None
                     and existing_transcribe.get("status") == "complete"
@@ -355,7 +393,7 @@ class Producer:
         # Set the initial step status based on file type, preserving
         # existing step maps so completed steps are not overwritten.
         now_ts = _now_timestamp()
-        if filetype == "mp4":
+        if filetype in MEDIA_FILETYPES:
             partial_metadata["transcribe"] = {
                 "status": "in_progress",
                 "start_time": now_ts,
@@ -414,7 +452,7 @@ class Producer:
 
         # Preserve existing step maps that are complete (only when not forcing).
         if not force:
-            if filetype == "mp4":
+            if filetype in MEDIA_FILETYPES:
                 if existing_transcribe and existing_transcribe.get("status") == "complete":
                     partial_metadata["transcribe"] = existing_transcribe
                 if existing_summarize and existing_summarize.get("status") == "complete":
@@ -437,19 +475,20 @@ class Producer:
                 existing_generate_title.get("status") if existing_generate_title else None,
             )
 
-        # Preserve existing content (transcript for MP4, only when not forcing).
+        # Preserve existing content (media transcript, only when not forcing).
         if existing_content and not force:
             partial_metadata["content"] = existing_content
 
         self._write_metadata_partial(partial_metadata, absolute_path)
 
         try:
-            if filetype == "mp4":
-                metadata = self._process_mp4(
+            if filetype in MEDIA_FILETYPES:
+                metadata = self._process_media(
                     filepath=filepath,
                     filename=filename,
                     absolute_path=absolute_path,
                     json_path=str(json_path),
+                    filetype=filetype,
                     force=force,
                 )
             elif filetype == "pdf":
@@ -550,15 +589,16 @@ class Producer:
     # File-type-specific processing
     # ------------------------------------------------------------------
 
-    def _process_mp4(
+    def _process_media(
         self,
         filepath: str,
         filename: str,
         absolute_path: str,
         json_path: str,
+        filetype: str,
         force: bool = False,
     ) -> Metadata:
-        """Process an MP4 file: transcribe -> summarize -> generate title -> build metadata.
+        """Process an audio/video file: transcribe -> summarize -> generate title -> build metadata.
 
         Writes intermediate JSON states at each processing stage so that
         progress can be tracked. Uses :meth:`_write_metadata_partial` to
@@ -572,17 +612,18 @@ class Producer:
 
         Args:
             filepath: Relative path from the data directory root.
-            filename: The source filename (e.g. ``"lecture.mp4"``).
+            filename: The source filename, including its media extension.
             absolute_path: Absolute path to the source file.
             json_path: Absolute path to the JSON metadata file (written
                 by :meth:`process_file` as the initial in-progress state).
+            filetype: Lowercase source media extension without the leading dot.
             force: When ``True``, re-run transcription and summarization
                 even if existing step maps show ``"complete"`` status.
 
         Returns:
             A :class:`Metadata` instance with content (transcript) and
             summary (key takeaways from LLM). The description field is left
-            empty for MP4 files.
+            empty for media files.
 
         Raises:
             Exception: Any exception from transcription, summarization,
@@ -627,7 +668,7 @@ class Producer:
                     "output_tokens": 0,
                 },
                 "filename": filename,
-                "filetype": "mp4",
+                "filetype": filetype,
             }
 
         config = get_config()
@@ -703,7 +744,7 @@ class Producer:
             transcript,
             reflection_questions=reflection_questions,
             filepath=filepath,
-            filetype="mp4",
+            filetype=filetype,
         )
         summarize_end = datetime.now(UTC)
 
@@ -719,17 +760,17 @@ class Producer:
         self._write_metadata_partial(metadata_dict, absolute_path)
         _logger.info("Summarization completed for %s", filepath)
 
-        # Step 3: Extract audio metadata via ffprobe for duration and creation_time.
+        # Step 3: Extract media metadata via ffprobe for duration and creation_time.
         # This is done before title generation so the extracted title (if any)
         # can be passed to the LLM for context.
         file_size = stat_result.st_size
         file_mtime = int(stat_result.st_mtime * 1000) / 1000.0
 
         _logger.debug("Extracting audio metadata for %s", absolute_path)
-        audio_meta = get_audio_metadata(absolute_path)
+        audio_meta = get_audio_metadata(absolute_path, filetype=filetype)
 
         # Use creation_time from media metadata as the date when available;
-        # fall back to file modification time if ffprobe fails or no
+        # fall back to file modification time if probing fails or no
         # creation_time tag is present.
         file_date = file_mtime
         creation_time_str: str | None = None
@@ -759,8 +800,8 @@ class Producer:
                 stage="audio_metadata_extraction",
             )
 
-        # Step 4: Generate a title.  For MP4 files the transcript is the
-        # best available content for title generation.  Pass the filename
+        # Step 4: Generate a title. The transcript is the best available
+        # content for title generation. Pass the filename
         # (without extension, underscores→spaces) and any extracted title
         # from audio metadata as context to the LLM.
         filename_title = _sanitize_filename(filename)
@@ -804,7 +845,7 @@ class Producer:
         # Module prefix is applied in Metadata.final_title after precedence
         # resolution, so it is not applied here.
 
-        # Build title dict for MP4 with all three keys.
+        # Build title dict for media with all three keys.
         title_dict = self.build_title_dict(
             filename_title=filename_title,
             extracted_title=extracted_title,
@@ -812,12 +853,12 @@ class Producer:
         )
 
         # On completion: update to final state with all fields.
-        # For MP4 files, description is left blank and the LLM-generated
+        # For media files, description is left blank and the LLM-generated
         # summary is stored in the summary field instead.
         metadata_dict.update(
             {
                 "title": title_dict,
-                "description": "",  # MP4: leave description blank, use summary instead
+                "description": "",  # Media: use summary instead
                 "summary": summary,
                 "date": file_date,
                 "mtime": stat_result.st_mtime,
@@ -832,10 +873,10 @@ class Producer:
         # Return a Metadata object for in-memory use.
         metadata = Metadata(
             title=title_dict,
-            description="",  # MP4: leave description blank, use summary instead
+            description="",  # Media: use summary instead
             summary=summary,
             filename=filename,
-            filetype="mp4",
+            filetype=cast(MediaFiletype, filetype),
             date=file_date,
             mtime=stat_result.st_mtime,
             size=file_size,

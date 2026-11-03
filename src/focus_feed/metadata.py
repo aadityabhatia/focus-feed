@@ -8,7 +8,7 @@ used for feed generation.
 Processing progress is tracked through separate step maps for each processing
 step:
 
-- ``transcribe``: Step map for transcription progress (MP4 files only).
+- ``transcribe``: Step map for transcription progress (audio/video media files).
 - ``summarize``: Step map for summarization progress (all file types).
 - ``extract``: Step map for metadata extraction progress (PDF/HTML only).
 - ``generate_title``: Step map for LLM title generation progress (all file
@@ -18,8 +18,8 @@ step:
     ``"in_progress"``, or ``"complete"``.  The :attr:`feed_eligible` computed
     property returns ``True`` only when all applicable steps are ``"complete"``
     and there is no error.  For PDF/HTML files, both ``extract`` and
-    ``summarize`` must be complete; for MP4 files, both ``transcribe`` and
-    ``summarize`` must be complete.
+    ``summarize`` must be complete; for audio/video media files, both
+    ``transcribe`` and ``summarize`` must be complete.
 
 Date fields (``date``) are stored as UNIX epoch floats with millisecond
 precision.  Per-step timing is tracked within each step map's
@@ -30,20 +30,20 @@ millisecond precision.
         {
             "title": {
                 "filename": "lecture",      # sanitized filename, no extension/underscores
-                "extracted": "Lecture 1",    # from source metadata (PDF/HTML/MP4)
+                "extracted": "Lecture 1",    # from source metadata (PDF/HTML/media)
                 "generated": "LLM Title"     # LLM-generated with filename and extracted title
             },
-            "description": "string (optional, extracted from source for PDF/HTML, empty for MP4)",
+            "description": "string (optional, extracted from source for PDF/HTML, empty for media)",
             "summary": "string (optional, LLM-generated key takeaways for all file types)",
             "filename": "lecture.mp4",
-            "filetype": "mp4|pdf|html",
+            "filetype": "media|pdf|html",
             "date": 1728931200.123,          # UNIX epoch (float, millisecond precision)
             "mtime": 1728931200.123,         # Source file modification time
             "publication_date": 1728931200.123,  # Document metadata date (PDF/HTML, optional)
             "size": 12345678,
-            "duration": 3600.5,          # Audio duration in seconds (MP4, optional)
+            "duration": 3600.5,          # Media duration in seconds (optional)
             "creation_time": "2024-01-15T10:30:00.000000Z",  # Media creation time
-            "content": "Plaintext content (transcript for MP4, extracted text for PDF/HTML)",
+            "content": "Plaintext content (transcript for media, extracted text for PDF/HTML)",
             "hash": "a1b2c3d4e5f6...",  # OPTIONAL: SHA256 hash of source file
             "transcribe": {
                 "status": "complete",
@@ -96,7 +96,7 @@ millisecond precision.
 import json
 import logging
 from pathlib import Path
-from typing import Any, Literal
+from typing import Any
 
 from pydantic import (
     BaseModel,
@@ -109,6 +109,27 @@ from pydantic import (
 )
 
 from focus_feed.errors import log_error
+
+# Audio and video filetypes that use the transcription processing path.
+_MEDIA_FILETYPES: frozenset[str] = frozenset(
+    {
+        "mp3",
+        "m4a",
+        "wav",
+        "webm",
+        "aac",
+        "flac",
+        "ogg",
+        "opus",
+        "mp4",
+        "mpeg",
+        "mpga",
+        "mkv",
+        "mov",
+        "avi",
+        "wmv",
+    }
+)
 
 # Step status values.
 _STEP_STATUS_COMPLETE = "complete"
@@ -225,7 +246,7 @@ class Metadata(BaseModel):
 
     Step progress is tracked through separate step maps:
 
-    - ``transcribe``: :class:`StepMap` for transcription (MP4 only).
+    - ``transcribe``: :class:`StepMap` for transcription (audio/video media).
     - ``summarize``: :class:`StepMap` for summarization (all file types).
     - ``extract``: :class:`StepMap` for metadata extraction (PDF/HTML only).
     - ``generate_title``: :class:`StepMap` for LLM title generation (all file
@@ -236,7 +257,8 @@ class Metadata(BaseModel):
     are excluded from generated feeds.
 
     For PDF/HTML files, both ``extract`` and ``summarize`` must be complete.
-    For MP4 files, both ``transcribe`` and ``summarize`` must be complete.
+    For audio/video media files, both ``transcribe`` and ``summarize`` must be
+    complete.
 
     Field Descriptions:
         title: Human-readable title as a dict with keys 'filename', 'extracted',
@@ -244,30 +266,30 @@ class Metadata(BaseModel):
             a deprecation warning). The 'filename' key holds the
             filename-derived title (underscores replaced with spaces). The
             'extracted' key holds the title from source metadata (PDF metadata,
-            HTML <title>, or MP4 metadata where available). The 'generated' key
+            HTML <title>, or media metadata where available). The 'generated' key
             holds the LLM-generated title (all file types). The
             :attr:`final_title` computed property resolves the final title
             using precedence: generated > extracted > filename.
         description: Description for feed item (optional; extracted from source
-            for PDF/HTML files, empty for MP4 files where summary is used instead)
+            for PDF/HTML files, empty for media files where summary is used instead)
         summary: LLM-generated key takeaways summary (all file types, optional)
         filename: Original filename with extension
-        filetype: Source file type: "mp4", "pdf", or "html"; None when
-            unavailable for an error entry.
+        filetype: Source file type as a string (media formats, "pdf", or
+            "html"); None when unavailable for an error entry.
         date: Publication/creation date as UNIX epoch (float, millisecond precision)
         mtime: Source file modification time as a UNIX epoch float.
         publication_date: Publication date from document metadata (PDF/HTML
             only), or None if not available
         size: File size in bytes (for podcast enclosure length)
-        duration: Audio duration in seconds (MP4 files only, optional)
+        duration: Audio duration in seconds (media files, optional)
         creation_time: ISO-8601 creation time string from media metadata
-            (MP4 files only, optional)
-        content: Plaintext content — transcript for MP4 files, extracted text
+            (media files only, optional)
+        content: Plaintext content — transcript for media files, extracted text
             for PDF/HTML files (optional)
         hash: SHA256 hash of the source file (optional; used for guid generation in
             feeds). When present, the last 12 characters are used as the feed item
             guid. Falls back to the inferred source path when not present.
-        transcribe: Step map for transcription (MP4 only)
+        transcribe: Step map for transcription (audio/video media)
         summarize: Step map for summarization (all file types)
         extract: Step map for metadata extraction (PDF/HTML only)
         generate_title: Step map for LLM title generation (all file types,
@@ -292,7 +314,7 @@ class Metadata(BaseModel):
     description: str | None = Field(
         default=None,
         description="Description for feed item (extracted from source for PDF/HTML, "
-        "empty for MP4 where summary is used instead)",
+        "empty for media where summary is used instead)",
     )
     summary: str | None = Field(
         default=None,
@@ -302,14 +324,14 @@ class Metadata(BaseModel):
         ...,
         description="Original filename with extension",
     )
-    filetype: Literal["mp4", "pdf", "html"] | None = Field(
+    filetype: str | None = Field(
         ...,
         description="Source file type, or null when unavailable for an error entry",
     )
     date: float | None = Field(
         default=None,
         description="Publication/creation date as UNIX epoch (millisecond precision). "
-        "For MP4, this is the media creation_time or file mtime. For PDF/HTML, "
+        "For media, this is the media creation_time or file mtime. For PDF/HTML, "
         "this is the document metadata date or file mtime.",
     )
     mtime: float | None = Field(
@@ -329,20 +351,20 @@ class Metadata(BaseModel):
     )
     duration: float | None = Field(
         default=None,
-        description="Audio duration in seconds (MP4 files only)",
+        description="Audio/video duration in seconds (media files only)",
         ge=0,
     )
     creation_time: str | None = Field(
         default=None,
-        description="ISO-8601 creation time string from media metadata (MP4 files only)",
+        description="ISO-8601 creation time string from media metadata",
     )
     content: str | None = Field(
         default=None,
-        description="Plaintext content (transcript for MP4, extracted text for PDF/HTML)",
+        description="Plaintext content (transcript for media, extracted text for PDF/HTML)",
     )
     transcribe: StepMap | None = Field(
         default=None,
-        description="Step map for transcription (MP4 files only)",
+        description="Step map for transcription (audio/video media files only)",
     )
     summarize: StepMap | None = Field(
         default=None,
@@ -433,7 +455,7 @@ class Metadata(BaseModel):
         A file is feed-eligible when **all applicable steps** are complete
         and there is no error:
 
-        - **MP4 files**: ``transcribe`` is not ``None`` and
+        - **Audio/video media files**: ``transcribe`` is not ``None`` and
           ``transcribe.status == "complete"`` and ``summarize`` is not
           ``None`` and ``summarize.status == "complete"``.
         - **PDF/HTML files**: ``extract`` is not ``None`` and
@@ -444,7 +466,7 @@ class Metadata(BaseModel):
         """
         if self.error is not None:
             return False
-        if self.filetype == "mp4":
+        if self.filetype in _MEDIA_FILETYPES:
             return (
                 self.transcribe is not None
                 and self.transcribe.status == _STEP_STATUS_COMPLETE

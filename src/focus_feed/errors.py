@@ -260,7 +260,25 @@ def create_error_metadata(
         A dictionary suitable for JSON serialization as an error metadata file.
     """
     timestamp = int(datetime.now(UTC).timestamp() * 1000) / 1000.0
-    if filetype not in {"mp4", "pdf", "html"}:
+    if filetype not in {
+        "mp3",
+        "m4a",
+        "wav",
+        "webm",
+        "aac",
+        "flac",
+        "ogg",
+        "opus",
+        "mp4",
+        "mpeg",
+        "mpga",
+        "mkv",
+        "mov",
+        "avi",
+        "wmv",
+        "pdf",
+        "html",
+    }:
         filetype = None
     if mtime is None:
         try:
