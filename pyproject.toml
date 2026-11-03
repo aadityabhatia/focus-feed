@@ -1,9 +1,40 @@
 [project]
 name = "focus-feed"
-version = "1.2"
-description = "A local RSS/Atom feed generator for audio, HTML and PDF files"
+version = "1.2.1"
+description = "Turn course materials into private RSS feeds, with takeaways focused on what you want to learn."
 readme = "README.md"
 requires-python = ">=3.14"
+license = "Apache-2.0"
+authors = [
+    { name = "Sonny Bhatia", email = "aadityabhatia@gmail.com" }
+]
+keywords = [
+    "rss",
+    "feed",
+    "education",
+    "podcast",
+    "transcription",
+    "articles",
+    "summarization",
+    "llm",
+]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Environment :: Console",
+    "Intended Audience :: Education",
+    "Intended Audience :: End Users/Desktop",
+    "License :: OSI Approved :: Apache Software License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Typing :: Typed",
+    "Topic :: Education",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Text Processing",
+]
+
 dependencies = [
     "feedgen>=1.0.0",
     "watchdog>=7.0.0",
@@ -17,6 +48,12 @@ dependencies = [
     "av>=19.0.2",
     "markdown>=3.11.2",
 ]
+
+[project.urls]
+Homepage = "https://github.com/aadityabhatia/focus-feed"
+Repository = "https://github.com/aadityabhatia/focus-feed"
+Issues = "https://github.com/aadityabhatia/focus-feed/issues"
+Documentation = "https://github.com/aadityabhatia/focus-feed"
 
 [dependency-groups]
 dev = [
