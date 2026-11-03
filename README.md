@@ -4,7 +4,9 @@
 
 ## What It Does
 
-Focus Feed turns your educational content (PDF, HTML, MP4) into private RSS feeds that you can consume in any podcast or RSS reader app. The AI summarizes each file into key takeaways, incorporating your custom reflection questions for deeper understanding.
+Focus Feed turns your educational content (PDF, HTML, audio files) into private RSS feeds that you can consume in any podcast or RSS reader app.
+
+To guide summaries toward your learning goals, create a `reflection.md` file containing a list of reflection questions in a folder. Focus Feed provides these questions to the AI when summarizing materials in that folder. The resulting summary appears in the feed item description.
 
 ```mermaid
 flowchart TD
@@ -61,28 +63,19 @@ content to title]
     Meta -->|eligible| FeedOut
 ```
 
----
-
 ## Quick Start
 
 ```bash
-# Process a single file or directory
-uv run focus-feed process ./videos/lecture.mp4
-uv run focus-feed process ./documents/ ./videos/
+# Process supported files
+uv run focus-feed process ./data
 
-# Access your feeds
-# Navigate to {BASE_URL}/index.html in your browser
+# Access your feeds at {BASE_URL}/index.html in your browser
 ```
-
----
 
 ## Processing Modes
 
 ### Batch Mode
-Process all files at once:
-```bash
-uv run focus-feed process ./data
-```
+Process all files at once in a directory.
 
 ### Incremental Mode
 Watch for new or updated files:
@@ -90,13 +83,11 @@ Watch for new or updated files:
 uv run focus-feed watch ./data
 ```
 
----
-
 ## Granular Processing
 
 Target specific steps or files:
 
-- `transcribe` - Transcribe MP4 files to markdown (remote-only)
+- `transcribe` - Transcribe audio files to markdown (remote-only)
 - `summarize` - Generate summaries from transcripts or document content
 - `extract` - Extract metadata from PDF/HTML files
 - `title` - Generate titles for files that lack proper titles
