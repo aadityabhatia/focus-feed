@@ -43,13 +43,13 @@ from focus_feed.feeds import _is_orphaned_json
 from focus_feed.metadata import Metadata, StepMap
 from focus_feed.producer import _check_reflection_md
 from focus_feed.scanner import (
-    _IGNORE_FILENAMES,
     _SPECIAL_CHAR_PATTERN,
     MEDIA_FILETYPES,
     SUPPORTED_EXTENSIONS,
     ScannedFile,
     Scanner,
     _is_dict_feed_eligible,
+    _should_ignore_filename,
 )
 from focus_feed.services.extractors import _clean_title
 
@@ -215,7 +215,10 @@ def _expand_paths_to_files(paths: list[Path]) -> list[ScannedFile]:
 
     for path in paths:
         if path.is_file():
-            if path.suffix.lower() in SUPPORTED_EXTENSIONS:
+            if (
+                not _should_ignore_filename(path.name)
+                and path.suffix.lower() in SUPPORTED_EXTENSIONS
+            ):
                 relative = os.path.relpath(path, cwd)
                 files.append(
                     ScannedFile(
@@ -229,7 +232,7 @@ def _expand_paths_to_files(paths: list[Path]) -> list[ScannedFile]:
             for root, _dirs, filenames in os.walk(path):
                 root_path = Path(root)
                 for filename in filenames:
-                    if filename.lower() in _IGNORE_FILENAMES:
+                    if _should_ignore_filename(filename):
                         continue
                     source_path = root_path / filename
                     if source_path.suffix.lower() in SUPPORTED_EXTENSIONS:
@@ -255,7 +258,7 @@ def _find_json_files(data_dir: Path) -> list[Path]:
     """
     json_files: list[Path] = []
     for path in data_dir.rglob("*.json"):
-        if path.name.lower() in _IGNORE_FILENAMES:
+        if _should_ignore_filename(path.name):
             continue
         json_files.append(path)
     return sorted(json_files)
@@ -353,7 +356,7 @@ def _find_source_files(data_dir: Path, filetypes: tuple[str, ...]) -> list[Path]
     for root, _dirs, files in os.walk(data_dir):
         root_path = Path(root)
         for filename in files:
-            if filename.lower() in _IGNORE_FILENAMES:
+            if _should_ignore_filename(filename):
                 continue
             filepath = root_path / filename
             filetype = filepath.suffix.lower().lstrip(".")
@@ -549,7 +552,7 @@ def _find_files_needing_title(
     """
     needs: list[Path] = []
     for json_file in data_dir.rglob("*.json"):
-        if json_file.name.lower() in _IGNORE_FILENAMES:
+        if _should_ignore_filename(json_file.name):
             continue
         try:
             metadata_dict = json.loads(json_file.read_text(encoding="utf-8"))
@@ -1039,6 +1042,9 @@ class _WatchHandler(FileSystemEventHandler):
 
         source_path = Path(filepath)
 
+        if _should_ignore_filename(source_path.name):
+            return
+
         # --- JSON events: check for orphaned JSON -----------------------
         if source_path.suffix.lower() == ".json":
             self._handle_json_event(source_path)
@@ -1095,8 +1101,7 @@ class _WatchHandler(FileSystemEventHandler):
 
     def _handle_json_event(self, json_path: Path) -> None:
         """Check a JSON file for orphaned status."""
-        # feed.json is a configuration file, not orphaned metadata.
-        if json_path.name == "feed.json":
+        if _should_ignore_filename(json_path.name):
             return
 
         source_filename = json_path.name[: -len(".json")]
@@ -1435,7 +1440,7 @@ def validate(
     for root, _dirs, files in os.walk(data_dir_path):
         root_path = Path(root)
         for filename in files:
-            if filename.lower() in _IGNORE_FILENAMES:
+            if _should_ignore_filename(filename):
                 continue
             source_path = root_path / filename
             if source_path.suffix.lower() in SUPPORTED_EXTENSIONS:

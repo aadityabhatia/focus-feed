@@ -18,7 +18,9 @@ from focus_feed.scanner import (
     Scanner,
     _is_audio_filetype,
     _is_video_filetype,
+    _should_ignore_filename,
 )
+from focus_feed.services.extractors import DoclingExtractor
 
 
 class TestSupportedMediaExtensions:
@@ -28,8 +30,8 @@ class TestSupportedMediaExtensions:
         assert (
             *DIRECT_TRANSCRIBE_EXTENSIONS,
             *VIDEO_EXTRACTION_EXTENSIONS,
-            ".pdf",
             ".html",
+            *sorted(DoclingExtractor.SUPPORTED_EXTENSIONS),
         ) == SUPPORTED_EXTENSIONS
 
     @pytest.mark.parametrize("filetype", ["mp3", "M4A", ".WAV", "flac", "ogg", "opus"])
@@ -48,6 +50,37 @@ class TestSupportedMediaExtensions:
     def test_scanner_discovers_supported_media_extensions(self, tmp_path, extension):
         source = tmp_path / f"media{extension.upper()}"
         source.write_bytes(b"media")
+
+        result = Scanner(tmp_path).scan_directory()
+
+        assert len(result) == 1
+        assert result[0].filetype == extension.removeprefix(".")
+
+
+class TestShouldIgnoreFilename:
+    @pytest.mark.parametrize(
+        "filename",
+        [
+            "index.html",
+            "INDEX.HTML",
+            ".hidden.mp4",
+            ".DS_Store",
+            "video.mp4.tmp",
+            "video.mp4.Tmp",
+            "video.mp4.TMP",
+        ],
+    )
+    def test_ignores_generated_hidden_and_temporary_names(self, filename):
+        assert _should_ignore_filename(filename)
+
+    @pytest.mark.parametrize("filename", ["lecture.mp4", "report.PDF", "lecture.tmp.mp4"])
+    def test_keeps_other_filenames(self, filename):
+        assert not _should_ignore_filename(filename)
+
+    @pytest.mark.parametrize("extension", sorted(DoclingExtractor.SUPPORTED_EXTENSIONS))
+    def test_scanner_discovers_docling_extensions(self, tmp_path, extension):
+        source = tmp_path / f"document{extension}"
+        source.write_bytes(b"document")
 
         result = Scanner(tmp_path).scan_directory()
 
@@ -625,7 +658,9 @@ class TestStepStatusBasedScanning:
         assert len(result) == 1
         assert result[0].filename == f"lecture.{filetype}"
 
-    @pytest.mark.parametrize("filetype", ["mp4", "pdf", "html"])
+    @pytest.mark.parametrize(
+        "filetype", ["mp4", "pdf", "html", "docx", "doc", "pptx", "ppt", "xlsx", "xls"]
+    )
     def test_non_dict_step_maps_are_safe(self, tmp_path, filetype):
         """Non-dict step maps do not cause error checking to fail."""
         source = tmp_path / f"lecture.{filetype}"
@@ -680,7 +715,13 @@ class TestStepStatusBasedScanning:
         "filetype,json_content",
         [
             ("mp4", '{"transcribe": {"status": "complete"}, "summarize": {"status": "complete"}}'),
-            ("pdf", '{"extract": {"status": "complete"}, "summarize": {"status": "complete"}}'),
+            *[
+                (
+                    extension.removeprefix("."),
+                    '{"extract": {"status": "complete"}, "summarize": {"status": "complete"}}',
+                )
+                for extension in sorted(DoclingExtractor.SUPPORTED_EXTENSIONS)
+            ],
             ("html", '{"extract": {"status": "complete"}, "summarize": {"status": "complete"}}'),
         ],
     )
@@ -1106,6 +1147,19 @@ class TestScanPaths:
 
         assert len(result) == 1
         assert result[0].filename == "lecture.mp4"
+
+    @pytest.mark.parametrize("filename", [".hidden.mp4", "video.mp4.tmp", "INDEX.HTML"])
+    def test_ignored_files_skipped_in_scan_paths(self, tmp_path, filename):
+        ignored = tmp_path / filename
+        ignored.write_bytes(b"data")
+
+        assert Scanner(tmp_path).scan_paths([ignored]) == []
+
+    @pytest.mark.parametrize("filename", [".hidden.mp4", "video.mp4.tmp"])
+    def test_ignored_files_skipped_in_directory_scan(self, tmp_path, filename):
+        (tmp_path / filename).write_bytes(b"data")
+
+        assert Scanner(tmp_path).scan_directory() == []
 
     def test_results_sorted_by_filepath(self, tmp_path):
         """Results should be sorted by relative filepath."""

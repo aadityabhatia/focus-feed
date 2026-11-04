@@ -40,6 +40,8 @@ from pathlib import Path
 import re
 from typing import Any
 
+from focus_feed.services.extractors import DoclingExtractor
+
 _logger = logging.getLogger("focus_feed")
 
 
@@ -71,8 +73,8 @@ MEDIA_FILETYPES: frozenset[str] = frozenset(
 SUPPORTED_EXTENSIONS: tuple[str, ...] = (
     *DIRECT_TRANSCRIBE_EXTENSIONS,
     *VIDEO_EXTRACTION_EXTENSIONS,
-    ".pdf",
     ".html",
+    *sorted(DoclingExtractor.SUPPORTED_EXTENSIONS),
 )
 
 # Characters that are problematic in filenames for XML/URL contexts.
@@ -85,6 +87,16 @@ _IGNORE_FILENAMES = frozenset(
     {"podcast.xml", "articles.xml", "podcast.atom", "articles.atom", "index.html", "feed.json"}
 )
 
+
+def _should_ignore_filename(filename: str) -> bool:
+    """Return whether *filename* is a generated, hidden, or temporary file."""
+    return (
+        filename.lower() in _IGNORE_FILENAMES
+        or filename.startswith(".")
+        or filename.lower().endswith(".tmp")
+    )
+
+
 # JSON status values that indicate a step is complete.
 _COMPLETED_STEP_STATUS: str = "complete"
 
@@ -95,7 +107,9 @@ _ERROR_FIELD: str = "error"
 _MP4_FILETYPE: str = "mp4"
 
 # File types that use extract step map.
-_DOC_FILETYPES: frozenset[str] = frozenset({"pdf", "html"})
+_DOC_FILETYPES: frozenset[str] = frozenset(
+    {"pdf", "html", *(extension.lstrip(".") for extension in DoclingExtractor.SUPPORTED_EXTENSIONS)}
+)
 
 
 def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
@@ -341,8 +355,7 @@ class Scanner:
             root_path = Path(root)
             for filename in files:
                 # Skip generated feed files and known non-content artifacts.
-                # Comparison is case-insensitive to handle INDEX.HTML etc.
-                if filename.lower() in _IGNORE_FILENAMES:
+                if _should_ignore_filename(filename):
                     continue
 
                 source_path = root_path / filename
@@ -461,7 +474,7 @@ class Scanner:
             base_dir: The base directory for computing relative paths.
             results: The list to append matching :class:`ScannedFile` objects to.
         """
-        if not _is_supported_source_file(source_path):
+        if _should_ignore_filename(source_path.name) or not _is_supported_source_file(source_path):
             return
 
         _validate_filename(source_path.name, source_path)
@@ -495,8 +508,7 @@ class Scanner:
             root_path = Path(root)
             for filename in files:
                 # Skip generated feed files and known non-content artifacts.
-                # Comparison is case-insensitive to handle INDEX.HTML etc.
-                if filename.lower() in _IGNORE_FILENAMES:
+                if _should_ignore_filename(filename):
                     continue
 
                 source_path = root_path / filename
@@ -666,7 +678,7 @@ class Scanner:
                 transcribe = metadata.get("transcribe")
                 if isinstance(transcribe, dict) and transcribe.get("output_size", 0) == 0:
                     return True, current_stage, True
-            elif filetype in ("pdf", "html"):
+            elif filetype in _DOC_FILETYPES:
                 extract = metadata.get("extract")
                 if isinstance(extract, dict) and extract.get("output_size", 0) == 0:
                     return True, current_stage, True

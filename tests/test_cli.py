@@ -850,6 +850,59 @@ class TestWatchCommand:
 
         producer.process_file.assert_not_called()
 
+    @pytest.mark.parametrize(
+        "filename",
+        [".hidden.mp4", "video.mp4.tmp", "index.html", "INDEX.HTML", "feed.json"],
+    )
+    def test_watch_handler_ignores_hidden_temporary_and_generated_files(
+        self, valid_env, tmp_data_dir, filename
+    ):
+        from focus_feed.cli import _WatchHandler
+
+        source_file = tmp_data_dir / filename
+        source_file.write_bytes(b"data")
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        with mock.patch("focus_feed.cli._generate_feeds") as mock_gen:
+            handler._handle_event(str(source_file))
+
+        producer.process_file.assert_not_called()
+        mock_gen.assert_not_called()
+
+    def test_watch_json_handler_ignores_hidden_and_temporary_files(self, valid_env, tmp_data_dir):
+        from focus_feed.cli import _WatchHandler
+
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+        with mock.patch("focus_feed.cli._logger") as mock_logger:
+            handler._handle_json_event(tmp_data_dir / ".hidden.json")
+            handler._handle_json_event(tmp_data_dir / "video.json.tmp")
+
+        mock_logger.warning.assert_not_called()
+
+    def test_cli_file_discovery_ignores_hidden_temporary_and_generated_files(
+        self, valid_env, tmp_data_dir
+    ):
+        from focus_feed.cli import (
+            _expand_paths_to_files,
+            _find_json_files,
+            _find_source_files,
+        )
+
+        for filename in (".hidden.mp4", "video.mp4.tmp", "index.html", "lecture.mp4"):
+            (tmp_data_dir / filename).write_bytes(b"data")
+        (tmp_data_dir / ".hidden.json").write_text("{}")
+        (tmp_data_dir / "metadata.json").write_text("{}")
+
+        expanded = _expand_paths_to_files([tmp_data_dir])
+        sources = _find_source_files(tmp_data_dir, ("mp4", "html"))
+        json_files = _find_json_files(tmp_data_dir)
+
+        assert {file.filename for file in expanded} == {"lecture.mp4"}
+        assert {file.name for file in sources} == {"lecture.mp4"}
+        assert {file.name for file in json_files} == {"metadata.json"}
+
     def test_watch_handler_logs_warning_for_orphaned_json(self, valid_env, tmp_data_dir):
         """Watch handler should log warning for orphaned JSON files."""
         from focus_feed.cli import _WatchHandler
@@ -1270,6 +1323,20 @@ class TestWatchCommand:
         assert call_arg.filename == "missed.mp4"
         # Feeds should have been regenerated
         mock_gen.assert_called_once()
+
+    def test_periodic_rescan_ignores_hidden_temporary_and_generated_files(
+        self, valid_env, tmp_data_dir
+    ):
+        from focus_feed.cli import _WatchHandler
+
+        for filename in (".hidden.mp4", "video.mp4.tmp", "index.html"):
+            (tmp_data_dir / filename).write_bytes(b"data")
+        producer = mock.MagicMock()
+        handler = _WatchHandler(data_dir=tmp_data_dir, producer=producer)
+
+        handler._periodic_rescan()
+
+        producer.process_file.assert_not_called()
 
     def test_periodic_rescan_no_files_logs_info(self, valid_env, tmp_data_dir):
         """_periodic_rescan should handle empty directory gracefully."""
