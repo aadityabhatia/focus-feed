@@ -109,6 +109,7 @@ from pydantic import (
 )
 
 from focus_feed.errors import log_error
+from focus_feed.scanner import _DOC_FILETYPES
 
 # Audio and video filetypes that use the transcription processing path.
 _MEDIA_FILETYPES: frozenset[str] = frozenset(
@@ -488,7 +489,7 @@ class Metadata(BaseModel):
                 and self.summarize is not None
                 and self.summarize.status == _STEP_STATUS_COMPLETE
             )
-        if self.filetype in ("pdf", "html"):
+        if self.filetype in _DOC_FILETYPES:
             if (
                 self.extract is not None
                 and self.extract.error is not None

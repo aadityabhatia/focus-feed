@@ -39,6 +39,7 @@ import markdown as _md
 from focus_feed.config import get_config
 from focus_feed.errors import log_error
 from focus_feed.metadata import Metadata
+from focus_feed.producer import DOCLING_FILETYPES
 from focus_feed.scanner import SUPPORTED_EXTENSIONS
 
 _logger = logging.getLogger("focus_feed")
@@ -62,6 +63,8 @@ MEDIA_FILETYPES: frozenset[str] = frozenset(
         "wmv",
     }
 )
+
+DOCUMENT_FILETYPES: frozenset[str] = frozenset({"pdf", "html"}) | DOCLING_FILETYPES
 
 
 def get_mime_type(filetype: str) -> str:
@@ -948,13 +951,13 @@ class FeedGenerator:
 
         if metadata_items is None:
             all_metadata = self._discover_metadata_files()
-            article_items = [m for m in all_metadata if m.filetype in ("pdf", "html")]
+            article_items = [m for m in all_metadata if m.filetype in DOCUMENT_FILETYPES]
         else:
-            article_items = [m for m in metadata_items if m.filetype in ("pdf", "html")]
+            article_items = [m for m in metadata_items if m.filetype in DOCUMENT_FILETYPES]
 
         if not article_items:
             _logger.info(
-                "No PDF/HTML files found; skipping articles feed generation for %s",
+                "No document files found; skipping articles feed generation for %s",
                 output_dir,
             )
             return []
@@ -1083,7 +1086,7 @@ class FeedGenerator:
         }
 
         media_items = [m for m in metadata_items if m.filetype in MEDIA_FILETYPES]
-        article_items = [m for m in metadata_items if m.filetype in ("pdf", "html")]
+        article_items = [m for m in metadata_items if m.filetype in DOCUMENT_FILETYPES]
 
         _logger.info("Generating feeds for folder: %s", folder)
 

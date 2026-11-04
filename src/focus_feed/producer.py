@@ -71,6 +71,7 @@ from focus_feed.scanner import (
     _is_video_filetype,
 )
 from focus_feed.services.extractors import (
+    DoclingExtractor,
     HTMLExtractor,
     PDFExtractor,
     _clean_title,
@@ -119,8 +120,16 @@ MediaFiletype = Literal[
     "wmv",
 ]
 
+# Document file types supported by Docling, excluding PDF which also has a
+# dedicated local extractor fallback.
+DOCLING_FILETYPES: frozenset[str] = frozenset({"docx", "doc", "pptx", "ppt", "xlsx", "xls"})
+DoclingFiletype = Literal["docx", "doc", "pptx", "ppt", "xlsx", "xls"]
+
 # File types supported by the producer, mapped to their processing methods.
-SUPPORTED_FILETYPES: frozenset[str] = MEDIA_FILETYPES | frozenset({"pdf", "html"})
+SUPPORTED_FILETYPES: frozenset[str] = (
+    MEDIA_FILETYPES | DOCLING_FILETYPES | frozenset({"pdf", "html"})
+)
+DOCUMENT_FILETYPES: frozenset[str] = frozenset({"pdf", "html"}) | DOCLING_FILETYPES
 
 
 def _now_timestamp() -> float:
@@ -210,6 +219,8 @@ class Producer:
             and title generation.
         pdf_extractor: The :class:`PDFExtractor` for PDF metadata.
         html_extractor: The :class:`HTMLExtractor` for HTML metadata.
+        docling_extractor: The :class:`DoclingExtractor` for optional document
+            extraction before PDF fallback.
     """
 
     def __init__(
@@ -220,6 +231,7 @@ class Producer:
         pdf_extractor: PDFExtractor | None = None,
         html_extractor: HTMLExtractor | None = None,
         force: bool = False,
+        docling_extractor: DoclingExtractor | None = None,
     ) -> None:
         """Initialize the Producer with dependencies.
 
@@ -235,6 +247,8 @@ class Producer:
                 ``None``, a new instance is created.
             html_extractor: Optional :class:`HTMLExtractor` instance. When
                 ``None``, a new instance is created.
+            docling_extractor: Optional :class:`DoclingExtractor` instance. When
+                ``None``, a new instance is created.
             force: When ``True``, all processing steps are re-run even if
                 existing step maps show ``"complete"`` status. This is used
                 by the ``process --force`` CLI command to force full
@@ -245,6 +259,7 @@ class Producer:
         self.summarizer: Summarizer = summarizer or Summarizer()
         self.pdf_extractor: PDFExtractor = pdf_extractor or PDFExtractor()
         self.html_extractor: HTMLExtractor = html_extractor or HTMLExtractor()
+        self.docling_extractor: DoclingExtractor = docling_extractor or DoclingExtractor()
         self.force: bool = force
         _logger.info("Producer initialized (force=%s)", self.force)
 
@@ -369,7 +384,7 @@ class Producer:
                     and existing_summarize is not None
                     and existing_summarize.get("status") == "complete"
                 )
-            elif filetype in ("pdf", "html"):
+            elif filetype in DOCUMENT_FILETYPES:
                 is_feed_eligible = (
                     existing_extract is not None
                     and existing_extract.get("status") == "complete"
@@ -394,7 +409,7 @@ class Producer:
                     transcribe = existing_data.get("transcribe")
                     if isinstance(transcribe, dict) and transcribe.get("output_size", 0) == 0:
                         is_migratable_legacy = True
-                elif filetype in ("pdf", "html"):
+                elif filetype in DOCUMENT_FILETYPES:
                     extract = existing_data.get("extract")
                     if isinstance(extract, dict) and extract.get("output_size", 0) == 0:
                         is_migratable_legacy = True
@@ -437,7 +452,7 @@ class Producer:
                 "input_tokens": 0,
                 "output_tokens": 0,
             }
-        elif filetype in ("pdf", "html"):
+        elif filetype in DOCUMENT_FILETYPES:
             partial_metadata["extract"] = {
                 "status": "in_progress",
                 "start_time": now_ts,
@@ -480,7 +495,7 @@ class Producer:
                     partial_metadata["transcribe"] = existing_transcribe
                 if existing_summarize and existing_summarize.get("status") == "complete":
                     partial_metadata["summarize"] = existing_summarize
-            elif filetype in ("pdf", "html"):
+            elif filetype in DOCUMENT_FILETYPES:
                 if existing_extract and existing_extract.get("status") == "complete":
                     partial_metadata["extract"] = existing_extract
                 if existing_summarize and existing_summarize.get("status") == "complete":
@@ -514,13 +529,14 @@ class Producer:
                     filetype=filetype,
                     force=force,
                 )
-            elif filetype == "pdf":
+            elif filetype in ("pdf", *DOCLING_FILETYPES):
                 metadata = self._process_pdf(
                     filepath=filepath,
                     filename=filename,
                     absolute_path=absolute_path,
                     json_path=str(json_path),
                     force=force,
+                    filetype=cast(Literal["pdf"] | DoclingFiletype, filetype),
                 )
             elif filetype == "html":
                 metadata = self._process_html(
@@ -921,8 +937,9 @@ class Producer:
         absolute_path: str,
         json_path: str,
         force: bool = False,
+        filetype: Literal["pdf"] | DoclingFiletype = "pdf",
     ) -> Metadata:
-        """Process a PDF file: extract metadata -> summarize -> generate title -> build metadata.
+        """Process a PDF or Docling document: extract -> summarize -> title.
 
         Writes intermediate JSON states at each processing stage. Uses
         :meth:`_write_metadata_partial` to bypass :class:`Metadata`
@@ -939,12 +956,13 @@ class Producer:
 
         Args:
             filepath: Relative path from the data directory root.
-            filename: The source filename (e.g. ``"doc.pdf"``).
+            filename: The source filename (e.g. ``"doc.pdf"`` or ``"slides.pptx"``).
             absolute_path: Absolute path to the source file.
             json_path: Absolute path to the JSON metadata file (written
                 by :meth:`process_file` as the initial in-progress state).
             force: When ``True``, re-run extraction and summarization even
                 if existing step maps show ``"complete"`` status.
+            filetype: The source document extension without its leading dot.
 
         Returns:
             A :class:`Metadata` instance with extract and summarize steps
@@ -989,7 +1007,7 @@ class Producer:
                     "output_tokens": 0,
                 },
                 "filename": filename,
-                "filetype": "pdf",
+                "filetype": filetype,
             }
 
         # Determine input size for the extract step.
@@ -1007,8 +1025,31 @@ class Producer:
         self._write_metadata_partial(metadata_dict, absolute_path)
 
         _logger.info("Starting extraction for %s (step 1/3)", filepath)
-        # Step 1: Extract metadata from the PDF.
-        extracted = self.pdf_extractor.extract(absolute_path)
+        # Step 1: Use Docling for its supported document formats. PDF uses the
+        # local PDFExtractor only when Docling is not configured.
+        config = get_config()
+        extracted = None
+        extension = Path(absolute_path).suffix.lower()
+        if filetype in DOCLING_FILETYPES:
+            if not config.docling_api:
+                raise RuntimeError("DOCLING_API is not configured")
+            extracted = self.docling_extractor.extract(absolute_path)
+            if extracted.get("content") is None:
+                raise RuntimeError(f"Docling extraction produced no content for {filepath}")
+        elif config.docling_api and extension in DoclingExtractor.SUPPORTED_EXTENSIONS:
+            try:
+                docling_extracted = self.docling_extractor.extract(absolute_path)
+            except (ConnectionError, RuntimeError, ValueError) as exc:
+                _logger.error("Docling extraction failed for %s: %s", filepath, exc)
+                raise RuntimeError(f"Docling extraction failed for {filepath}: {exc}") from exc
+
+            if not docling_extracted.get("content"):
+                _logger.error("Docling extraction produced no content for %s", filepath)
+                raise RuntimeError(f"Docling extraction produced no content for {filepath}")
+            extracted = docling_extracted
+
+        if extracted is None:
+            extracted = self.pdf_extractor.extract(absolute_path)
         metadata_dict["hash"] = _compute_file_hash(absolute_path)
 
         # The filename-derived title is used as the actual title.
@@ -1037,9 +1078,6 @@ class Producer:
             len(file_content) if file_content else 0,
         )
 
-        # Get config for LLM model used in summarization.
-        config = get_config()
-
         # Step 2: Summarize the extracted content via LLM.
         # Check for reflection.md in the source file's directory.
         reflection_questions = _check_reflection_md(absolute_path)
@@ -1065,7 +1103,7 @@ class Producer:
                     file_content,
                     reflection_questions=reflection_questions,
                     filepath=filepath,
-                    filetype="pdf",
+                    filetype=filetype,
                 )
             else:
                 # No content to summarize; use empty summary.
@@ -1162,7 +1200,7 @@ class Producer:
             description=description,
             summary=summary,
             filename=filename,
-            filetype="pdf",
+            filetype=filetype,
             date=file_date,
             mtime=stat_result.st_mtime,
             publication_date=file_publication_date,
@@ -1550,7 +1588,7 @@ class Producer:
 
         if filetype in MEDIA_FILETYPES:
             step_error = ("transcribe", str(exc))
-        elif filetype in ("pdf", "html"):
+        elif filetype in DOCUMENT_FILETYPES:
             step_error = ("extract", str(exc))
         else:
             step_error = None

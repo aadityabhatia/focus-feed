@@ -1,28 +1,28 @@
-"""Metadata extractors for PDF, HTML, and audio (MP4) files.
+"""Metadata extractors for PDF, HTML, Docling-supported documents, and audio.
 
-This module provides extractor classes that read metadata from PDF and HTML
-source files, returning structured dictionaries compatible with the Metadata
-model (design doc section 3.3).
+This module provides extractor classes for PDF, HTML, and documents handled by
+Docling, returning structured dictionaries compatible with the Metadata model
+(design doc section 3.3). The DoclingExtractor supports PDF, DOCX/DOC, PPTX/PPT,
+and XLSX/XLS files; it uses the Docling API when that API is configured.
 
 It also provides a :func:`get_audio_metadata` function that uses ``ffprobe``
-to extract metadata from MP4/audio files (type, duration, creation_time,
-bit_rate).
+to extract metadata from audio files (type, duration, creation_time, bit_rate).
 
-    Each extractor's ``extract`` method returns a dict with the following keys:
-    - title: str — filename without extension, underscores replaced with spaces
-        (used as the actual/final title)
-    - extracted_title: str | None — title extracted from source metadata
-        (PDF metadata title, HTML <title> tag), or None if not available.
-        This is stored separately and NOT used as the actual title.
-    - description: str | None (optional; may be None if not available)
-    - date: float (UNIX epoch with millisecond precision; falls back to file
-        modification time)
-    - publication_date: float | None (UNIX epoch with millisecond precision;
-        document metadata date if available, None otherwise)
-    - size: int (file size in bytes)
-    - filetype: str (always "pdf" or "html")
-    - content: str | None (plaintext content extracted from the source file,
-      or None if extraction fails or no text is found)
+Each document extractor's ``extract`` method returns a dict with the following
+keys:
+- title: str — filename without extension, underscores replaced with spaces
+    (used as the actual/final title)
+- extracted_title: str | None — title extracted from source metadata, or None
+    if not available. This is stored separately and NOT used as the actual title.
+- description: str | None (optional; may be None if not available)
+- date: float (UNIX epoch with millisecond precision; falls back to file
+    modification time)
+- publication_date: float | None (UNIX epoch with millisecond precision;
+    document metadata date if available, None otherwise)
+- size: int (file size in bytes)
+- filetype: str (source file extension without the leading dot)
+- content: str | None (plaintext or Markdown extracted from the source file,
+  or None if extraction fails or no text is found)
 """
 
 import contextlib
@@ -36,7 +36,10 @@ import subprocess
 from typing import Any
 
 from bs4 import BeautifulSoup
+import httpx
 from pypdf import PdfReader
+
+from focus_feed.config import get_config
 
 _logger = logging.getLogger("focus_feed")
 
@@ -389,6 +392,90 @@ class HTMLExtractor:
                 continue
 
         return None
+
+
+class DoclingExtractor:
+    """Extract document content as Markdown using the Docling Serve API."""
+
+    SUPPORTED_EXTENSIONS = frozenset({".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls"})
+
+    def extract(self, filepath: str | Path) -> dict[str, Any]:
+        """Send a supported document to Docling and return its extracted Markdown.
+
+        Args:
+            filepath: Path to the document to extract.
+
+        Returns:
+            Extractor metadata compatible with :class:`PDFExtractor`. The
+            content is None when Docling returns an unsuccessful or malformed
+            response.
+
+        Raises:
+            RuntimeError: If the ``DOCLING_API`` configuration is unset.
+            ConnectionError: If the Docling API cannot be reached.
+        """
+        filepath = Path(filepath)
+        config = get_config()
+        docling_api = config.docling_api
+        if not docling_api:
+            raise RuntimeError("DOCLING_API is not configured")
+
+        extension = filepath.suffix.lower()
+        if extension not in self.SUPPORTED_EXTENSIONS:
+            raise ValueError(f"Unsupported Docling file extension: {extension}")
+
+        stat_result = filepath.stat()
+        filename = filepath.name
+        endpoint = f"{docling_api.rstrip('/')}/v1/convert/file"
+        _logger.info("Starting Docling extraction for %s", filepath)
+
+        try:
+            with filepath.open("rb") as file_handle:
+                response = httpx.post(
+                    endpoint,
+                    files={"files": (filename, file_handle)},
+                    data={"to_formats": "md"},
+                    timeout=300.0,
+                )
+            response.raise_for_status()
+        except httpx.RequestError as error:
+            _logger.error("Could not reach Docling API at %s: %s", endpoint, error)
+            raise ConnectionError(f"Could not reach Docling API at {endpoint}: {error}") from error
+        except httpx.HTTPStatusError as error:
+            _logger.warning("Docling API returned an error for %s: %s", filepath, error)
+            content = None
+        else:
+            try:
+                result = response.json()
+                document = result.get("document", {})
+                content = document.get("md_content") if isinstance(document, dict) else None
+                if not isinstance(content, str):
+                    content = None
+                if content is None:
+                    _logger.warning("Docling API response contained no Markdown for %s", filepath)
+            except (ValueError, TypeError, AttributeError) as error:
+                _logger.warning("Invalid Docling API response for %s: %s", filepath, error)
+                content = None
+
+        if content is None:
+            _logger.warning("Docling extraction did not produce content for %s", filepath)
+        else:
+            _logger.info(
+                "Docling extraction completed for %s: %d chars",
+                filepath,
+                len(content),
+            )
+
+        return {
+            "title": _clean_title(filepath.stem),
+            "extracted_title": None,
+            "description": None,
+            "date": int(stat_result.st_mtime * 1000) / 1000.0,
+            "publication_date": None,
+            "size": stat_result.st_size,
+            "filetype": extension.lstrip("."),
+            "content": content,
+        }
 
 
 # ---------------------------------------------------------------------------
