@@ -362,6 +362,12 @@ class TestFeedEligible:
             ("mp4", {"transcribe": "complete", "summarize": None}, False),  # missing summarize
             ("pdf", {"extract": "complete", "summarize": "complete"}, True),
             ("html", {"extract": "complete", "summarize": "complete"}, True),
+            ("docx", {"extract": "complete", "summarize": "complete"}, True),
+            ("doc", {"extract": "complete", "summarize": "complete"}, True),
+            ("pptx", {"extract": "complete", "summarize": "complete"}, True),
+            ("ppt", {"extract": "complete", "summarize": "complete"}, True),
+            ("xlsx", {"extract": "complete", "summarize": "complete"}, True),
+            ("xls", {"extract": "complete", "summarize": "complete"}, True),
             ("pdf", {"extract": "in_progress", "summarize": "complete"}, False),
             ("pdf", {"extract": "complete", "summarize": "in_progress"}, False),
             ("pdf", {"extract": "complete", "summarize": None}, False),  # missing summarize

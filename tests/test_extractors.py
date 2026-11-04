@@ -7,10 +7,12 @@ import subprocess
 from typing import Any
 from unittest import mock
 
+import httpx
 from pypdf import PdfWriter
 import pytest
 
 from focus_feed.services.extractors import (
+    DoclingExtractor,
     HTMLExtractor,
     PDFExtractor,
     _clean_title,
@@ -818,6 +820,80 @@ class TestHTMLExtractor:
         # BeautifulSoup should still extract whatever text it can
         assert result["content"] is not None
         assert "Broken" in result["content"]
+
+
+# ---------------------------------------------------------------------------
+# DoclingExtractor tests
+# ---------------------------------------------------------------------------
+
+
+class TestDoclingExtractor:
+    """Tests for document conversion through the Docling API."""
+
+    @pytest.mark.parametrize("extension", ["pdf", "docx", "doc", "pptx", "ppt", "xlsx", "xls"])
+    def test_extract_posts_document_and_returns_markdown(self, tmp_path, extension):
+        path = tmp_path / f"my_document.{extension}"
+        path.write_bytes(b"document data")
+        response = mock.Mock()
+        response.json.return_value = {"document": {"md_content": "# Extracted Markdown"}}
+
+        with (
+            mock.patch("focus_feed.services.extractors.get_config") as get_config,
+            mock.patch("focus_feed.services.extractors.httpx.post", return_value=response) as post,
+        ):
+            get_config.return_value.docling_api = "http://docling:5001/"
+            result = DoclingExtractor().extract(path)
+
+        assert result == {
+            "title": "my document",
+            "extracted_title": None,
+            "description": None,
+            "date": int(path.stat().st_mtime * 1000) / 1000.0,
+            "publication_date": None,
+            "size": path.stat().st_size,
+            "filetype": extension,
+            "content": "# Extracted Markdown",
+        }
+        assert post.call_args.args[0] == "http://docling:5001/v1/convert/file"
+        assert post.call_args.kwargs["data"] == {"to_formats": "md"}
+        assert post.call_args.kwargs["files"]["files"][0] == path.name
+
+    def test_extract_requires_docling_api_configuration(self, tmp_path):
+        path = tmp_path / "document.pdf"
+        path.write_bytes(b"document data")
+
+        with mock.patch("focus_feed.services.extractors.get_config") as get_config:
+            get_config.return_value.docling_api = None
+            with pytest.raises(RuntimeError, match="DOCLING_API is not configured"):
+                DoclingExtractor().extract(path)
+
+    def test_extract_raises_connection_error_when_api_unreachable(self, tmp_path):
+        path = tmp_path / "document.pdf"
+        path.write_bytes(b"document data")
+        request = httpx.ConnectError("connection refused")
+
+        with (
+            mock.patch("focus_feed.services.extractors.get_config") as get_config,
+            mock.patch("focus_feed.services.extractors.httpx.post", side_effect=request),
+        ):
+            get_config.return_value.docling_api = "http://docling:5001"
+            with pytest.raises(ConnectionError, match="connection refused"):
+                DoclingExtractor().extract(path)
+
+    def test_extract_returns_none_content_on_bad_response(self, tmp_path):
+        path = tmp_path / "document.pdf"
+        path.write_bytes(b"document data")
+        response = mock.Mock()
+        response.json.return_value = {"status": "failure"}
+
+        with (
+            mock.patch("focus_feed.services.extractors.get_config") as get_config,
+            mock.patch("focus_feed.services.extractors.httpx.post", return_value=response),
+        ):
+            get_config.return_value.docling_api = "http://docling:5001"
+            result = DoclingExtractor().extract(path)
+
+        assert result["content"] is None
 
 
 # ---------------------------------------------------------------------------

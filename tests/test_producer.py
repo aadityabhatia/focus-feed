@@ -15,6 +15,7 @@ Tests cover:
 
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 import pytest
@@ -174,6 +175,7 @@ class TestProducerInit:
         assert p.summarizer is not None
         assert p.pdf_extractor is not None
         assert p.html_extractor is not None
+        assert p.docling_extractor is not None
 
     def test_init_scanner_defaults_to_none(self, valid_env):
         """Producer scanner should be None when no scanner is provided."""
@@ -528,6 +530,57 @@ class TestLegacyTopLevelErrors:
 class TestProcessFilePDF:
     """Tests for process_file() with PDF files."""
 
+    @pytest.mark.parametrize(
+        "docling_result,docling_error",
+        [
+            ({"content": "Docling Markdown", "title": "doc"}, None),
+            ({"content": None}, None),
+            (None, ConnectionError("unavailable")),
+            (None, RuntimeError("service failure")),
+            (None, ValueError("invalid response")),
+        ],
+    )
+    def test_pdf_uses_docling_and_never_falls_back_when_configured(
+        self,
+        producer,
+        mock_pdf_extractor,
+        tmp_path,
+        docling_result,
+        docling_error,
+    ):
+        source = tmp_path / "document.pdf"
+        source.write_bytes(b"pdf data")
+        producer.docling_extractor = mock.MagicMock()
+        producer.docling_extractor.extract.return_value = docling_result
+        producer.docling_extractor.extract.side_effect = docling_error
+        with mock.patch(
+            "focus_feed.producer.get_config",
+            return_value=SimpleNamespace(
+                docling_api="https://docling.example.com", llm_model="test-model"
+            ),
+        ):
+            metadata = producer.process_file(_make_scanned_file("document.pdf", str(source)))
+
+        producer.docling_extractor.extract.assert_called_once_with(str(source))
+        mock_pdf_extractor.extract.assert_not_called()
+        if docling_error or not (docling_result and docling_result.get("content")):
+            assert metadata is None
+        else:
+            assert metadata is not None
+
+    def test_pdf_skips_docling_when_not_configured(self, producer, mock_pdf_extractor, tmp_path):
+        source = tmp_path / "document.pdf"
+        source.write_bytes(b"pdf data")
+        producer.docling_extractor = mock.MagicMock()
+        with mock.patch(
+            "focus_feed.producer.get_config",
+            return_value=SimpleNamespace(docling_api=None, llm_model="test-model"),
+        ):
+            producer.process_file(_make_scanned_file("document.pdf", str(source)))
+
+        producer.docling_extractor.extract.assert_not_called()
+        mock_pdf_extractor.extract.assert_called_once_with(str(source))
+
     def test_pdf_extracts_metadata(self, producer, mock_pdf_extractor, tmp_path):
         """process_file should call pdf_extractor.extract for PDF files."""
         source = tmp_path / "document.pdf"
@@ -702,6 +755,66 @@ class TestProcessFilePDF:
 
         assert metadata is not None
         assert metadata.content is None
+
+
+class TestProcessFileDocling:
+    """Tests for document formats that require Docling extraction."""
+
+    @pytest.mark.parametrize("filetype", ["docx", "doc", "pptx", "ppt", "xlsx", "xls"])
+    def test_docling_formats_use_docling_pipeline(
+        self, producer, mock_summarizer, mock_pdf_extractor, filetype, tmp_path
+    ):
+        source = tmp_path / f"document.{filetype}"
+        source.write_bytes(b"document data")
+        producer.docling_extractor = mock.MagicMock()
+        producer.docling_extractor.extract.return_value = {
+            "title": "document",
+            "extracted_title": None,
+            "description": None,
+            "date": 1728931200,
+            "size": len(b"document data"),
+            "filetype": filetype,
+            "content": "Docling extracted content",
+        }
+
+        with mock.patch(
+            "focus_feed.producer.get_config",
+            return_value=SimpleNamespace(
+                docling_api="https://docling.example.com", llm_model="test-model"
+            ),
+        ):
+            metadata = producer.process_file(_make_scanned_file(source.name, str(source)))
+
+        assert metadata is not None
+        assert metadata.filetype == filetype
+        assert metadata.content == "Docling extracted content"
+        producer.docling_extractor.extract.assert_called_once_with(str(source))
+        mock_pdf_extractor.extract.assert_not_called()
+        mock_summarizer.summarize.assert_called_once_with(
+            "Docling extracted content",
+            reflection_questions=None,
+            filepath=source.name,
+            filetype=filetype,
+        )
+
+    def test_docling_format_without_api_records_extraction_error(
+        self, producer, mock_pdf_extractor, tmp_path
+    ):
+        source = tmp_path / "document.docx"
+        source.write_bytes(b"document data")
+        producer.docling_extractor = mock.MagicMock()
+
+        with mock.patch(
+            "focus_feed.producer.get_config",
+            return_value=SimpleNamespace(docling_api=None, llm_model="test-model"),
+        ):
+            metadata = producer.process_file(_make_scanned_file(source.name, str(source)))
+
+        assert metadata is None
+        producer.docling_extractor.extract.assert_not_called()
+        mock_pdf_extractor.extract.assert_not_called()
+        error_data = json.loads((tmp_path / "document.docx.json").read_text())
+        assert error_data["extract"]["error"] == "DOCLING_API is not configured"
 
 
 # ---------------------------------------------------------------------------
