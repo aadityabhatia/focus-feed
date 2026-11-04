@@ -130,6 +130,18 @@ def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
         # New schema: step maps
         transcribe = metadata.get("transcribe")
         summarize = metadata.get("summarize")
+        if (
+            isinstance(transcribe, dict)
+            and transcribe.get(_ERROR_FIELD) is not None
+            and transcribe.get("status") != _COMPLETED_STEP_STATUS
+        ):
+            return False
+        if (
+            isinstance(summarize, dict)
+            and summarize.get(_ERROR_FIELD) is not None
+            and summarize.get("status") != _COMPLETED_STEP_STATUS
+        ):
+            return False
         transcribe_complete = (
             isinstance(transcribe, dict) and transcribe.get("status") == _COMPLETED_STEP_STATUS
         )
@@ -145,6 +157,12 @@ def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
     if filetype in _DOC_FILETYPES:
         # New schema
         extract = metadata.get("extract")
+        if (
+            isinstance(extract, dict)
+            and extract.get(_ERROR_FIELD) is not None
+            and extract.get("status") != _COMPLETED_STEP_STATUS
+        ):
+            return False
         extract_complete = (
             isinstance(extract, dict) and extract.get("status") == _COMPLETED_STEP_STATUS
         )
@@ -155,6 +173,12 @@ def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
             return False
         # summarize step must also be complete.
         summarize = metadata.get("summarize")
+        if (
+            isinstance(summarize, dict)
+            and summarize.get(_ERROR_FIELD) is not None
+            and summarize.get("status") != _COMPLETED_STEP_STATUS
+        ):
+            return False
         summarize_complete = isinstance(summarize, dict) and (
             summarize.get("status") == _COMPLETED_STEP_STATUS
         )
@@ -567,10 +591,13 @@ class Scanner:
           unless the source file is newer than the JSON (outdated metadata).
         - **JSON with any applicable step not complete**: Needs processing
           (resume from the last completed stage, if available).
-        - **JSON with an error field**: Reprocessed only if the source
-          file is newer than the JSON (user may have fixed the source). If
-          the source is not newer, the error state is still relevant and
-          the file is skipped.
+        - **JSON with a step-map error and zero output size**: Needs
+          processing again, including media files with a failed
+          transcription.
+        - **JSON with a top-level error field**: Reprocessed if the source
+          file is newer than the JSON (user may have fixed the source).
+          Otherwise, the error state is still relevant and the file is
+          skipped.
         - **JSON with unknown or missing step statuses**: Falls back to the
           freshness check — if the source is newer, needs processing;
           otherwise, skipped conservatively.
@@ -612,9 +639,37 @@ class Scanner:
         if metadata is None:
             return False, None, True
 
+        # Retry failed steps that produced no output. This also handles media
+        # transcription failures without requiring a source modification.
+        for step_name in ("transcribe", "summarize", "extract", "generate_title"):
+            step = metadata.get(step_name)
+            if (
+                isinstance(step, dict)
+                and step.get(_ERROR_FIELD) is not None
+                and step.get("output_size", 0) == 0
+            ):
+                return True, current_stage, True
+
         # Check for error state — skip unless source was modified after
         # the error (already handled by the freshness check above).
+        # However, if there's a top-level error AND a step has output_size == 0,
+        # also reprocess to fix legacy error metadata (where error was at top-level
+        # instead of in step map).
         if metadata.get(_ERROR_FIELD):
+            # Check if any applicable step has output_size == 0
+            filetype = source_path.suffix.lower().lstrip(".")
+            if (
+                filetype in MEDIA_FILETYPES
+                or _is_audio_filetype(filetype)
+                or _is_video_filetype(filetype)
+            ):
+                transcribe = metadata.get("transcribe")
+                if isinstance(transcribe, dict) and transcribe.get("output_size", 0) == 0:
+                    return True, current_stage, True
+            elif filetype in ("pdf", "html"):
+                extract = metadata.get("extract")
+                if isinstance(extract, dict) and extract.get("output_size", 0) == 0:
+                    return True, current_stage, True
             return False, current_stage, True
 
         # Check step statuses to determine if the file is complete.

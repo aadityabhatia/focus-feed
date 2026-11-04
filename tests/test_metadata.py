@@ -22,6 +22,7 @@ class TestStepMap:
         assert step.model is None
         assert step.input_tokens is None
         assert step.output_tokens is None
+        assert step.error is None
         assert step.input_size == 100
         assert step.output_size == 200
 
@@ -37,6 +38,7 @@ class TestStepMap:
             model="large-v3-turbo",
             input_tokens=1234,
             output_tokens=567,
+            error="Step processing failed",
         )
         assert step.status == "complete"
         assert step.start_time == 1792096505
@@ -47,6 +49,7 @@ class TestStepMap:
         assert step.model == "large-v3-turbo"
         assert step.input_tokens == 1234
         assert step.output_tokens == 567
+        assert step.error == "Step processing failed"
 
     def test_step_map_in_progress(self):
         """StepMap should accept 'in_progress' status."""
@@ -419,6 +422,70 @@ class TestFeedEligible:
             error="Some error",
         )
         assert metadata.feed_eligible is False
+
+    @pytest.mark.parametrize(
+        "filetype, errored_step",
+        [
+            ("mp4", "transcribe"),
+            ("mp4", "summarize"),
+            ("pdf", "extract"),
+            ("pdf", "summarize"),
+        ],
+    )
+    def test_not_feed_eligible_when_applicable_step_has_error(self, filetype, errored_step):
+        """An errored applicable step prevents feed eligibility."""
+        metadata = Metadata(
+            transcribe=StepMap(status="complete", input_size=100, output_size=100)
+            if filetype == "mp4"
+            else None,
+            extract=StepMap(status="complete", input_size=100, output_size=100)
+            if filetype == "pdf"
+            else None,
+            summarize=StepMap(status="complete", input_size=100, output_size=50),
+            title="Test",
+            filename=f"test.{filetype}",
+            filetype=filetype,
+            size=100,
+        )
+        setattr(
+            metadata,
+            errored_step,
+            StepMap(status="in_progress", input_size=100, output_size=0, error="Failed"),
+        )
+
+        assert metadata.feed_eligible is False
+
+    @pytest.mark.parametrize(
+        "filetype, errored_step",
+        [
+            ("mp4", "transcribe"),
+            ("mp4", "summarize"),
+            ("pdf", "extract"),
+            ("pdf", "summarize"),
+        ],
+    )
+    def test_complete_step_error_does_not_override_eligibility(self, filetype, errored_step):
+        """Step errors are ignored when the corresponding step is complete."""
+        metadata = Metadata(
+            transcribe=StepMap(status="complete", input_size=100, output_size=100)
+            if filetype == "mp4"
+            else None,
+            extract=StepMap(status="complete", input_size=100, output_size=100)
+            if filetype == "pdf"
+            else None,
+            summarize=StepMap(status="complete", input_size=100, output_size=50),
+            title="Test",
+            filename=f"test.{filetype}",
+            filetype=filetype,
+            size=100,
+        )
+        setattr(
+            metadata,
+            errored_step,
+            StepMap(status="complete", input_size=100, output_size=50, error="Stale"),
+        )
+
+        assert metadata.feed_eligible is True
 
 
 class TestInvalidFields:

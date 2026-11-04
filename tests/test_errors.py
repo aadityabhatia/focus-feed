@@ -119,6 +119,25 @@ class TestCreateErrorMetadata:
         assert "filepath" not in metadata
         assert "status" not in metadata
 
+    def test_step_error_is_stored_in_step_map_without_top_level_error(self):
+        """A step error should be recorded in its map instead of the top level."""
+        metadata = create_error_metadata(
+            ProcessingError("processing failed"),
+            "lecture.mp4",
+            "videos/lecture.mp4",
+            "mp4",
+            step_error=("transcribe", "transcription failed"),
+        )
+
+        assert "error" not in metadata
+        assert metadata["transcribe"] == {
+            "status": None,
+            "error": "transcription failed",
+            "output_size": 0,
+        }
+        assert metadata["filename"] == "lecture.mp4"
+        assert metadata["filetype"] == "mp4"
+
     @pytest.mark.parametrize(
         "exc_class,exc_msg",
         [

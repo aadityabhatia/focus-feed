@@ -64,7 +64,12 @@ from focus_feed.errors import (
     log_error,
 )
 from focus_feed.metadata import Metadata, StepMap
-from focus_feed.scanner import ScannedFile, Scanner
+from focus_feed.scanner import (
+    ScannedFile,
+    Scanner,
+    _is_audio_filetype,
+    _is_video_filetype,
+)
 from focus_feed.services.extractors import (
     HTMLExtractor,
     PDFExtractor,
@@ -319,6 +324,7 @@ class Producer:
         existing_hash: str | None = None
         existing_error: str | None = None
         existing_mtime: float | None = None
+        existing_data: dict[str, Any] = {}
         if json_path.exists() and not force:
             try:
                 existing_data = json.loads(json_path.read_text(encoding="utf-8"))
@@ -376,12 +382,29 @@ class Producer:
 
             # If the file has an existing error state and we're not forcing,
             # skip it — the user needs --force to retry.
+            # However, legacy top-level errors with zero step output can be
+            # migrated to the step-map error format by processing the file.
             if existing_error and (existing_mtime is None or mtime_matches):
-                _logger.warning(
-                    "File %s has existing error; skipping (use --force to retry)",
-                    filepath,
-                )
-                return None
+                is_migratable_legacy = False
+                if (
+                    filetype in MEDIA_FILETYPES
+                    or _is_audio_filetype(filetype)
+                    or _is_video_filetype(filetype)
+                ):
+                    transcribe = existing_data.get("transcribe")
+                    if isinstance(transcribe, dict) and transcribe.get("output_size", 0) == 0:
+                        is_migratable_legacy = True
+                elif filetype in ("pdf", "html"):
+                    extract = existing_data.get("extract")
+                    if isinstance(extract, dict) and extract.get("output_size", 0) == 0:
+                        is_migratable_legacy = True
+
+                if not is_migratable_legacy:
+                    _logger.warning(
+                        "File %s has existing error; skipping (use --force to retry)",
+                        filepath,
+                    )
+                    return None
 
         partial_metadata: dict[str, Any] = {
             "filename": filename,
@@ -1525,12 +1548,20 @@ class Producer:
             with suppress(OSError):
                 mtime = Path(absolute_path).stat().st_mtime
 
+        if filetype in MEDIA_FILETYPES:
+            step_error = ("transcribe", str(exc))
+        elif filetype in ("pdf", "html"):
+            step_error = ("extract", str(exc))
+        else:
+            step_error = None
+
         error_metadata = create_error_metadata(
             exc=exc,
             filename=filename,
             filepath=filepath,
             filetype=filetype,
             mtime=mtime,
+            step_error=step_error,
         )
 
         # Determine the absolute path for writing the error JSON.
@@ -1552,7 +1583,14 @@ class Producer:
                     # Preserve any step maps that were already set.
                     for step_key in ("transcribe", "summarize", "extract", "generate_title"):
                         if step_key in existing:
-                            error_metadata[step_key] = existing[step_key]
+                            step_map = existing[step_key]
+                            if step_error and step_key == step_error[0]:
+                                step_map = step_map.copy() if isinstance(step_map, dict) else {}
+                                step_map["error"] = step_error[1]
+                                step_map["output_size"] = 0
+                                if step_map.get("status") != "complete":
+                                    step_map["status"] = None
+                            error_metadata[step_key] = step_map
                     # Preserve existing content (transcript for MP4).
                     if "content" in existing:
                         error_metadata["content"] = existing["content"]

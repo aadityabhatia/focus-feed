@@ -559,6 +559,94 @@ class TestStepStatusBasedScanning:
     """Tests for step status-based scanning logic."""
 
     @pytest.mark.parametrize(
+        "filetype,step_map",
+        [
+            ("mp4", {"status": "failed", "error": "transcription failed"}),
+            ("mp3", {"status": "failed", "error": "transcription failed"}),
+            ("pdf", {"status": "failed", "error": "extraction failed"}),
+        ],
+    )
+    def test_step_error_with_zero_output_returns_file_for_processing(
+        self, tmp_path, filetype, step_map
+    ):
+        source = tmp_path / f"lecture.{filetype}"
+        source.write_bytes(b"data")
+        step_name = "extract" if filetype == "pdf" else "transcribe"
+        metadata = {step_name: {**step_map, "output_size": 0}, "error": "step failed"}
+        (tmp_path / f"lecture.{filetype}.json").write_text(json.dumps(metadata))
+
+        result = Scanner(tmp_path).scan_directory()
+
+        assert len(result) == 1
+        assert result[0].filename == f"lecture.{filetype}"
+
+    def test_step_error_with_nonzero_output_does_not_override_top_level_error(self, tmp_path):
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"data")
+        metadata = {
+            "transcribe": {
+                "status": "failed",
+                "error": "transcription failed",
+                "output_size": 12,
+            },
+            "error": "step failed",
+        }
+        (tmp_path / "lecture.mp4.json").write_text(json.dumps(metadata))
+
+        assert Scanner(tmp_path).scan_directory() == []
+
+    @pytest.mark.parametrize(
+        "filetype,step_field",
+        [
+            ("mp4", "transcribe"),
+            ("mp4", "summarize"),
+            ("pdf", "extract"),
+            ("pdf", "summarize"),
+            ("html", "extract"),
+            ("html", "summarize"),
+        ],
+    )
+    def test_incomplete_step_error_returns_file_for_processing(
+        self, tmp_path, filetype, step_field
+    ):
+        """An error in an incomplete applicable step prevents feed eligibility."""
+        source = tmp_path / f"lecture.{filetype}"
+        source.write_bytes(b"data")
+        metadata: dict[str, Any] = {
+            "transcribe": {"status": "complete"},
+            "extract": {"status": "complete"},
+            "summarize": {"status": "complete"},
+        }
+        metadata[step_field] = {"status": "failed", "error": "step failed"}
+        (tmp_path / f"lecture.{filetype}.json").write_text(json.dumps(metadata))
+
+        result = Scanner(tmp_path).scan_directory()
+
+        assert len(result) == 1
+        assert result[0].filename == f"lecture.{filetype}"
+
+    @pytest.mark.parametrize("filetype", ["mp4", "pdf", "html"])
+    def test_non_dict_step_maps_are_safe(self, tmp_path, filetype):
+        """Non-dict step maps do not cause error checking to fail."""
+        source = tmp_path / f"lecture.{filetype}"
+        source.write_bytes(b"data")
+        metadata: dict[str, Any] = {
+            "transcribe": {"status": "complete"},
+            "extract": {"status": "complete"},
+            "summarize": {"status": "complete"},
+        }
+        metadata["transcribe" if filetype == "mp4" else "extract"] = "not a step map"
+        (tmp_path / f"lecture.{filetype}.json").write_text(json.dumps(metadata))
+
+        # A non-dict map is not treated as an error map. The existing status
+        # rules still determine eligibility (the substituted required map is
+        # incomplete, so the file is returned for processing).
+        result = Scanner(tmp_path).scan_directory()
+
+        assert len(result) == 1
+        assert result[0].filename == f"lecture.{filetype}"
+
+    @pytest.mark.parametrize(
         "step_field,step_status,json_content",
         [
             (

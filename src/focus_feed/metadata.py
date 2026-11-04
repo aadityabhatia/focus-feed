@@ -193,6 +193,7 @@ class StepMap(BaseModel):
             or ``None``.
         output_tokens: Number of tokens output from LLM (LLM-based steps
             only), or ``None``.
+        error: Error message for this step, if processing failed.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -235,6 +236,10 @@ class StepMap(BaseModel):
         default=None,
         ge=0,
         description="Output tokens (LLM steps only)",
+    )
+    error: str | None = Field(
+        default=None,
+        description="Error message for this step, if processing failed",
     )
 
 
@@ -467,6 +472,16 @@ class Metadata(BaseModel):
         if self.error is not None:
             return False
         if self.filetype in _MEDIA_FILETYPES:
+            if (
+                self.transcribe is not None
+                and self.transcribe.error is not None
+                and self.transcribe.status != _STEP_STATUS_COMPLETE
+            ) or (
+                self.summarize is not None
+                and self.summarize.error is not None
+                and self.summarize.status != _STEP_STATUS_COMPLETE
+            ):
+                return False
             return (
                 self.transcribe is not None
                 and self.transcribe.status == _STEP_STATUS_COMPLETE
@@ -474,6 +489,16 @@ class Metadata(BaseModel):
                 and self.summarize.status == _STEP_STATUS_COMPLETE
             )
         if self.filetype in ("pdf", "html"):
+            if (
+                self.extract is not None
+                and self.extract.error is not None
+                and self.extract.status != _STEP_STATUS_COMPLETE
+            ) or (
+                self.summarize is not None
+                and self.summarize.error is not None
+                and self.summarize.status != _STEP_STATUS_COMPLETE
+            ):
+                return False
             return (
                 self.extract is not None
                 and self.extract.status == _STEP_STATUS_COMPLETE

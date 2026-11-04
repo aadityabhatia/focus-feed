@@ -19,6 +19,7 @@ from datetime import UTC, datetime
 import logging
 from pathlib import Path
 import sys
+from typing import Any
 from urllib.parse import urlparse
 
 import click
@@ -234,6 +235,7 @@ def create_error_metadata(
     filepath: str,
     filetype: str | None = None,
     mtime: float | None = None,
+    step_error: tuple[str, str] | None = None,
 ) -> dict:
     """Create an error metadata dictionary from an exception.
 
@@ -255,6 +257,7 @@ def create_error_metadata(
         filetype: File type (``"mp4"``, ``"pdf"``, ``"html"``), if known.
             ``None`` when the type is not known.
         mtime: Source modification time, if already available.
+        step_error: Optional pair of step-map name and its error message.
 
     Returns:
         A dictionary suitable for JSON serialization as an error metadata file.
@@ -294,7 +297,7 @@ def create_error_metadata(
         "generated": None,
     }
 
-    error_metadata = {
+    error_metadata: dict[str, Any] = {
         "title": title_dict,
         "description": "",
         "filename": filename,
@@ -302,8 +305,17 @@ def create_error_metadata(
         "date": timestamp,
         "mtime": mtime,
         "size": 0,
-        "error": error_message,
     }
+    if step_error is None:
+        error_metadata["error"] = error_message
+    else:
+        step_name, step_message = step_error
+        step_map: dict[str, str | int | None] = {
+            "status": None,
+            "error": step_message,
+            "output_size": 0,
+        }
+        error_metadata[step_name] = step_map
     result = {key: value for key, value in error_metadata.items() if value is not None}
     result["title"] = {key: value for key, value in title_dict.items() if value is not None}
     return result

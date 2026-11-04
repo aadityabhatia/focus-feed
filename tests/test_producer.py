@@ -481,6 +481,50 @@ class TestProcessFileMedia:
         get_audio_metadata.assert_called_once_with(str(source), filetype="m4a")
 
 
+class TestLegacyTopLevelErrors:
+    """Tests for migrating legacy top-level errors to step-map errors."""
+
+    @pytest.mark.parametrize("filetype", ["mp4", "pdf"])
+    def test_processes_legacy_error_with_zero_step_output(self, producer, filetype, tmp_path):
+        source = tmp_path / f"file.{filetype}"
+        source.write_bytes(b"source data")
+        step_name = "transcribe" if filetype == "mp4" else "extract"
+        (tmp_path / f"file.{filetype}.json").write_text(
+            json.dumps(
+                {
+                    "error": "legacy processing failure",
+                    step_name: {"output_size": 0},
+                    "mtime": source.stat().st_mtime,
+                }
+            )
+        )
+
+        metadata = producer.process_file(_make_scanned_file(f"file.{filetype}", str(source)))
+
+        assert metadata is not None
+        assert metadata.feed_eligible is True
+
+    def test_skips_legacy_error_with_nonzero_step_output(
+        self, producer, mock_transcriber, tmp_path
+    ):
+        source = tmp_path / "file.mp4"
+        source.write_bytes(b"source data")
+        (tmp_path / "file.mp4.json").write_text(
+            json.dumps(
+                {
+                    "error": "legacy processing failure",
+                    "transcribe": {"output_size": 10},
+                    "mtime": source.stat().st_mtime,
+                }
+            )
+        )
+
+        metadata = producer.process_file(_make_scanned_file("file.mp4", str(source)))
+
+        assert metadata is None
+        mock_transcriber.transcribe.assert_not_called()
+
+
 class TestProcessFilePDF:
     """Tests for process_file() with PDF files."""
 
@@ -1204,9 +1248,10 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        # Error state should preserve the status from before the error
-        assert data.get("transcribe", {}).get("status") == "in_progress"
-        assert data["error"] is not None
+        assert data.get("transcribe", {}).get("status") is None
+        assert data["transcribe"]["error"] == "fail"
+        assert data["transcribe"]["output_size"] == 0
+        assert "error" not in data
 
     def test_mp4_intermediate_state_summarizing(
         self, producer, mock_transcriber, mock_summarizer, tmp_path
@@ -1229,7 +1274,7 @@ class TestIntermediateStateSaving:
         # Error state should preserve the status from before the error
         assert data.get("transcribe", {}).get("status") == "complete"
         assert data.get("summarize", {}).get("status") == "in_progress"
-        assert data["error"] is not None
+        assert "error" not in data
 
     def test_pdf_intermediate_state_extracting(self, producer, mock_pdf_extractor, tmp_path):
         """PDF should write extracting status before extraction."""
@@ -1247,8 +1292,10 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "document.pdf.json"
         data = json.loads(json_path.read_text())
-        assert data.get("extract", {}).get("status") == "in_progress"
-        assert data["error"] is not None
+        assert data.get("extract", {}).get("status") is None
+        assert data["extract"]["error"] == "fail"
+        assert data["extract"]["output_size"] == 0
+        assert "error" not in data
 
     def test_pdf_no_llm_title_generation_needed(
         self, producer, mock_pdf_extractor, mock_summarizer, tmp_path
@@ -1322,8 +1369,10 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "article.html.json"
         data = json.loads(json_path.read_text())
-        assert data.get("extract", {}).get("status") == "in_progress"
-        assert data["error"] is not None
+        assert data.get("extract", {}).get("status") is None
+        assert data["extract"]["error"] == "fail"
+        assert data["extract"]["output_size"] == 0
+        assert "error" not in data
 
     def test_error_metadata_preserves_step_maps(self, producer, mock_transcriber, tmp_path):
         """Error metadata should preserve the step maps from the in-progress state."""
@@ -1340,8 +1389,10 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        assert data["error"] is not None
-        assert data.get("transcribe", {}).get("status") == "in_progress"
+        assert "error" not in data
+        assert data.get("transcribe", {}).get("status") is None
+        assert data["transcribe"]["error"] == "GPU error"
+        assert data["transcribe"]["output_size"] == 0
         assert "transcribe" in data
 
     def test_error_metadata_preserves_extract_step(self, producer, mock_pdf_extractor, tmp_path):
@@ -1359,8 +1410,10 @@ class TestIntermediateStateSaving:
 
         json_path = tmp_path / "document.pdf.json"
         data = json.loads(json_path.read_text())
-        assert data["error"] is not None
+        assert "error" not in data
         assert "extract" in data
+        assert data["extract"]["error"] == "PDF corrupt"
+        assert data["extract"]["output_size"] == 0
 
     def test_handle_error_when_source_disappears(self, producer, tmp_path):
         """Error handling should write metadata even if source stat fails."""
@@ -1516,7 +1569,8 @@ class TestIntermediateStatusWrites:
         assert data.get("summarize", {}).get("status") == "complete"
         assert data.get("transcribe", {}).get("status") == "complete"
         # Error should be present because title generation failed
-        assert data["error"] is not None
+        assert "error" not in data
+        assert data["transcribe"]["error"] == "title fail"
 
     def test_pdf_writes_extract_complete_after_extraction(
         self, producer, mock_pdf_extractor, tmp_path
@@ -2360,7 +2414,7 @@ class TestHashComputation:
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
         assert "hash" not in data
-        assert data["error"] is not None
+        assert data["transcribe"]["error"] == "GPU error"
 
     def test_hash_is_64_char_hex_digest(self, producer, tmp_path):
         """Hash should be a 64-character hex string (SHA256)."""
@@ -2592,7 +2646,8 @@ class TestGenerateTitleStepTracking:
         data = json.loads(json_path.read_text())
         # generate_title should be in_progress (written before the LLM call)
         assert data.get("generate_title", {}).get("status") == "in_progress"
-        assert data["error"] is not None
+        assert "error" not in data
+        assert data["transcribe"]["error"] == "title fail"
 
     def test_pdf_generate_title_step_preserved_on_error(self, producer, mock_summarizer, tmp_path):
         """When title generation fails for PDF, generate_title should show in_progress."""
@@ -2610,7 +2665,8 @@ class TestGenerateTitleStepTracking:
         json_path = tmp_path / "doc.pdf.json"
         data = json.loads(json_path.read_text())
         assert data.get("generate_title", {}).get("status") == "in_progress"
-        assert data["error"] is not None
+        assert "error" not in data
+        assert data["extract"]["error"] == "title fail"
 
     def test_mp4_generate_title_step_input_size_matches_transcript(self, producer, tmp_path):
         """generate_title input_size should match the transcript byte length."""
