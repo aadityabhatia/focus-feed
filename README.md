@@ -4,7 +4,7 @@
 
 ## What It Does
 
-Focus Feed turns your educational content (PDF, HTML, audio files) into private RSS feeds that you can consume in any podcast or RSS reader app.
+Focus Feed turns your educational content (PDF, DOCX, HTML, and other supported document formats, plus audio files) into private RSS feeds that you can consume in any podcast or RSS reader app.
 
 To guide summaries toward your learning goals, create a `reflection.md` file containing a list of reflection questions in a folder. Focus Feed provides these questions to the AI when summarizing materials in that folder. The resulting summary appears in the feed item description.
 
@@ -86,6 +86,7 @@ Required configuration:
 - TRANSCRIPTION_API_KEY - API key for transcription service
 
 Optional:
+- DOCLING_API - endpoint for the Docling API service used for document extraction
 - PROMPT_ARTICLE_REFLECTION - reflection-aware article prompt
 - PROMPT_PODCAST_REFLECTION - reflection-aware podcast prompt
 - TRANSCRIPTION_REMOTE_MODEL - transcription model override

@@ -55,6 +55,7 @@ class Settings(BaseSettings):
 
     # --- Optional fields with defaults ---
 
+    docling_api: str | None = None
     transcription_remote_model: str | None = None
 
     # --- Validators ---
