@@ -62,7 +62,7 @@ class MockSummarizer:
         self,
         content: str,
         filename: str | None = None,
-        extracted_title: str | None = None,
+        extracted: str | None = None,
         **kwargs: Any,
     ) -> tuple[str, int, int]:
         self.call_count += 1
@@ -405,7 +405,7 @@ class TestProducerComponent:
         metadata = Metadata(
             title={
                 "filename": extracted["title"],
-                "extracted": extracted["extracted_title"],
+                "extracted": extracted["extracted"],
                 "generated": "",
             },
             description=extracted["description"] or "",
@@ -436,7 +436,7 @@ class TestProducerComponent:
         metadata = Metadata(
             title={
                 "filename": extracted["title"],
-                "extracted": extracted["extracted_title"],
+                "extracted": extracted["extracted"],
                 "generated": "",
             },
             description=extracted["description"] or "",

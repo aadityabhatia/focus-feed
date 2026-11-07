@@ -303,21 +303,19 @@ class TestGenerateTitle:
         assert "x" * 4001 not in user_msg["content"]
 
     @pytest.mark.parametrize(
-        "filename,extracted_title,should_include",
+        "filename,extracted,should_include",
         [
             ("lecture notes", "Lecture 1", True),
             ("notes", None, False),
             ("notes", "", False),
         ],
     )
-    def test_filename_and_extracted_title_in_content(
-        self, summarizer, mock_title_response, filename, extracted_title, should_include
+    def test_filename_and_extracted_in_content(
+        self, summarizer, mock_title_response, filename, extracted, should_include
     ):
-        """generate_title() should include filename and extracted_title when provided."""
+        """generate_title() should include filename and extracted when provided."""
         summarizer._client.chat.completions.create.return_value = mock_title_response
-        summarizer.generate_title(
-            "Some content", filename=filename, extracted_title=extracted_title
-        )
+        summarizer.generate_title("Some content", filename=filename, extracted=extracted)
 
         call_kwargs = summarizer._client.chat.completions.create.call_args
         user_msg = call_kwargs.kwargs["messages"][1]
@@ -327,13 +325,11 @@ class TestGenerateTitle:
         else:
             assert "Extracted Title" not in user_msg["content"]
 
-    def test_includes_filename_and_extracted_title_before_content(
-        self, summarizer, mock_title_response
-    ):
+    def test_includes_filename_and_extracted_before_content(self, summarizer, mock_title_response):
         """generate_title() should include both filename and extracted title before content."""
         summarizer._client.chat.completions.create.return_value = mock_title_response
         summarizer.generate_title(
-            "Some content here", filename="lecture notes", extracted_title="Lecture 1"
+            "Some content here", filename="lecture notes", extracted="Lecture 1"
         )
 
         call_kwargs = summarizer._client.chat.completions.create.call_args

@@ -1619,7 +1619,7 @@ class TestModulePrefix:
         )
         assert metadata.final_title == "course1: Generated"
 
-    def test_module_prefix_applied_to_extracted_title(self):
+    def test_module_prefix_applied_to_extracted(self):
         """Module prefix should be applied after precedence resolution (extracted)."""
         metadata = self._make_metadata(
             {"filename": "lecture", "extracted": "Extracted", "generated": ""},

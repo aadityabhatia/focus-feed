@@ -289,7 +289,7 @@ class TestExtractorSharedBehavior:
 
         required_keys = {
             "title",
-            "extracted_title",
+            "extracted",
             "description",
             "date",
             "publication_date",
@@ -404,7 +404,7 @@ class TestExtractorSharedBehavior:
         result = extractor.extract(str(path))
 
         assert result["title"] == "string path"
-        assert result["extracted_title"] == "String Path Test"
+        assert result["extracted"] == "String Path Test"
         assert result["filetype"] == filetype
 
     def test_extract_with_full_metadata(self, extractor_info, tmp_path):
@@ -432,7 +432,7 @@ class TestExtractorSharedBehavior:
         result = extractor.extract(path)
 
         assert result["title"] == filename.split(".")[0]
-        assert result["extracted_title"] == "My Title"
+        assert result["extracted"] == "My Title"
         assert result["description"] == expected_description
         assert result["filetype"] == filetype
         assert result["size"] > 0
@@ -462,7 +462,7 @@ class TestPDFExtractor:
         result = extractor.extract(pdf_path)
 
         assert result["title"] == "corrupted"
-        assert result["extracted_title"] is None
+        assert result["extracted"] is None
         assert result["description"] is None
         assert result["filetype"] == "pdf"
         assert result["size"] > 0
@@ -517,7 +517,7 @@ class TestPDFExtractor:
         assert result["description"] is None
 
     def test_extract_cleans_underscores_from_pdf_title(self, tmp_path):
-        """Underscores in PDF metadata title should be replaced with spaces in extracted_title."""
+        """Underscores in PDF metadata title should be replaced with spaces in extracted."""
         pdf_path = tmp_path / "document.pdf"
         create_test_pdf(pdf_path, title="my_pdf_title", author=None)
 
@@ -527,7 +527,7 @@ class TestPDFExtractor:
         # Title is always filename-derived
         assert result["title"] == "document"
         # Extracted title should have underscores cleaned
-        assert result["extracted_title"] == "my pdf title"
+        assert result["extracted"] == "my pdf title"
 
     def test_extract_content_from_pdf_with_text(self, tmp_path):
         """PDF with text content should extract plaintext into the content field."""
@@ -610,7 +610,7 @@ class TestHTMLExtractor:
         result = extractor.extract(html_path)
 
         assert result["title"] == "minimal"
-        assert result["extracted_title"] == "Minimal"
+        assert result["extracted"] == "Minimal"
         assert result["description"] is None
         assert result["filetype"] == "html"
         assert result["size"] > 0
@@ -785,7 +785,7 @@ class TestHTMLExtractor:
         result = extractor.extract(html_path)
 
         assert result["title"] == "article"
-        assert result["extracted_title"] == "my article title"
+        assert result["extracted"] == "my article title"
 
     def test_extract_content_from_html(self, tmp_path):
         """HTML content should be extracted as plaintext (tags removed)."""
@@ -846,7 +846,7 @@ class TestDoclingExtractor:
 
         assert result == {
             "title": "my document",
-            "extracted_title": None,
+            "extracted": None,
             "description": None,
             "date": int(path.stat().st_mtime * 1000) / 1000.0,
             "publication_date": None,
@@ -1067,7 +1067,7 @@ class TestMetadataCompatibility:
         json_str = json.dumps(result)
         restored = json.loads(json_str)
         assert restored["title"] == "serialize"
-        assert restored["extracted_title"] == "Serialize Test"
+        assert restored["extracted"] == "Serialize Test"
         assert restored["filetype"] == "pdf"
 
     def test_html_result_serializes_to_json(self, tmp_path):
@@ -1082,7 +1082,7 @@ class TestMetadataCompatibility:
         json_str = json.dumps(result)
         restored = json.loads(json_str)
         assert restored["title"] == "serialize"
-        assert restored["extracted_title"] == "Serialize Test"
+        assert restored["extracted"] == "Serialize Test"
         assert restored["filetype"] == "html"
 
 

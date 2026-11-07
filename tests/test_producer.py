@@ -87,7 +87,7 @@ def mock_pdf_extractor():
     e = mock.MagicMock()
     e.extract.return_value = {
         "title": "document",
-        "extracted_title": "PDF Title",
+        "extracted": "PDF Title",
         "description": "PDF Description",
         "date": 1728931200,
         "size": 1024,
@@ -103,7 +103,7 @@ def mock_html_extractor():
     e = mock.MagicMock()
     e.extract.return_value = {
         "title": "article",
-        "extracted_title": "HTML Title",
+        "extracted": "HTML Title",
         "description": "HTML Description",
         "date": 1728931200,
         "size": 512,
@@ -242,7 +242,7 @@ class TestProcessFileMP4:
         mock_summarizer.generate_title.assert_called_once_with(
             "This is a test transcript.",
             filename="lecture",
-            extracted_title=None,
+            extracted=None,
             filepath="lecture.mp4",
         )
 
@@ -623,7 +623,7 @@ class TestProcessFilePDF:
         """PDF should use filename-derived title when no content is available for LLM."""
         mock_pdf_extractor.extract.return_value = {
             "title": "doc",
-            "extracted_title": "Custom PDF Title",
+            "extracted": "Custom PDF Title",
             "description": "Desc",
             "date": 1728931200,
             "size": 2048,
@@ -647,7 +647,7 @@ class TestProcessFilePDF:
         """PDF should call LLM for title generation when content is available."""
         mock_pdf_extractor.extract.return_value = {
             "title": "doc",
-            "extracted_title": "PDF Title",
+            "extracted": "PDF Title",
             "description": "Desc",
             "date": 1728931200,
             "size": 1024,
@@ -687,7 +687,7 @@ class TestProcessFilePDF:
         """PDF should call LLM for title only when content is available."""
         mock_pdf_extractor.extract.return_value = {
             "title": "doc",
-            "extracted_title": "PDF Title" if content_present else None,
+            "extracted": "PDF Title" if content_present else None,
             "description": "Desc",
             "date": 1728931200,
             "size": 1024,
@@ -714,7 +714,7 @@ class TestProcessFilePDF:
         """PDF should call LLM for title generation even when extractor provides a title."""
         mock_pdf_extractor.extract.return_value = {
             "title": "doc",
-            "extracted_title": "Existing Title",
+            "extracted": "Existing Title",
             "description": "Desc",
             "date": 1728931200,
             "size": 1024,
@@ -738,7 +738,7 @@ class TestProcessFilePDF:
         """PDF should have content=None when extractor doesn't return content."""
         mock_pdf_extractor.extract.return_value = {
             "title": "doc",
-            "extracted_title": None,
+            "extracted": None,
             "description": "PDF Description",
             "date": 1728931200,
             "size": 1024,
@@ -769,7 +769,7 @@ class TestProcessFileDocling:
         producer.docling_extractor = mock.MagicMock()
         producer.docling_extractor.extract.return_value = {
             "title": "document",
-            "extracted_title": None,
+            "extracted": None,
             "description": None,
             "date": 1728931200,
             "size": len(b"document data"),
@@ -867,7 +867,7 @@ class TestProcessFileHTML:
         """HTML should call LLM for title generation when content is available."""
         mock_html_extractor.extract.return_value = {
             "title": "",
-            "extracted_title": None,
+            "extracted": None,
             "description": "Desc",
             "date": 1728931200,
             "size": 512,
@@ -893,7 +893,7 @@ class TestProcessFileHTML:
         """HTML should NOT call LLM for title when no content is available."""
         mock_html_extractor.extract.return_value = {
             "title": "",
-            "extracted_title": None,
+            "extracted": None,
             "description": "Desc",
             "date": 1728931200,
             "size": 512,
@@ -918,7 +918,7 @@ class TestProcessFileHTML:
         """HTML should call LLM for title generation even when extractor provides a title."""
         mock_html_extractor.extract.return_value = {
             "title": "page",
-            "extracted_title": "Existing Title",
+            "extracted": "Existing Title",
             "description": "Desc",
             "date": 1728931200,
             "size": 512,
@@ -942,7 +942,7 @@ class TestProcessFileHTML:
         """HTML should have content=None when extractor doesn't return content."""
         mock_html_extractor.extract.return_value = {
             "title": "article",
-            "extracted_title": None,
+            "extracted": None,
             "description": "HTML Description",
             "date": 1728931200,
             "size": 512,
@@ -1386,8 +1386,28 @@ class TestIntermediateStateSaving:
         data = json.loads(json_path.read_text())
         # Error state should preserve the status from before the error
         assert data.get("transcribe", {}).get("status") == "complete"
-        assert data.get("summarize", {}).get("status") == "in_progress"
+        assert data.get("summarize", {}).get("status") is None
+        assert data["summarize"]["error"] == "fail"
+        assert data["summarize"]["output_size"] == 0
         assert "error" not in data
+
+    def test_mp4_summarization_failure_is_attributed_to_summarize(
+        self, producer, mock_transcriber, mock_summarizer, tmp_path
+    ):
+        """A summary failure belongs to summarize, not the preceding transcribe step."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        scanned = _make_scanned_file("lecture.mp4", absolute_path=str(source))
+        mock_summarizer.summarize.side_effect = RuntimeError("summary unavailable")
+
+        producer.process_file(scanned)
+
+        data = json.loads((tmp_path / "lecture.mp4.json").read_text())
+        assert data["summarize"]["status"] is None
+        assert data["summarize"]["error"] == "summary unavailable"
+        assert data["summarize"]["output_size"] == 0
+        assert "error" not in data
+        assert "error" not in data["transcribe"]
 
     def test_pdf_intermediate_state_extracting(self, producer, mock_pdf_extractor, tmp_path):
         """PDF should write extracting status before extraction."""
@@ -1683,7 +1703,7 @@ class TestIntermediateStatusWrites:
         assert data.get("transcribe", {}).get("status") == "complete"
         # Error should be present because title generation failed
         assert "error" not in data
-        assert data["transcribe"]["error"] == "title fail"
+        assert data["generate_title"]["error"] == "title fail"
 
     def test_pdf_writes_extract_complete_after_extraction(
         self, producer, mock_pdf_extractor, tmp_path
@@ -1742,7 +1762,7 @@ class TestIntermediateStatusWrites:
 
         mock_pdf_extractor.extract.return_value = {
             "title": "doc",
-            "extracted_title": "Custom Title",
+            "extracted": "Custom Title",
             "description": "Desc",
             "date": 1728931200,
             "size": 1024,
@@ -2133,7 +2153,7 @@ class TestPublicationDate:
         """PDF metadata should include publication_date from extractor."""
         mock_pdf_extractor.extract.return_value = {
             "title": "doc",
-            "extracted_title": "PDF Title",
+            "extracted": "PDF Title",
             "description": "PDF Description",
             "date": 1728931200,
             "publication_date": 1719200000.0,
@@ -2159,7 +2179,7 @@ class TestPublicationDate:
         """PDF metadata should have publication_date=None when extractor returns None."""
         mock_pdf_extractor.extract.return_value = {
             "title": "doc",
-            "extracted_title": None,
+            "extracted": None,
             "description": "PDF Description",
             "date": 1728931200,
             "publication_date": None,
@@ -2183,7 +2203,7 @@ class TestPublicationDate:
         """HTML metadata should include publication_date from extractor."""
         mock_html_extractor.extract.return_value = {
             "title": "article",
-            "extracted_title": "HTML Title",
+            "extracted": "HTML Title",
             "description": "HTML Description",
             "date": 1728931200,
             "publication_date": 1719200000.0,
@@ -2209,7 +2229,7 @@ class TestPublicationDate:
         """HTML metadata should have publication_date=None when extractor returns None."""
         mock_html_extractor.extract.return_value = {
             "title": "article",
-            "extracted_title": None,
+            "extracted": None,
             "description": "HTML Description",
             "date": 1728931200,
             "publication_date": None,
@@ -2235,7 +2255,7 @@ class TestPublicationDate:
         """PDF JSON metadata should include publication_date field."""
         mock_pdf_extractor.extract.return_value = {
             "title": "doc",
-            "extracted_title": "PDF Title",
+            "extracted": "PDF Title",
             "description": "Desc",
             "date": 1728931200,
             "publication_date": 1719200000.0,
@@ -2263,7 +2283,7 @@ class TestPublicationDate:
         """PDF JSON metadata should exclude publication_date when None."""
         mock_pdf_extractor.extract.return_value = {
             "title": "doc",
-            "extracted_title": None,
+            "extracted": None,
             "description": "Desc",
             "date": 1728931200,
             "publication_date": None,
@@ -2677,7 +2697,7 @@ class TestGenerateTitleStepTracking:
 
         mock_pdf_extractor.extract.return_value = {
             "title": "doc",
-            "extracted_title": None,
+            "extracted": None,
             "description": "PDF Description",
             "date": 1728931200,
             "size": 1024,
@@ -2725,7 +2745,7 @@ class TestGenerateTitleStepTracking:
 
         mock_html_extractor.extract.return_value = {
             "title": "",
-            "extracted_title": None,
+            "extracted": None,
             "description": "Desc",
             "date": 1728931200,
             "size": 512,
@@ -2742,8 +2762,10 @@ class TestGenerateTitleStepTracking:
         data = json.loads(json_path.read_text())
         assert "generate_title" not in data
 
-    def test_mp4_generate_title_step_preserved_on_error(self, producer, mock_summarizer, tmp_path):
-        """When title generation fails, the generate_title step should show in_progress."""
+    def test_mp4_generate_title_failure_is_attributed_to_generate_title(
+        self, producer, mock_summarizer, tmp_path
+    ):
+        """A title-generation failure clears status and records the generate_title error."""
         source = tmp_path / "lecture.mp4"
         source.write_bytes(b"video data")
         scanned = _make_scanned_file(
@@ -2757,13 +2779,15 @@ class TestGenerateTitleStepTracking:
 
         json_path = tmp_path / "lecture.mp4.json"
         data = json.loads(json_path.read_text())
-        # generate_title should be in_progress (written before the LLM call)
-        assert data.get("generate_title", {}).get("status") == "in_progress"
+        assert data.get("generate_title", {}).get("status") is None
+        assert data["generate_title"]["output_size"] == 0
         assert "error" not in data
-        assert data["transcribe"]["error"] == "title fail"
+        assert data["generate_title"]["error"] == "title fail"
 
-    def test_pdf_generate_title_step_preserved_on_error(self, producer, mock_summarizer, tmp_path):
-        """When title generation fails for PDF, generate_title should show in_progress."""
+    def test_pdf_generate_title_failure_is_attributed_to_generate_title(
+        self, producer, mock_summarizer, tmp_path
+    ):
+        """A PDF title-generation failure clears status and records its step error."""
         source = tmp_path / "doc.pdf"
         source.write_bytes(b"pdf data")
         scanned = _make_scanned_file(
@@ -2777,9 +2801,10 @@ class TestGenerateTitleStepTracking:
 
         json_path = tmp_path / "doc.pdf.json"
         data = json.loads(json_path.read_text())
-        assert data.get("generate_title", {}).get("status") == "in_progress"
+        assert data.get("generate_title", {}).get("status") is None
+        assert data["generate_title"]["output_size"] == 0
         assert "error" not in data
-        assert data["extract"]["error"] == "title fail"
+        assert data["generate_title"]["error"] == "title fail"
 
     def test_mp4_generate_title_step_input_size_matches_transcript(self, producer, tmp_path):
         """generate_title input_size should match the transcript byte length."""

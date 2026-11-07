@@ -1477,6 +1477,44 @@ class TestWatchCommand:
 class TestFeedsCommand:
     """Tests for the feeds command (T5.4)."""
 
+    def test_finalize_incomplete_json_does_not_touch_sibling_directories(self, valid_env, tmp_path):
+        """A C10 path should not finalize similarly prefixed sibling directories."""
+        from focus_feed.cli import _finalize_incomplete_json
+
+        data_dir = tmp_path / "data"
+        target_dir = data_dir / "C10"
+        sibling_one = data_dir / "C101"
+        sibling_two = data_dir / "C102"
+        for directory in (target_dir, sibling_one, sibling_two):
+            directory.mkdir(parents=True)
+            source = directory / "notes.pdf"
+            source.write_bytes(b"pdf data")
+            metadata = {
+                "title": "Notes",
+                "filename": "notes.pdf",
+                "filetype": "pdf",
+                "description": "",
+                "content": "Extracted notes",
+                "extract": {"status": "in_progress"},
+            }
+            (directory / "notes.pdf.json").write_text(json.dumps(metadata))
+
+        sibling_paths = [directory / "notes.pdf.json" for directory in (sibling_one, sibling_two)]
+        originals = [path.read_text() for path in sibling_paths]
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
+            mock_summarizer = mock.MagicMock()
+            mock_summarizer.summarize.return_value = ("Summary", 10, 5)
+            mock_summarizer.generate_title.return_value = ("Generated Notes", 10, 5)
+            MockSummarizer.return_value = mock_summarizer
+
+            success_count, error_count = _finalize_incomplete_json(data_dir, paths=[target_dir])
+
+        assert (success_count, error_count) == (1, 0)
+        target_metadata = json.loads((target_dir / "notes.pdf.json").read_text())
+        assert target_metadata["extract"]["status"] == "complete"
+        assert [path.read_text() for path in sibling_paths] == originals
+        mock_summarizer.summarize.assert_called_once()
+
     def test_feeds_skips_processing(self, runner, valid_env, tmp_data_dir):
         """Feeds should not process any files."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
@@ -3370,7 +3408,7 @@ class TestFindFilesNeedingMetadataExtraction:
             ["extract", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
-        assert "No PDF/HTML files need metadata extraction." in result.output
+        assert "No PDF/HTML/Docling files need metadata extraction." in result.output
 
     def test_extract_dry_run(self, runner, valid_env, tmp_data_dir):
         """Extract --dry-run should list files without processing."""
@@ -3435,7 +3473,7 @@ class TestFindFilesNeedingMetadataExtraction:
             )
 
         assert result.exit_code == 0
-        assert "Found 1 PDF/HTML file(s)" in result.output
+        assert "Found 1 PDF/HTML/Docling file(s)" in result.output
         mock_extractor.extract.assert_called_once()
 
     def test_extract_skips_files_with_title(self, runner, valid_env, tmp_data_dir):
@@ -3461,7 +3499,7 @@ class TestFindFilesNeedingMetadataExtraction:
             ["extract", str(tmp_data_dir)],
         )
         assert result.exit_code == 0
-        assert "No PDF/HTML files need metadata extraction." in result.output
+        assert "No PDF/HTML/Docling files need metadata extraction." in result.output
 
     def test_extract_writes_to_json(self, runner, valid_env, tmp_data_dir):
         """Extract should write extracted data to JSON metadata."""
@@ -3487,10 +3525,46 @@ class TestFindFilesNeedingMetadataExtraction:
         json_path = tmp_data_dir / "doc.pdf.json"
         assert json_path.exists()
         data = json.loads(json_path.read_text())
-        assert data["title"] == "PDF Title"
+        assert data["title"] == {
+            "filename": "PDF Title",
+            "extracted": None,
+            "generated": None,
+        }
         assert data["description"] == "PDF Description"
         assert data["filetype"] == "pdf"
         assert data["extract"]["status"] == "complete"
+
+    def test_extract_discovers_docling_file_and_saves_title_provenance(
+        self, runner, valid_env, tmp_data_dir
+    ):
+        """Extract should discover Docling files and persist extracted title provenance."""
+        source = tmp_data_dir / "doc.docx"
+        source.write_bytes(b"docx data")
+
+        with mock.patch("focus_feed.services.extractors.DoclingExtractor") as MockExtractor:
+            mock_extractor = mock.MagicMock()
+            mock_extractor.extract.return_value = {
+                "title": "Course Notes",
+                "extracted": "Original Document Title",
+                "description": "Document description",
+                "date": 1728931200,
+                "size": 9,
+                "filetype": "docx",
+                "content": "Extracted document content",
+            }
+            MockExtractor.return_value = mock_extractor
+
+            result = runner.invoke(app, ["extract", str(tmp_data_dir)])
+
+        assert result.exit_code == 0
+        assert "Found 1 PDF/HTML/Docling file(s)" in result.output
+        mock_extractor.extract.assert_called_once_with(str(source))
+        data = json.loads((tmp_data_dir / "doc.docx.json").read_text())
+        assert data["title"] == {
+            "filename": "Course Notes",
+            "extracted": "Original Document Title",
+            "generated": None,
+        }
 
     def test_extract_force_flag_reprocesses_complete_files(self, runner, valid_env, tmp_data_dir):
         """Extract --force should re-extract files with extract status='complete'."""
@@ -3527,8 +3601,49 @@ class TestFindFilesNeedingMetadataExtraction:
             )
 
         assert result.exit_code == 0
-        assert "Found 1 PDF/HTML file(s)" in result.output
+        assert "Found 1 PDF/HTML/Docling file(s)" in result.output
         mock_extractor.extract.assert_called_once()
+
+    def test_extract_updates_existing_title_dict_and_preserves_generated(
+        self, runner, valid_env, tmp_data_dir
+    ):
+        """Extract should refresh provenance without replacing a generated title."""
+        source = tmp_data_dir / "doc.pdf"
+        source.write_bytes(b"pdf data")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "title": {
+                        "filename": "Old filename title",
+                        "extracted": "Old extracted title",
+                        "generated": "Generated title",
+                    },
+                    "extract": {"status": "complete"},
+                }
+            )
+        )
+
+        with mock.patch("focus_feed.services.extractors.PDFExtractor") as MockExtractor:
+            mock_extractor = mock.MagicMock()
+            mock_extractor.extract.return_value = {
+                "title": "Fresh filename title",
+                "extracted": "Fresh extracted title",
+                "description": "PDF Description",
+                "date": 1728931200,
+                "size": 1024,
+                "filetype": "pdf",
+            }
+            MockExtractor.return_value = mock_extractor
+
+            result = runner.invoke(app, ["extract", str(tmp_data_dir), "--force"])
+
+        assert result.exit_code == 0
+        data = json.loads((tmp_data_dir / "doc.pdf.json").read_text())
+        assert data["title"] == {
+            "filename": "Fresh filename title",
+            "extracted": "Fresh extracted title",
+            "generated": "Generated title",
+        }
 
     def test_extract_sets_in_progress_before_and_complete_after(
         self, runner, valid_env, tmp_data_dir
@@ -3558,7 +3673,11 @@ class TestFindFilesNeedingMetadataExtraction:
         json_path = tmp_data_dir / "doc.pdf.json"
         data = json.loads(json_path.read_text())
         assert data["extract"]["status"] == "complete"
-        assert data["title"] == "PDF Title"
+        assert data["title"] == {
+            "filename": "PDF Title",
+            "extracted": None,
+            "generated": None,
+        }
         assert data["extract"]["end_time"] is not None
 
 
@@ -3749,7 +3868,6 @@ class TestTitleCommand:
                         "extracted": "Extracted title",
                         "generated": "Existing Title",
                     },
-                    "extracted_title": "Stale top-level title",
                     "description": "",
                     "filename": "doc.pdf",
                     "filepath": "doc.pdf",
@@ -3774,7 +3892,7 @@ class TestTitleCommand:
         assert "Found 1 file(s) to generate titles for." in result.output
         mock_summarizer.generate_title.assert_called_once()
         call_kwargs = mock_summarizer.generate_title.call_args.kwargs
-        assert call_kwargs["extracted_title"] == "Extracted title"
+        assert call_kwargs["extracted"] == "Extracted title"
 
     def test_title_processes_mp4_with_transcript(self, runner, valid_env, tmp_data_dir):
         """Title should process MP4 files using the transcript as content."""
