@@ -17,7 +17,7 @@ See proposal.md for problem, intent and scope.
 - Generate `<filename>.json` alongside source file.
 - Fields: `title:{filename,extracted,generated}`, `description`, `summary`, `content`, `filename`, `filetype`, `date` ms, `publication_date`, `mtime`, `duration`, `creation_time`, `size`, `hash`, step maps `transcribe/summarize/extract/generate_title`, `error`.
 - filepath is NOT stored; it is inferred from the JSON filename location.
-- Title precedence: generated > extracted > filename. Auto-prepend parent folder name if missing. Sanitize filename key.
+- Title precedence: generated > extracted > filename. Auto-prepend parent folder name if missing, unless the filename begins with the folder name plus an extended code, in which case use that code as the prefix (e.g. `H103RA` in folder `H103`). Sanitize filename key.
 - Remove control chars 0x00-0x1f except tab/newline/CR and 0x7f from extracted PDF/HTML.
 - Compute SHA256 during first extraction or before feed generation (whichever comes first).
 - Transcribed audio/video: description blank, summary = key takeaways, content = transcript

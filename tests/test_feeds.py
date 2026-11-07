@@ -16,6 +16,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 from unittest import mock
 
@@ -567,15 +568,38 @@ class TestPodcastFeedGeneration:
 
         content = parse_rss_file(tmp_path / xml_name)
         # Module prefix is applied to the final title after precedence resolution.
-        # The parent directory name is prepended if the title doesn't already
-        # start with the folder name (case-insensitive).
+        # An extended leading filename code replaces the parent folder prefix.
         parent_dir = Path(filepath).parent.name
+        filename_token = re.match(r"[A-Za-z0-9]+", Path(filepath).stem)
+        effective_prefix = parent_dir
+        if (
+            filename_token
+            and len(filename_token.group()) > len(parent_dir)
+            and filename_token.group().lower().startswith(parent_dir.lower())
+        ):
+            effective_prefix = filename_token.group()
         title_normalized = title.replace("_", " ").lower()
-        if title_normalized.startswith(parent_dir.lower()):
+        if title_normalized.startswith(effective_prefix.lower()):
             expected_title = title
         else:
-            expected_title = f"{parent_dir}: {title}"
+            expected_title = f"{effective_prefix}: {title}"
         assert f"<title>{expected_title}</title>" in content
+
+    def test_articles_feed_uses_extended_filename_code_as_title_prefix(self, tmp_path):
+        """Articles feed titles should use an extended filename code as prefix."""
+        write_metadata_file(
+            tmp_path,
+            "H103/H103RA_Decline_of_Napoleon_(FS).docx",
+            filetype="docx",
+            title="Decline of Napoleon",
+        )
+
+        fg = FeedGenerator(data_dir=tmp_path, base_url="https://example.com/feeds")
+        fg.generate_articles_feed()
+
+        content = parse_rss_file(tmp_path / "articles.xml")
+        assert "<title>H103RA: Decline of Napoleon</title>" in content
+        assert "<title>H103: Decline of Napoleon</title>" not in content
 
     def test_podcast_feed_item_description_from_summary(self, tmp_path):
         """Podcast feed description should come from summary field (FR-014)."""

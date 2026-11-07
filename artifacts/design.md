@@ -31,7 +31,7 @@ Standalone app that processes supported audio/video media, PDF, and HTML files a
 3. Dispatch by type:
    - Direct-submit media (`.mp3`, `.m4a`, `.wav`, `.webm`, `.aac`, `.flac`, `.ogg`, `.opus`, `.mp4`, `.mpeg`, `.mpga`): send original file to remote transcription API → store transcript in content → summarize → extract media metadata via PyAV → generate title.
    - Video requiring extraction (`.mkv`, `.mov`, `.avi`, `.wmv`): audio_extractor selects the first audio stream and creates a temporary compatible audio file → remote transcription API → delete temporary file → store transcript in content → summarize → extract media metadata via PyAV → generate title. No-audio or extraction failures are reported as transcription errors.
-   - PDF/HTML: extract metadata & plaintext → sanitize control chars → compute SHA256 hash → store description/content/mtime → generate_title via LLM → build title dict → apply folder prefix
+   - PDF/HTML: extract metadata & plaintext → sanitize control chars → compute SHA256 hash → store description/content/mtime → generate_title via LLM → build title dict → apply folder prefix, using an extended filename code when present
 4. Write/update JSON with step maps, hash, timestamps, mtime
 5. Feed Generator scans for feed.json, collects feed-eligible items from subtree, sorts by folder/filename, converts markdown→HTML with XSS protection, writes podcast.xml / articles.xml
 6. Index Generator updates an `index.html` in every directory with `feed.json`; the root index lists all feeds and each nested index lists feeds in its subtree
@@ -48,7 +48,7 @@ Optional: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION, TRANSCRIPTION_EN
 
 **JSON Metadata**
 Per file `<name>.json` with title dict `{filename,extracted,generated}`, description, summary, content, filetype, dates ms, mtime, size, hash, step maps `transcribe/summarize/extract/generate_title` with status/timing, error.
-Title precedence: generated > extracted > filename. Parent folder name auto-prepended.
+Title precedence: generated > extracted > filename. Parent folder name auto-prepended unless the filename begins with the folder name plus an extended code, in which case that code is used as the prefix (e.g. `H103RA` in folder `H103`).
 Filepath is NOT stored; it is inferred from the JSON filename location.
 
 **Feed Eligibility**
@@ -80,7 +80,7 @@ PDF: pypdf; HTML: beautifulsoup4; media metadata and audio extraction: av (PyAV)
 ## 5. Key Decisions
 - Title as dict with provenance for fallback and display
 - LLM title generation for MP4s with sparse metadata
-- Auto folder name prefix for context in readers
+- Auto folder name prefix for context in readers, extended to the filename code when present
 - Regenerate feeds/index after each processing
 - Persistent error state in JSON, manual fix or --force
 - Full plaintext extraction for richer feeds

@@ -1700,3 +1700,100 @@ class TestModulePrefix:
             filename="lecture.mp4",
         )
         assert metadata.final_title == "Videos Lecture"
+
+    def test_extended_code_used_as_module_prefix(self):
+        """An extended filename code should be used instead of the folder prefix."""
+        metadata = self._make_metadata(
+            {
+                "filename": "H103RA Decline of Napoleon (FS)",
+                "extracted": None,
+                "generated": "Decline of Napoleon",
+            },
+            filename="H103RA_Decline_of_Napoleon_(FS).docx",
+            filepath="H103/H103RA_Decline_of_Napoleon_(FS).docx",
+        )
+        assert metadata.final_title == "H103RA: Decline of Napoleon"
+
+    def test_multi_letter_extended_code_used_as_module_prefix(self):
+        """An extended code with multiple extra letters should be preserved."""
+        metadata = self._make_metadata(
+            {
+                "filename": "H102DLORC The Operational Variables",
+                "extracted": None,
+                "generated": "PMESII-PT for Historical Analysis",
+            },
+            filename="H102DLORC_The Operational Variables.docx",
+            filepath="H102/H102DLORC_The Operational Variables.docx",
+        )
+        assert metadata.final_title == "H102DLORC: PMESII-PT for Historical Analysis"
+
+    def test_extended_code_detected_before_space_delimiter(self):
+        """An extended filename code followed by a space should be recognized."""
+        metadata = self._make_metadata(
+            {
+                "filename": "H101RA Military History Still Practicable",
+                "extracted": None,
+                "generated": "Military History Still Practicable",
+            },
+            filename="H101RA Military History Still Practicable.html",
+            filepath="H101/H101RA Military History Still Practicable.html",
+        )
+        assert metadata.final_title == "H101RA: Military History Still Practicable"
+
+    def test_extended_code_detected_before_hyphen_delimiter(self):
+        """An extended filename code followed by a hyphen should be recognized."""
+        metadata = self._make_metadata(
+            {
+                "filename": "H103RE French Military Problems-CPY (FS)",
+                "extracted": None,
+                "generated": "French Military Problems",
+            },
+            filename="H103RE_French_Military_Problems-CPY_(FS).docx",
+            filepath="H103/H103RE_French_Military_Problems-CPY_(FS).docx",
+        )
+        assert metadata.final_title == "H103RE: French Military Problems"
+
+    def test_filename_token_equal_to_module_uses_module_prefix(self):
+        """A filename token equal to the folder name does not extend the prefix."""
+        metadata = self._make_metadata(
+            {"filename": "H103 Decline", "extracted": None, "generated": "Decline"},
+            filename="H103_Decline.docx",
+            filepath="H103/H103_Decline.docx",
+        )
+        assert metadata.final_title == "H103: Decline"
+
+    def test_extended_code_detection_preserves_filename_case(self):
+        """Extended code detection is case-insensitive but retains filename casing."""
+        metadata = self._make_metadata(
+            {"filename": "h103ra Decline", "extracted": None, "generated": "Decline"},
+            filename="h103ra_Decline.docx",
+            filepath="H103/h103ra_Decline.docx",
+        )
+        assert metadata.final_title == "h103ra: Decline"
+
+    def test_extended_code_prefix_not_duplicated_in_title(self):
+        """A title already starting with the extended code should remain unchanged."""
+        metadata = self._make_metadata(
+            {"filename": "H103RA Decline", "extracted": None, "generated": "H103RA Decline"},
+            filename="H103RA_Decline.docx",
+            filepath="H103/H103RA_Decline.docx",
+        )
+        assert metadata.final_title == "H103RA Decline"
+
+    def test_extended_looking_filename_has_no_root_prefix(self):
+        """An extended-looking root filename should not receive any prefix."""
+        metadata = self._make_metadata(
+            {"filename": "H103RA Decline", "extracted": None, "generated": "Decline"},
+            filename="H103RA_Decline.docx",
+            filepath="H103RA_Decline.docx",
+        )
+        assert metadata.final_title == "Decline"
+
+    def test_extended_code_prefix_applied_to_extracted_title(self):
+        """An extended code should prefix an extracted title when generated is empty."""
+        metadata = self._make_metadata(
+            {"filename": "H103RA Decline", "extracted": "Extracted", "generated": ""},
+            filename="H103RA_Decline.docx",
+            filepath="H103/H103RA_Decline.docx",
+        )
+        assert metadata.final_title == "H103RA: Extracted"

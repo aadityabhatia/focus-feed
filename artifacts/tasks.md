@@ -1149,6 +1149,7 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
   - Module prefixing works correctly
   - Doesn't double-prefix when filename already contains module name
   - Works with underscores in module names and filenames
+  - When the filename begins with the module folder name plus an extended code, use the extended code as the prefix (e.g. `H103RA` in folder `H103`)
 
 - [x] T9.7: Implement Content Extraction for PDF/HTML
 - **Description:** Extract full plaintext content from PDF and HTML files
@@ -1366,7 +1367,7 @@ The following tasks can be worked on concurrently:
 ### New Features Requirements
 1. **Per-folder feeds**: Require feed.json file in folder
 2. **Reflection questions**: Use reflection.md file in folder **if present** (OPTIONAL - not required for summarization)
-3. **Module prefixing**: Automatic based on parent folder name
+3. **Module prefixing**: Automatic based on parent folder name, using an extended filename code as the prefix when present (e.g. `H103RA` in folder `H103`)
 4. **Markdown conversion**: Automatic for feed descriptions with XSS protection
 5. **Content extraction**: PDF/HTML files have content extracted to content field
 6. **Conditional feed generation**: Feeds only generated where feed.json exists AND applicable files present

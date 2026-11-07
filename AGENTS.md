@@ -42,7 +42,7 @@ Each file gets a `[filename].json` alongside the source file with:
 
 Feed Eligibility: MP4 = transcribe & summarize complete. PDF/HTML = extract & summarize complete.
 
-Title Rules: `generated` > `extracted` > `filename`. Parent folder name prepended.
+Title Rules: `generated` > `extracted` > `filename`. Parent folder name prepended unless the filename begins with the folder name plus an extended code, in which case that code is used as the prefix (e.g. `H103RA` in folder `H103`).
 
 Filepath is NOT stored; it is inferred from the JSON filename location.
 

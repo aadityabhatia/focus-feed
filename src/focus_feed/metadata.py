@@ -96,6 +96,7 @@ millisecond precision.
 import json
 import logging
 from pathlib import Path
+import re
 from typing import Any
 
 from pydantic import (
@@ -142,11 +143,13 @@ _TITLE_DICT_KEYS: frozenset[str] = frozenset({"filename", "extracted", "generate
 
 
 def _apply_module_prefix_to_title(title: str, filepath: str) -> str:
-    """Prepend the module name to *title* if appropriate.
+    """Prepend the module or extended filename code to *title* if appropriate.
 
     The module name is extracted from the parent directory of *filepath*.
-    The module name is prepended only when the title does not already start
-    with the module name (case-insensitive, handling underscores and spaces).
+    If the filename stem starts with a longer alphanumeric code that itself
+    starts with the module name, that code is used as the prefix instead.
+    The effective prefix is prepended only when the title does not already
+    start with it (case-insensitive, handling underscores and spaces).
 
     Args:
         title: The base title string (already resolved via precedence).
@@ -161,15 +164,25 @@ def _apply_module_prefix_to_title(title: str, filepath: str) -> str:
     if not module_name:
         return title
 
+    token_match = re.match(r"[A-Za-z0-9]+", path.stem)
+    effective_prefix = module_name
+    if token_match:
+        filename_token = token_match.group(0)
+        if (
+            len(filename_token) > len(module_name)
+            and filename_token[: len(module_name)].lower() == module_name.lower()
+        ):
+            effective_prefix = filename_token
+
     # Normalize: replace underscores with spaces, lowercase for comparison.
-    module_normalized = module_name.replace("_", " ").lower()
+    prefix_normalized = effective_prefix.replace("_", " ").lower()
     title_normalized = title.replace("_", " ").lower()
 
-    # Check if title already starts with module name (case-insensitive).
-    if title_normalized.startswith(module_normalized):
+    # Check if title already starts with the effective prefix (case-insensitive).
+    if title_normalized.startswith(prefix_normalized):
         return title
 
-    return f"{module_name.replace('_', ' ')}: {title}"
+    return f"{effective_prefix.replace('_', ' ')}: {title}"
 
 
 class StepMap(BaseModel):
@@ -525,7 +538,9 @@ class Metadata(BaseModel):
         is found.
 
         After precedence resolution, prepend the parent directory name of
-        the inferred source path when the title does not already start with it.
+        the inferred source path, or a longer leading filename code that
+        starts with that directory name, when the title does not already start
+        with the effective prefix.
         """
         if isinstance(self.title, dict):
             for key in ("generated", "extracted", "filename"):
