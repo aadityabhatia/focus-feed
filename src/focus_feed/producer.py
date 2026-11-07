@@ -50,7 +50,8 @@ Design references:
 - tasks.md T3.1 (Producer implementation)
 """
 
-from contextlib import suppress
+from collections.abc import Iterator
+from contextlib import contextmanager, suppress
 from datetime import UTC, datetime
 import hashlib
 import json
@@ -130,6 +131,16 @@ SUPPORTED_FILETYPES: frozenset[str] = (
     MEDIA_FILETYPES | DOCLING_FILETYPES | frozenset({"pdf", "html"})
 )
 DOCUMENT_FILETYPES: frozenset[str] = frozenset({"pdf", "html"}) | DOCLING_FILETYPES
+
+
+@contextmanager
+def _tag_step(step: str) -> Iterator[None]:
+    """Tag exceptions with the pipeline step that raised them."""
+    try:
+        yield
+    except Exception as exc:
+        cast(Any, exc).focus_feed_step = step
+        raise
 
 
 def _now_timestamp() -> float:
@@ -595,7 +606,7 @@ class Producer:
     def build_title_dict(
         self,
         filename_title: str,
-        extracted_title: str | None = None,
+        extracted: str | None = None,
         generated_title: str | None = None,
     ) -> dict[str, str | None]:
         """Build a title dict with the three required keys.
@@ -610,7 +621,8 @@ class Producer:
             filename_title: The already-sanitized filename (no extension,
                 underscores replaced with spaces) to use as the ``filename``
                 key.
-            extracted_title: Title extracted from source metadata, or
+            extracted: Title extracted from source metadata and mapped to
+                ``title.extracted`` in the metadata schema, or
                 ``None`` if not available.
             generated_title: LLM-generated title, or ``None`` if not
                 generated.
@@ -620,7 +632,7 @@ class Producer:
         """
         return {
             "filename": filename_title,
-            "extracted": extracted_title,
+            "extracted": extracted,
             "generated": generated_title,
         }
 
@@ -743,7 +755,8 @@ class Producer:
 
             _logger.info("Starting transcription for %s (step 1/3)", filepath)
             # Step 1: Transcribe audio to markdown text.
-            transcript = self.transcriber.transcribe(absolute_path)
+            with _tag_step("transcribe"):
+                transcript = self.transcriber.transcribe(absolute_path)
             transcribe_end = datetime.now(UTC)
 
             # Update transcribe step with completion info.
@@ -779,12 +792,13 @@ class Producer:
         # Step 2: Summarize the transcript via LLM.
         # Check for reflection.md in the source file's directory.
         reflection_questions = _check_reflection_md(absolute_path)
-        summary, prompt_tokens, completion_tokens = self.summarizer.summarize(
-            transcript,
-            reflection_questions=reflection_questions,
-            filepath=filepath,
-            filetype=filetype,
-        )
+        with _tag_step("summarize"):
+            summary, prompt_tokens, completion_tokens = self.summarizer.summarize(
+                transcript,
+                reflection_questions=reflection_questions,
+                filepath=filepath,
+                filetype=filetype,
+            )
         summarize_end = datetime.now(UTC)
 
         # Update summarize step with completion info.
@@ -814,11 +828,11 @@ class Producer:
         file_date = file_mtime
         creation_time_str: str | None = None
         duration: float | None = None
-        extracted_title: str | None = None
+        extracted: str | None = None
         if audio_meta is not None:
             creation_time_str = audio_meta.get("creation_time")
             duration = audio_meta.get("duration")
-            extracted_title = audio_meta.get("title")
+            extracted = audio_meta.get("title")
             if creation_time_str:
                 try:
                     parsed_date = datetime.fromisoformat(creation_time_str.replace("Z", "+00:00"))
@@ -859,12 +873,13 @@ class Producer:
         metadata_dict["generate_title"] = generate_title_step
         self._write_metadata_partial(metadata_dict, absolute_path)
 
-        generated_title, prompt_tokens, completion_tokens = self.summarizer.generate_title(
-            transcript,
-            filename=filename_title,
-            extracted_title=extracted_title,
-            filepath=filepath,
-        )
+        with _tag_step("generate_title"):
+            generated_title, prompt_tokens, completion_tokens = self.summarizer.generate_title(
+                transcript,
+                filename=filename_title,
+                extracted=extracted,
+                filepath=filepath,
+            )
         generated_title = _clean_title(generated_title) or generated_title
         generate_title_end = datetime.now(UTC)
 
@@ -887,7 +902,7 @@ class Producer:
         # Build title dict for media with all three keys.
         title_dict = self.build_title_dict(
             filename_title=filename_title,
-            extracted_title=extracted_title,
+            extracted=extracted,
             generated_title=generated_title,
         )
 
@@ -1028,41 +1043,42 @@ class Producer:
         # Step 1: Use Docling for its supported document formats. PDF uses the
         # local PDFExtractor only when Docling is not configured.
         config = get_config()
-        extracted = None
+        extraction: dict[str, Any] | None = None
         extension = Path(absolute_path).suffix.lower()
-        if filetype in DOCLING_FILETYPES:
-            if not config.docling_api:
-                raise RuntimeError("DOCLING_API is not configured")
-            extracted = self.docling_extractor.extract(absolute_path)
-            if extracted.get("content") is None:
-                raise RuntimeError(f"Docling extraction produced no content for {filepath}")
-        elif config.docling_api and extension in DoclingExtractor.SUPPORTED_EXTENSIONS:
-            try:
-                docling_extracted = self.docling_extractor.extract(absolute_path)
-            except (ConnectionError, RuntimeError, ValueError) as exc:
-                _logger.error("Docling extraction failed for %s: %s", filepath, exc)
-                raise RuntimeError(f"Docling extraction failed for {filepath}: {exc}") from exc
+        with _tag_step("extract"):
+            if filetype in DOCLING_FILETYPES:
+                if not config.docling_api:
+                    raise RuntimeError("DOCLING_API is not configured")
+                extraction = self.docling_extractor.extract(absolute_path)
+                if extraction.get("content") is None:
+                    raise RuntimeError(f"Docling extraction produced no content for {filepath}")
+            elif config.docling_api and extension in DoclingExtractor.SUPPORTED_EXTENSIONS:
+                try:
+                    docling_extracted = self.docling_extractor.extract(absolute_path)
+                except (ConnectionError, RuntimeError, ValueError) as exc:
+                    _logger.error("Docling extraction failed for %s: %s", filepath, exc)
+                    raise RuntimeError(f"Docling extraction failed for {filepath}: {exc}") from exc
 
-            if not docling_extracted.get("content"):
-                _logger.error("Docling extraction produced no content for %s", filepath)
-                raise RuntimeError(f"Docling extraction produced no content for {filepath}")
-            extracted = docling_extracted
+                if not docling_extracted.get("content"):
+                    _logger.error("Docling extraction produced no content for %s", filepath)
+                    raise RuntimeError(f"Docling extraction produced no content for {filepath}")
+                extraction = docling_extracted
 
-        if extracted is None:
-            extracted = self.pdf_extractor.extract(absolute_path)
+            if extraction is None:
+                extraction = self.pdf_extractor.extract(absolute_path)
         metadata_dict["hash"] = _compute_file_hash(absolute_path)
 
         # The filename-derived title is used as the actual title.
         # The extracted title from PDF metadata is stored in the 'extracted'
         # key of the title dict for tracking and precedence.
         # Fall back to filename stem if extractor returns empty title.
-        filename_title = extracted.get("title") or _sanitize_filename(filename) or filename
-        extracted_title = extracted.get("extracted_title")
-        description = extracted.get("description") or ""
-        file_date = extracted.get("date", 0)
-        file_publication_date = extracted.get("publication_date")
-        file_size = extracted.get("size", 0)
-        file_content = extracted.get("content")
+        filename_title = extraction.get("title") or _sanitize_filename(filename) or filename
+        extracted = extraction.get("extracted")
+        description = extraction.get("description") or ""
+        file_date = extraction.get("date", 0)
+        file_publication_date = extraction.get("publication_date")
+        file_size = extraction.get("size", 0)
+        file_content = extraction.get("content")
 
         # After extraction: mark extract as complete.
         extract_step["status"] = "complete"
@@ -1099,12 +1115,13 @@ class Producer:
 
             _logger.info("Starting summarization for %s (step 2/3)", filepath)
             if file_content and file_content.strip():
-                summary, prompt_tokens, completion_tokens = self.summarizer.summarize(
-                    file_content,
-                    reflection_questions=reflection_questions,
-                    filepath=filepath,
-                    filetype=filetype,
-                )
+                with _tag_step("summarize"):
+                    summary, prompt_tokens, completion_tokens = self.summarizer.summarize(
+                        file_content,
+                        reflection_questions=reflection_questions,
+                        filepath=filepath,
+                        filetype=filetype,
+                    )
             else:
                 # No content to summarize; use empty summary.
                 summary = ""
@@ -1140,12 +1157,13 @@ class Producer:
             metadata_dict["generate_title"] = generate_title_step
             self._write_metadata_partial(metadata_dict, absolute_path)
 
-            generated_title, prompt_tokens, completion_tokens = self.summarizer.generate_title(
-                file_content,
-                filename=filename_title,
-                extracted_title=extracted_title,
-                filepath=filepath,
-            )
+            with _tag_step("generate_title"):
+                generated_title, prompt_tokens, completion_tokens = self.summarizer.generate_title(
+                    file_content,
+                    filename=filename_title,
+                    extracted=extracted,
+                    filepath=filepath,
+                )
             generated_title = _clean_title(generated_title) or generated_title
             generate_title_end = datetime.now(UTC)
 
@@ -1175,7 +1193,7 @@ class Producer:
         # Build title dict for PDF with all three keys.
         title_dict = self.build_title_dict(
             filename_title=filename_title,
-            extracted_title=extracted_title,
+            extracted=extracted,
             generated_title=generated_title,
         )
 
@@ -1311,20 +1329,21 @@ class Producer:
 
         _logger.info("Starting extraction for %s (step 1/3)", filepath)
         # Step 1: Extract metadata from the HTML.
-        extracted = self.html_extractor.extract(absolute_path)
+        with _tag_step("extract"):
+            extraction = self.html_extractor.extract(absolute_path)
         metadata_dict["hash"] = _compute_file_hash(absolute_path)
 
         # The filename-derived title is used as the actual title.
         # The extracted title from <title> tag is stored in the 'extracted'
         # key of the title dict for tracking and precedence.
         # Fall back to filename stem if extractor returns empty title.
-        filename_title = extracted.get("title") or _sanitize_filename(filename) or filename
-        extracted_title = extracted.get("extracted_title")
-        description = extracted.get("description") or ""
-        file_date = extracted.get("date", 0)
-        file_publication_date = extracted.get("publication_date")
-        file_size = extracted.get("size", 0)
-        file_content = extracted.get("content")
+        filename_title = extraction.get("title") or _sanitize_filename(filename) or filename
+        extracted = extraction.get("extracted")
+        description = extraction.get("description") or ""
+        file_date = extraction.get("date", 0)
+        file_publication_date = extraction.get("publication_date")
+        file_size = extraction.get("size", 0)
+        file_content = extraction.get("content")
 
         # After extraction: mark extract as complete.
         extract_step["status"] = "complete"
@@ -1364,12 +1383,13 @@ class Producer:
 
             _logger.info("Starting summarization for %s (step 2/3)", filepath)
             if file_content and file_content.strip():
-                summary, prompt_tokens, completion_tokens = self.summarizer.summarize(
-                    file_content,
-                    reflection_questions=reflection_questions,
-                    filepath=filepath,
-                    filetype="html",
-                )
+                with _tag_step("summarize"):
+                    summary, prompt_tokens, completion_tokens = self.summarizer.summarize(
+                        file_content,
+                        reflection_questions=reflection_questions,
+                        filepath=filepath,
+                        filetype="html",
+                    )
             else:
                 # No content to summarize; use empty summary.
                 summary = ""
@@ -1405,12 +1425,13 @@ class Producer:
             metadata_dict["generate_title"] = generate_title_step
             self._write_metadata_partial(metadata_dict, absolute_path)
 
-            generated_title, prompt_tokens, completion_tokens = self.summarizer.generate_title(
-                file_content,
-                filename=filename_title,
-                extracted_title=extracted_title,
-                filepath=filepath,
-            )
+            with _tag_step("generate_title"):
+                generated_title, prompt_tokens, completion_tokens = self.summarizer.generate_title(
+                    file_content,
+                    filename=filename_title,
+                    extracted=extracted,
+                    filepath=filepath,
+                )
             generated_title = _clean_title(generated_title) or generated_title
             generate_title_end = datetime.now(UTC)
 
@@ -1440,7 +1461,7 @@ class Producer:
         # Build title dict for HTML with all three keys.
         title_dict = self.build_title_dict(
             filename_title=filename_title,
-            extracted_title=extracted_title,
+            extracted=extracted,
             generated_title=generated_title,
         )
 
@@ -1489,7 +1510,7 @@ class Producer:
         self,
         content: str,
         filename: str | None = None,
-        extracted_title: str | None = None,
+        extracted: str | None = None,
         filepath: str | None = None,
     ) -> tuple[str, int, int]:
         """Generate a title from content using the LLM.
@@ -1503,8 +1524,9 @@ class Producer:
                 (e.g. a transcript or file content).
             filename: Optional filename (without extension, underscores
                 replaced with spaces) to provide as context to the LLM.
-            extracted_title: Optional title extracted from source metadata
-                (PDF metadata title, HTML ``<title>`` tag).
+            extracted: Optional title extracted from source metadata (PDF
+                metadata title, HTML ``<title>`` tag), mapped to
+                ``title.extracted`` in the metadata schema.
             filepath: Optional path of the file being processed, included in
                 error logging for debugging context.
 
@@ -1514,7 +1536,7 @@ class Producer:
         Raises:
             SummarizationError: If the LLM request fails.
         """
-        return self.summarizer.generate_title(content, filename, extracted_title, filepath=filepath)
+        return self.summarizer.generate_title(content, filename, extracted, filepath=filepath)
 
     def _write_metadata_partial(self, metadata_dict: dict[str, Any], source_path: str) -> None:
         """Write a raw metadata dictionary to a JSON file atomically.
@@ -1533,7 +1555,6 @@ class Producer:
         json_path.parent.mkdir(parents=True, exist_ok=True)
 
         metadata_dict.pop("filepath", None)
-        metadata_dict.pop("extracted_title", None)
         if metadata_dict.get("mtime") is None:
             try:
                 metadata_dict["mtime"] = Path(source_path).stat().st_mtime
@@ -1575,8 +1596,9 @@ class Producer:
             filepath: Relative path of the source file from the data
                 directory root.
             filename: The source filename (e.g. ``"lecture.mp4"``).
-            filetype: The file type (``"mp4"``, ``"pdf"``, ``"html"``),
-                if known.
+            filetype: The file type, if known. Document formats include
+                PDF, HTML, and Docling formats (``"docx"``, ``"doc"``,
+                ``"pptx"``, ``"ppt"``, ``"xlsx"``, ``"xls"``).
             absolute_path: Absolute path to the source file. Used to
                 determine where to write the adjacent JSON metadata file.
                 Must be provided.
@@ -1586,7 +1608,10 @@ class Producer:
             with suppress(OSError):
                 mtime = Path(absolute_path).stat().st_mtime
 
-        if filetype in MEDIA_FILETYPES:
+        tagged_step = getattr(exc, "focus_feed_step", None)
+        if tagged_step in {"transcribe", "summarize", "extract", "generate_title"}:
+            step_error = (tagged_step, str(exc))
+        elif filetype in MEDIA_FILETYPES:
             step_error = ("transcribe", str(exc))
         elif filetype in DOCUMENT_FILETYPES:
             step_error = ("extract", str(exc))

@@ -24,6 +24,8 @@ from urllib.parse import urlparse
 
 import click
 
+from focus_feed.scanner import _DOC_FILETYPES, MEDIA_FILETYPES
+
 # ---------------------------------------------------------------------------
 # Module-level loggers
 # ---------------------------------------------------------------------------
@@ -263,25 +265,7 @@ def create_error_metadata(
         A dictionary suitable for JSON serialization as an error metadata file.
     """
     timestamp = int(datetime.now(UTC).timestamp() * 1000) / 1000.0
-    if filetype not in {
-        "mp3",
-        "m4a",
-        "wav",
-        "webm",
-        "aac",
-        "flac",
-        "ogg",
-        "opus",
-        "mp4",
-        "mpeg",
-        "mpga",
-        "mkv",
-        "mov",
-        "avi",
-        "wmv",
-        "pdf",
-        "html",
-    }:
+    if filetype not in MEDIA_FILETYPES | _DOC_FILETYPES:
         filetype = None
     if mtime is None:
         try:

@@ -12,8 +12,9 @@ Each document extractor's ``extract`` method returns a dict with the following
 keys:
 - title: str — filename without extension, underscores replaced with spaces
     (used as the actual/final title)
-- extracted_title: str | None — title extracted from source metadata, or None
-    if not available. This is stored separately and NOT used as the actual title.
+- extracted: str | None — source-metadata title mapped to ``title.extracted``
+    in the metadata schema, or None if not available. This is stored separately
+    and NOT used as the actual title.
 - description: str | None (optional; may be None if not available)
 - date: float (UNIX epoch with millisecond precision; falls back to file
     modification time)
@@ -107,13 +108,14 @@ class PDFExtractor:
             filepath: Path to the PDF file.
 
         Returns:
-            A dictionary with keys: title, extracted_title, description,
+            A dictionary with keys: title, extracted, description,
             date, publication_date, size, filetype, content.
 
             - title: Filename without extension (underscores replaced with
               spaces). This is the actual/final title used.
-            - extracted_title: PDF metadata title, or None if not available.
-              Stored separately; not used as the actual title.
+            - extracted: PDF metadata title mapped to ``title.extracted`` in
+              the metadata schema, or None if not available. Stored separately;
+              not used as the actual title.
             - description: PDF metadata author, or None if not available.
             - date: Creation date as UNIX epoch (float, ms precision), or
               file modification time.
@@ -134,7 +136,7 @@ class PDFExtractor:
         # Title is always the filename (without extension, underscores→spaces).
         # The extracted title from PDF metadata is stored separately.
         title: str | None = _clean_title(filename)
-        extracted_title: str | None = None
+        extracted: str | None = None
         description: str | None = None
         date: datetime | None = None
         publication_date: datetime | None = None
@@ -146,7 +148,7 @@ class PDFExtractor:
 
             if metadata is not None:
                 if metadata.title:
-                    extracted_title = _clean_title(str(metadata.title))
+                    extracted = _clean_title(str(metadata.title))
                 if metadata.author:
                     description = str(metadata.author)
                 if metadata.creation_date:
@@ -191,7 +193,7 @@ class PDFExtractor:
 
         return {
             "title": title,
-            "extracted_title": extracted_title,
+            "extracted": extracted,
             "description": description,
             "date": int(date.timestamp() * 1000) / 1000.0,
             "publication_date": publication_date_epoch,
@@ -218,13 +220,14 @@ class HTMLExtractor:
             filepath: Path to the HTML file.
 
         Returns:
-            A dictionary with keys: title, extracted_title, description,
+            A dictionary with keys: title, extracted, description,
             date, publication_date, size, filetype, content.
 
             - title: Filename without extension (underscores replaced with
               spaces). This is the actual/final title used.
-            - extracted_title: Content of ``<title>`` tag, or None if not
-              available. Stored separately; not used as the actual title.
+            - extracted: Content of ``<title>`` tag mapped to ``title.extracted``
+              in the metadata schema, or None if not available. Stored separately;
+              not used as the actual title.
             - description: Content of ``<meta name="description">``, or None
               if not available.
             - date: Date as UNIX epoch (float, ms precision), or file
@@ -247,7 +250,7 @@ class HTMLExtractor:
         # Title is always the filename (without extension, underscores→spaces).
         # The extracted title from <title> tag is stored separately.
         title: str | None = _clean_title(filename)
-        extracted_title: str | None = None
+        extracted: str | None = None
         description: str | None = None
         date: datetime | None = None
         publication_date: datetime | None = None
@@ -257,12 +260,12 @@ class HTMLExtractor:
             html_content = filepath.read_text(encoding="utf-8")
             soup = BeautifulSoup(html_content, "html.parser")
 
-            # Extract title from <title> tag (stored as extracted_title, not used as actual title)
+            # Extract title from <title> tag (stored in title.extracted, not used as actual title).
             title_tag = soup.title
             if title_tag:
                 title_text = title_tag.string or title_tag.get_text()
                 if title_text and title_text.strip():
-                    extracted_title = _clean_title(title_text.strip())
+                    extracted = _clean_title(title_text.strip())
 
             # Extract description from <meta name="description">
             desc_meta = soup.find("meta", attrs={"name": "description"})
@@ -306,7 +309,7 @@ class HTMLExtractor:
 
         return {
             "title": title,
-            "extracted_title": extracted_title,
+            "extracted": extracted,
             "description": description,
             "date": int(date.timestamp() * 1000) / 1000.0,
             "publication_date": publication_date_epoch,
@@ -468,7 +471,7 @@ class DoclingExtractor:
 
         return {
             "title": _clean_title(filepath.stem),
-            "extracted_title": None,
+            "extracted": None,
             "description": None,
             "date": int(stat_result.st_mtime * 1000) / 1000.0,
             "publication_date": None,

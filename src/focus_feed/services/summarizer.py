@@ -252,14 +252,14 @@ class Summarizer:
         self,
         content: str,
         filename: str | None = None,
-        extracted_title: str | None = None,
+        extracted: str | None = None,
         filepath: str | None = None,
     ) -> tuple[str, int, int]:
         """Generate a concise title from content.
 
         Uses the title-generation system prompt from configuration
         (``PROMPT_TITLE``) to produce a short, descriptive title.  When
-        *filename* and/or *extracted_title* are provided, they are included
+        *filename* and/or *extracted* are provided, they are included
         in the user prompt **before** the content so the LLM can produce a
         more accurate title.  The ``PROMPT_TITLE`` system prompt already
         contains instructions to use the extracted or filename titles while
@@ -268,7 +268,7 @@ class Summarizer:
         The user-content format is::
 
             Filename: {filename}
-            Extracted Title: {extracted_title}
+            Extracted Title: {extracted}
 
             {content}
 
@@ -278,9 +278,10 @@ class Summarizer:
             content: The content text to generate a title from.
             filename: Optional filename (without extension, underscores
                 replaced with spaces) to provide as context to the LLM.
-            extracted_title: Optional title extracted from source metadata
-                (PDF metadata title, HTML ``<title>`` tag).  Only included
-                if not ``None`` and not empty.
+            extracted: Optional title extracted from source metadata
+                (PDF metadata title, HTML ``<title>`` tag), mapped to
+                ``title.extracted`` in the metadata schema. Only included if
+                not ``None`` and not empty.
             filepath: Optional path of the file being processed, included in
                 error logging for debugging context.
 
@@ -302,8 +303,8 @@ class Summarizer:
         parts: list[str] = []
         if filename:
             parts.append(f"Filename: {filename}")
-        if extracted_title and extracted_title.strip():
-            parts.append(f"Extracted Title: {extracted_title}")
+        if extracted and extracted.strip():
+            parts.append(f"Extracted Title: {extracted}")
         user_content = "\n".join(parts) + "\n\n" + content[:4000] if parts else content[:4000]
 
         result = self._chat_completion(

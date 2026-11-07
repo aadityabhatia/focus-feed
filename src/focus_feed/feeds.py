@@ -639,10 +639,12 @@ class FeedGenerator:
                 stored_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
                 if isinstance(stored_metadata, dict):
                     stored_metadata["hash"] = metadata.hash
-                    metadata_path.write_text(
+                    tmp_path = metadata_path.with_suffix(metadata_path.suffix + ".tmp")
+                    tmp_path.write_text(
                         json.dumps(stored_metadata, indent=2),
                         encoding="utf-8",
                     )
+                    tmp_path.replace(metadata_path)
             except (OSError, json.JSONDecodeError) as exc:
                 _logger.warning("Failed to compute or store hash for %s: %s", source_path, exc)
 

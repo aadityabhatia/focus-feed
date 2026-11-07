@@ -41,10 +41,14 @@ from focus_feed.config import reload_config
 from focus_feed.errors import log_error
 from focus_feed.feeds import _is_orphaned_json
 from focus_feed.metadata import Metadata, StepMap
-from focus_feed.producer import _check_reflection_md
+from focus_feed.producer import (
+    DOCLING_FILETYPES,
+    DOCUMENT_FILETYPES,
+    MEDIA_FILETYPES,
+    _check_reflection_md,
+)
 from focus_feed.scanner import (
     _SPECIAL_CHAR_PATTERN,
-    MEDIA_FILETYPES,
     SUPPORTED_EXTENSIONS,
     ScannedFile,
     Scanner,
@@ -306,7 +310,7 @@ def _generate_feeds(data_dir_path: Path) -> dict[str, int]:
             if metadata.feed_eligible:
                 if metadata.filetype == "mp4":
                     podcast_count += 1
-                elif metadata.filetype in ("pdf", "html"):
+                elif metadata.filetype in DOCUMENT_FILETYPES:
                     article_count += 1
         except Exception:
             pass
@@ -389,7 +393,6 @@ def _write_json_metadata(data: dict[str, Any], source_path: Path) -> None:
     """
     json_path = source_path.with_name(source_path.name + ".json")
     data.pop("filepath", None)
-    data.pop("extracted_title", None)
     data["mtime"] = source_path.stat().st_mtime
     json_path.parent.mkdir(parents=True, exist_ok=True)
     tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
@@ -447,7 +450,7 @@ def _find_files_needing_summary(
     When *paths* is provided, only files that match one of the specified
     paths (or are within one of the specified directories) are returned.
     """
-    source_files = _find_source_files(data_dir, (*MEDIA_FILETYPES, "pdf", "html"))
+    source_files = _find_source_files(data_dir, (*MEDIA_FILETYPES, *DOCUMENT_FILETYPES))
     needs: list[Path] = []
     for source_file in source_files:
         if paths is not None and not _is_path_within(source_file, paths):
@@ -481,7 +484,7 @@ def _find_files_needing_metadata_extraction(
     When *paths* is provided, only files that match one of the specified
     paths (or are within one of the specified directories) are returned.
     """
-    doc_files = _find_source_files(data_dir, ("pdf", "html"))
+    doc_files = _find_source_files(data_dir, tuple(DOCUMENT_FILETYPES))
     needs: list[Path] = []
     for doc_file in doc_files:
         if paths is not None and not _is_path_within(doc_file, paths):
@@ -510,7 +513,7 @@ def _find_files_needing_json_generation(data_dir: Path, force: bool = False) -> 
     When *force* is ``True``, all source files are returned regardless
     of their current step statuses.
     """
-    source_files = _find_source_files(data_dir, ("mp4", "pdf", "html"))
+    source_files = _find_source_files(data_dir, ("mp4", *DOCUMENT_FILETYPES))
     needs: list[Path] = []
     for source_file in source_files:
         json_path = source_file.with_name(source_file.name + ".json")
@@ -579,8 +582,8 @@ def _find_files_needing_title(
 def _get_content_for_title(file_path: Path, metadata_dict: dict[str, Any]) -> str:
     """Get content for title generation based on file type.
 
-    For media files, uses the content (transcript) from the metadata dict.
-    For PDF/HTML files, reads the first 8000 characters of the file content.
+    Uses non-empty content from the metadata dict when available. For PDF/HTML
+    files, falls back to reading the first 8000 characters of the source file.
 
     Args:
         file_path: Path to the source file.
@@ -590,9 +593,10 @@ def _get_content_for_title(file_path: Path, metadata_dict: dict[str, Any]) -> st
         Content text suitable for title generation, or an empty string if
         the file type is unsupported or content cannot be retrieved.
     """
+    content = metadata_dict.get("content")
+    if isinstance(content, str) and content:
+        return content
     ext = file_path.suffix.lower()
-    if ext.lstrip(".") in MEDIA_FILETYPES:
-        return str(metadata_dict.get("content", ""))
     if ext in (".pdf", ".html"):
         try:
             content = file_path.read_text(encoding="utf-8", errors="replace")
@@ -711,7 +715,7 @@ def _cleanup_json_file(json_path: Path) -> tuple[int, list[str]]:
     unknown_keys = _find_unknown_keys(data)
     # Legacy metadata may still contain fields intentionally removed from the
     # current schema; strip them even when callers do not inspect the report.
-    legacy_keys_present = "filepath" in data or "extracted_title" in data
+    legacy_keys_present = "filepath" in data
     if not unknown_keys and not legacy_keys_present:
         return 0, []
 
@@ -1361,7 +1365,7 @@ def feeds(
             if metadata.feed_eligible:
                 if metadata.filetype == "mp4":
                     podcast_count += 1
-                elif metadata.filetype in ("pdf", "html"):
+                elif metadata.filetype in DOCUMENT_FILETYPES:
                     article_count += 1
         except Exception:
             pass
@@ -1723,11 +1727,12 @@ def extract(
     dry_run: bool,
     paths: tuple[str, ...],
 ) -> None:
-    """Extract from PDF/HTML files.
+    """Extract from PDF, HTML, and Docling-supported document formats.
 
-    Scans the given paths for PDF and HTML files that do not yet have
-    a complete metadata extraction, extracts metadata (title, description,
-    date, size) using pypdf or BeautifulSoup, and writes the extracted data
+    Scans the given paths for PDF, HTML, and Docling-supported document
+    formats that do not yet have a complete metadata extraction, extracts
+    metadata (title, description, date, size) using pypdf, BeautifulSoup, or
+    Docling, and writes the extracted data
     to the adjacent JSON metadata file.
 
     Files with ``extract.status="complete"`` are skipped unless ``--force``
@@ -1739,7 +1744,7 @@ def extract(
     _load_config(config_file)
     _logger.info("Starting extract command")
 
-    from focus_feed.services.extractors import HTMLExtractor, PDFExtractor
+    from focus_feed.services.extractors import DoclingExtractor, HTMLExtractor, PDFExtractor
 
     resolved_paths = _resolve_paths(paths)
     data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
@@ -1749,10 +1754,10 @@ def extract(
     )
 
     if not files:
-        click.echo("No PDF/HTML files need metadata extraction.")
+        click.echo("No PDF/HTML/Docling files need metadata extraction.")
         return
 
-    click.echo(f"Found {len(files)} PDF/HTML file(s) to extract metadata from.")
+    click.echo(f"Found {len(files)} PDF/HTML/Docling file(s) to extract metadata from.")
 
     if dry_run:
         _logger.warning("Dry-run mode active; no files will be modified")
@@ -1765,6 +1770,7 @@ def extract(
 
     pdf_extractor = PDFExtractor()
     html_extractor = HTMLExtractor()
+    docling_extractor = DoclingExtractor()
     success_count = 0
     error_count = 0
 
@@ -1777,6 +1783,8 @@ def extract(
                 extracted = pdf_extractor.extract(str(source_file))
             elif filetype == "html":
                 extracted = html_extractor.extract(str(source_file))
+            elif filetype in DOCLING_FILETYPES:
+                extracted = docling_extractor.extract(str(source_file))
             else:
                 click.echo(f"  WARNING: Unsupported file type '{filetype}'; skipping.")
                 error_count += 1
@@ -1789,10 +1797,16 @@ def extract(
             title = extracted.get("title") or source_file.stem
             if not title.strip():
                 title = source_file.stem
-            # Preserve existing title dict if present; otherwise use the
-            # extracted title as a plain string (will be finalized later).
-            if "title" not in metadata or not isinstance(metadata.get("title"), dict):
-                metadata["title"] = title
+            if isinstance(metadata.get("title"), dict):
+                metadata["title"]["filename"] = title
+                metadata["title"]["extracted"] = extracted.get("extracted")
+                metadata["title"].setdefault("generated", None)
+            else:
+                metadata["title"] = {
+                    "filename": title,
+                    "extracted": extracted.get("extracted"),
+                    "generated": None,
+                }
             # Initialize or update extract step map
             extract_step = metadata.get("extract") or {}
             extract_step["status"] = "in_progress"
@@ -1925,7 +1939,7 @@ def title(
 
             # Get filename and extracted title from the nested title metadata.
             filename_title = _clean_title(source_file.stem)
-            extracted_title = title.get("extracted") if isinstance(title, dict) else None
+            extracted = title.get("extracted") if isinstance(title, dict) else None
 
             # Initialize the generate_title step map before the LLM call.
             now = datetime.now(UTC)
@@ -1945,7 +1959,7 @@ def title(
             new_title, prompt_tokens, completion_tokens = summarizer.generate_title(
                 content,
                 filename=filename_title,
-                extracted_title=extracted_title,
+                extracted=extracted,
             )
             new_title = _clean_title(new_title) or new_title
 
@@ -1966,7 +1980,7 @@ def title(
             else:
                 title = {
                     "filename": filename_title,
-                    "extracted": extracted_title,
+                    "extracted": extracted,
                     "generated": new_title,
                 }
             metadata_dict["title"] = title
@@ -2033,20 +2047,18 @@ def _finalize_incomplete_json(
         all_files = _find_files_needing_json_generation(data_dir_path, force=force)
         files = []
         for f in all_files:
-            f_resolved = f.resolve()
-            for p in paths:
-                if str(f_resolved).startswith(str(p)) or f_resolved == p:
-                    files.append(f)
-                    break
+            if _is_path_within(f, paths):
+                files.append(f)
     else:
         files = _find_files_needing_json_generation(data_dir_path, force=force)
 
     if not files:
-        all_source_files = _find_source_files(data_dir_path, ("mp4", "pdf", "html"))
+        all_source_files = _find_source_files(data_dir_path, ("mp4", *DOCUMENT_FILETYPES))
         if not all_source_files:
             _logger.warning(
                 "No supported source files found in %s for JSON generation. "
-                "Expected .mp4, .pdf, or .html files.",
+                "Expected .mp4, .pdf, .html, .docx, .doc, .pptx, .ppt, "
+                ".xlsx, or .xls files.",
                 data_dir_path,
             )
         else:
@@ -2066,7 +2078,6 @@ def _finalize_incomplete_json(
             json_path = source_file.with_name(source_file.name + ".json")
             metadata = _get_json_metadata(json_path) or {}
             metadata.pop("filepath", None)
-            metadata.pop("extracted_title", None)
 
             # Skip files with errors — they should not be finalized.
             if metadata.get("error"):
@@ -2091,7 +2102,7 @@ def _finalize_incomplete_json(
             title.setdefault("extracted", None)
             title.setdefault("generated", None)
             filename_title = title.get("filename") or _clean_title(source_file.stem)
-            extracted_title = title.get("extracted")
+            extracted = title.get("extracted")
 
             # Generate title via LLM if not already present.
             title_generated_tokens: tuple[int, int] | None = None
@@ -2116,7 +2127,7 @@ def _finalize_incomplete_json(
                             generated, prompt_tokens, completion_tokens = summarizer.generate_title(
                                 content,
                                 filename=filename_title,
-                                extracted_title=extracted_title,
+                                extracted=extracted,
                             )
                             title_generated_tokens = (prompt_tokens, completion_tokens)
                             generated = _clean_title(generated) or generated
@@ -2136,7 +2147,7 @@ def _finalize_incomplete_json(
             summary = metadata.get("summary")
 
             # Generate summary via LLM for PDF/HTML if not already present.
-            if filetype in ("pdf", "html") and not summary:
+            if filetype in DOCUMENT_FILETYPES and not summary:
                 try:
                     content = _get_content_for_title(source_file, metadata)
                     if content and content.strip():
@@ -2204,7 +2215,7 @@ def _finalize_incomplete_json(
                         "input_tokens": prompt_tokens,
                         "output_tokens": completion_tokens,
                     }
-            elif filetype in ("pdf", "html"):
+            elif filetype in DOCUMENT_FILETYPES:
                 final_metadata["extract"] = {
                     "status": "complete",
                     "start_time": now_ts,
