@@ -29,10 +29,10 @@ This document provides a detailed, executable implementation plan for building `
   - Added content extraction for PDF/HTML files (not just metadata)
   - Added ffprobe integration for audio metadata
   - Added conditional feed generation: feeds only where feed.json exists AND applicable files present
-  - Added **root-level only** index.html generation for feed discovery
+  - Added `index.html` generation in every directory containing `feed.json`; each index lists XML feeds in its subtree
   - Added NO root feeds without feed.json requirement
   - **Updated:** av library moved from optional to required dependency (no version pinning)
-  - **Updated:** index.html is maintained ONLY at root level, not in subfolders
+  - **Updated:** `index.html` is maintained in every directory containing `feed.json`; the root index lists feeds from the whole tree
   - **Updated:** Nested feeds aggregate all subdirectory content (inner feeds are subsets of outer feeds)
   - **Clarified:** PDF/HTML files CAN be summarized without reflection.md
   - HTML/PDF files now get content extracted and included in feeds
@@ -137,11 +137,11 @@ Implement the foundational modules for configuration, file scanning, and metadat
 - **Actions:**
   - Create `Metadata` dataclass/model matching schema from design doc section 3.3
   - **NEW:** `title` field is now a dict with keys: `filename`, `extracted`, `generated` (can also be a plain string for backward compatibility)
-  - **NEW:** Add `extracted_title` field (string or None)
+  - **NEW:** Store the source-extracted title in `title.extracted` (string or None)
   - **NEW:** `date` field is float (millisecond precision UNIX epoch)
   - **NEW:** Add `duration` field (float, MP4 only, optional)
   - **NEW:** Add `creation_time` field (ISO-8601 string, MP4 only, optional)
-  - Include all fields: `title`, `extracted_title`, `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date`, `duration`, `creation_time`, `size`, `transcribe`, `summarize`, `extract`, `generate_title`, `feed_eligible`, `error`
+  - Include all fields: `title` (including `title.extracted`), `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date`, `duration`, `creation_time`, `size`, `transcribe`, `summarize`, `extract`, `generate_title`, `feed_eligible`, `error`
   - `transcribe`, `summarize`, `extract`, `generate_title` are step maps with fields: `status` (null | "in_progress" | "complete"), `start_time` (float, ms precision), `end_time` (float, ms precision), `input_size`, `output_size`, `words`, `model`, `input_tokens`, `output_tokens`
   - Add validation: `filetype` must be "mp4", "pdf", or "html"
   - Add validation: `error` field is optional
@@ -312,7 +312,7 @@ Implement the file processing pipeline including transcription, summarization, a
   - **NEW:** Extract plaintext content from all pages
   - **NEW:** Store extracted metadata in `description` field
   - **NEW:** Store extracted content in `content` field
-  - Set `summary` and `extracted_title` appropriately
+  - Set `summary` and `title.extracted` appropriately
   - Implement fallback to filename if no title found
   - Track processing in extract step map with timing (millisecond precision) and metrics
   - **NEW:** Remove control characters that are invalid in XML from extracted content
@@ -335,7 +335,7 @@ Implement the file processing pipeline including transcription, summarization, a
 - **Actions:**
   - Implement `HTMLExtractor` class
   - Extract title from `<title>` tag using BeautifulSoup
-  - **NEW:** Store extracted title in `extracted_title` field (not used as actual title)
+  - **NEW:** Store the extracted title in `title.extracted` (used as the source-extracted title)
   - Extract other metadata if available (description meta tags, date, etc.)
   - **NEW:** Extract plaintext content from HTML body (tags removed)
   - Store extracted metadata in `description` field
@@ -449,8 +449,8 @@ Implement RSS feed generation for podcast and articles feeds with new features.
      - Description from `summary` field (LLM-generated key takeaways)
     - **NEW:** Convert markdown in summary to HTML
      - Link: absolute URL to source file
-     - Enclosure with URL, type="audio/mp4", length (file size from `size` field)
-     - Publication date from metadata `date` field (UNIX epoch to datetime)
+      - Enclosure with URL, type="audio/mp4", length (file size from `size` field)
+      - Feed item `pubDate` from `summarize.end_time` (UNIX epoch to datetime)
      - GUID based on filepath
   - Write feed to `base_dir/podcast.xml` (or custom output_dir)
   - **NEW:** Support per-folder feed generation when output_dir is subfolder
@@ -478,8 +478,8 @@ Implement RSS feed generation for podcast and articles feeds with new features.
      - Title from metadata title dict's final title computation
      - **NEW:** Description from `content` field (if available), otherwise `description` field
     - **NEW:** Convert markdown in content/description to HTML
-     - Link: absolute URL to source file
-     - Publication date from metadata `date` field (UNIX epoch to datetime)
+      - Link: absolute URL to source file
+      - Feed item `pubDate` from `summarize.end_time` (UNIX epoch to datetime)
      - GUID based on filepath
   - Write feed to `base_dir/articles.xml` (or custom output_dir)
   - **NEW:** Support per-folder feed generation when output_dir is subfolder
@@ -571,22 +571,22 @@ Implement RSS feed generation for podcast and articles feeds with new features.
   - Errors in one feed don't prevent others from being generated
   - Feed generation list available for index.html
 
-- [x] T4.7: Implement Root-Level Index.html Generation (NEW)
-- **Description:** Create root-level index.html generator for feed discovery
+- [x] T4.7: Implement Per-Directory Index.html Generation (NEW)
+- **Description:** Create an index.html in every directory containing feed.json for feed discovery
 - **File:** `src/focus_feed/feeds.py`
 - **Actions:**
   - Implement index.html generation in FeedGenerator
   - Scan for feed.json files recursively
-  - Generate single root-level index.html with all available feeds
-  - List all podcast.xml and articles.xml feeds from all folders
+  - Generate an index.html in every directory containing feed.json
+  - List XML feeds in that directory's subtree; the root index lists feeds from the whole tree
   - Include feed titles and descriptions from feed.json
   - Use simple, clean HTML
   - Handle errors gracefully
 - **Dependencies:**
   - T4.6 (Feed generation)
 - **Completion Criteria:**
-  - Root-level index.html generated when any feeds exist
-  - Lists all available feeds from all folders
+  - An index.html is generated for every directory containing feed.json
+  - Each index lists XML feeds from its subtree; the root index lists all feeds from the tree
   - Includes feed titles and descriptions from feed.json
   - Simple HTML that works with any browser
 
@@ -622,7 +622,7 @@ Implement command-line interface for all processing modes.
     - Orchestrate: Scanner => Producer => Feed Generator
   - Process all files without JSON metadata or with incomplete step maps
   - Generate both feeds (root-level and per-folder) after all files are processed, based on feed.json configuration
-  - Generate root-level index.html after feed generation
+  - Generate or update index.html in every directory containing feed.json after feed generation
   - Output progress and summary
   - Exit with appropriate code (0 for success, 1 for errors)
 - **Dependencies:**
@@ -633,7 +633,7 @@ Implement command-line interface for all processing modes.
 - **Completion Criteria:**
   - Command processes all files in batch
   - Both root-level and per-folder feeds generated (where feed.json exists and files present)
-  - Root-level index.html generated
+  - Per-directory index.html files generated where feed.json exists; root index lists the whole tree
   - Progress is shown during processing
   - Exit code reflects success/failure
 
@@ -677,7 +677,7 @@ Implement command-line interface for all processing modes.
   - Skip file processing
   - Read all existing JSON metadata files
   - Generate both root-level and per-folder feeds (only where feed.json exists and applicable files present)
-  - Generate root-level index.html
+  - Generate or update index.html in every directory containing feed.json
   - Finalize JSON metadata by computing feed eligibility from step maps
   - Output summary of feeds generated (counts for podcast and articles)
 - **Dependencies:**
@@ -687,7 +687,7 @@ Implement command-line interface for all processing modes.
   - Command generates both root-level and per-folder feeds without processing files (where applicable)
   - Existing JSON metadata is used
   - Feed eligibility computed from step map statuses
-  - Root-level index.html generated
+  - Per-directory index.html files generated where feed.json exists; root index lists the whole tree
   - Summary shows items in each feed
 
 - [x] T5.5: Implement Validate Command
@@ -763,7 +763,7 @@ Enhance and test the incremental processing mode with robust file watching.
   - Process all files without JSON metadata on startup
   - Finalize JSON metadata by computing feed eligibility from step maps
   - Generate both root-level and per-folder feeds after initial scan (where feed.json exists and files present)
-  - Generate root-level index.html after initial scan
+  - Generate or update index.html in every directory containing feed.json after initial scan
   - Track processed files to avoid re-processing on first event
 - **Dependencies:**
   - T2.3 (Scanner)
@@ -772,7 +772,7 @@ Enhance and test the incremental processing mode with robust file watching.
 - **Completion Criteria:**
   - Initial scan processes all unprocessed files
   - Both root-level and per-folder feeds generated after initial scan (where applicable)
-  - Root-level index.html generated
+  - Per-directory index.html files generated where feed.json exists; root index lists the whole tree
   - No duplicate processing on startup
   - Feed eligibility computed from step maps
 
@@ -1039,7 +1039,7 @@ Add support for remote OpenAI-compatible transcription API as an alternative to 
 ## Phase 9: New Features Implementation
 
 ### Objective
-Implement all new features: title dict, millisecond timestamps, per-folder feeds, reflection support, markdown conversion, module prefixing, content extraction, conditional feed generation, root-level index page, comprehensive event logging.
+Implement all new features: title dict, millisecond timestamps, per-folder feeds, reflection support, markdown conversion, module prefixing, content extraction, conditional feed generation, per-directory index pages, comprehensive event logging.
 
 ### Tasks
 
@@ -1221,17 +1221,20 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
   - articles.xml only generated if PDF/HTML files present
   - Root-level feeds require feed.json in root
 
-- [x] T9.12: Implement Index.html Generation (NEW)
-- **Description:** Generate root-level index.html page
+- [x] T9.12: Implement Per-Directory Index.html Generation (NEW)
+- **Description:** Generate an index.html in every directory containing feed.json
 - **Files:** `feeds.py`
 - **Actions:**
   - Implement index.html generation in feeds.py (no separate index.py module needed)
   - Scan for feed.json files
-  - Generate single root-level index.html with all feed links
+  - Generate an index.html in every directory containing feed.json
+  - Each index lists XML feeds in its own subtree, with the root index covering the whole tree
+  - Remove stale index.html files when the corresponding feed.json no longer exists
   - Call from feed generation workflow
 - **Completion Criteria:**
-  - Root-level index.html generated listing all feeds
-  - Lists all available feeds from all folders
+  - Each directory containing feed.json has an index.html listing XML feeds in its subtree
+  - The root index lists feeds from the whole tree
+  - Stale index.html files are removed when their feed.json is gone
   - Simple HTML works with any browser
 
 - [x] T9.13: Update Summarize Command for PDF/HTML (NEW)
@@ -1354,7 +1357,7 @@ The following tasks can be worked on concurrently:
 3. **Step maps**: Processing tracked via `transcribe`, `summarize`, `extract`, `generate_title` objects (not unified `status` dict)
 4. **Description behavior**: MP4 files have blank `description`, PDF/HTML have extracted metadata in `description`
 5. **Summary behavior**: MP4 files have key takeaways in `summary`, PDF/HTML have null `summary` (unless explicitly summarized via summarize command)
-6. **extracted_title field**: NEW - stores source metadata title separately
+6. **Extracted title**: Stored in `title.extracted` within the title dict
 7. **New fields**: `duration` (float, MP4 only), `creation_time` (ISO-8601, MP4 only)
 8. **Millisecond precision**: All date/timestamp fields use float with 3 decimal places
 9. **Backwards compatibility**: Warn and ignore deprecated fields
@@ -1367,7 +1370,7 @@ The following tasks can be worked on concurrently:
 4. **Markdown conversion**: Automatic for feed descriptions with XSS protection
 5. **Content extraction**: PDF/HTML files have content extracted to content field
 6. **Conditional feed generation**: Feeds only generated where feed.json exists AND applicable files present
-7. **Index.html generation**: Auto-generated **only at root level**, lists all feeds from all folders
+7. **Index.html generation**: Auto-generated in every directory containing `feed.json`; each index lists XML feeds in its subtree, and the root index lists the whole tree
 8. **No root feeds without feed.json**: Root-level feeds require explicit feed.json configuration
 9. **Nested feed aggregation**: Each feed includes all content from its entire subtree (inner feeds are subsets of outer feeds)
 10. **summarize command**: Works with MP4 (transcripts), PDF (extracted content), and HTML (extracted content) - **without requiring reflection.md**
@@ -1396,17 +1399,17 @@ Add review tasks to ensure all clarifications and updates are properly implement
 
 ### Tasks
 
-- [x] T10.1: Review index.html Root-Level Only Implementation
-- **Description:** Verify index.html is generated ONLY at root level, not in subfolders
+- [x] T10.1: Review Per-Directory index.html Generation
+- **Description:** Verify an index.html is generated in every directory containing feed.json
 - **Actions:**
-  - Check that index.html generation code only writes to root data directory
-  - Verify no index.html files are created in subfolders with feed.json
-  - Ensure root-level index.html lists feeds from all folders (including nested)
-  - Update any code that might generate per-folder index.html files
+  - Check that index.html generation writes to every directory containing feed.json
+  - Verify each directory's index lists XML feeds in its own subtree
+  - Ensure root-level index.html lists feeds from the whole tree
+  - Remove stale index.html files when the corresponding feed.json no longer exists
 - **Verification:**
-  - Run `feeds` command and confirm only root-level index.html exists
-  - Check that subfolders with feed.json do NOT get index.html files
-  - Verify root index.html contains links to all feeds from all folders
+  - Run `feeds` and confirm each directory with feed.json has an index.html
+  - Check that every index lists XML feeds from its own subtree
+  - Verify root index.html contains links to feeds from the whole tree
 - **Dependencies:**
   - T4.7 (Index generation)
 
@@ -1492,7 +1495,7 @@ Add review tasks to ensure all clarifications and updates are properly implement
 - [x] create-feed command generates template feed.json files
 - [x] Watch mode processes files incrementally
 - [x] Feeds are regenerated after each file processing
-- [x] Root-level index.html is regenerated after each file processing
+- [x] Per-directory index.html files are regenerated after processing; the root index lists the whole tree
 - [x] Special characters handled correctly (warnings only, no modification)
 - [x] Orphaned JSON files detected and logged
 - [x] All environment variables from design doc are supported
@@ -1540,7 +1543,7 @@ Smart extraction optimization: compatible audio streams are copied without re-en
 10. ✅ Audio metadata extraction via ffprobe
 11. ✅ Optional dependencies: faster-whisper (local transcription), Required dependencies: av (audio metadata), markdown (markdown to HTML conversion)
 12. ✅ Conditional feed generation (feeds only where feed.json exists AND applicable files present)
-13. ✅ Root-level index.html generation for feed discovery
+13. ✅ Per-directory index.html generation for feed discovery; the root index lists feeds from the whole tree
 14. ✅ NO root feeds without feed.json
 15. ✅ podcast.xml only if MP4 files present
 16. ✅ articles.xml only if PDF/HTML files present
@@ -1570,7 +1573,7 @@ Smart extraction optimization: compatible audio streams are copied without re-en
 - Module name prefixing is automatic and intelligent (doesn't double-prefix)
 - Audio metadata extraction via ffprobe and `av` library (now required dependency) with graceful fallback
 - Conditional feed generation: feeds only generated where feed.json exists AND applicable file types present
-- **Root-level only** index.html auto-generated listing all feeds for easy feed discovery
+- `index.html` is auto-generated in every directory containing `feed.json`; each lists XML feeds in its subtree and the root lists the whole tree
 - Root-level feeds require explicit feed.json configuration
 - Nested feeds: each feed aggregates all content from its entire subtree (inner feeds are subsets of outer feeds)
 - summarize command works with MP4 transcripts, PDF/HTML extracted content WITHOUT requiring reflection.md

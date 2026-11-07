@@ -108,7 +108,7 @@ Target specific steps or files:
 
 - `transcribe` - Transcribe audio files to markdown (remote-only)
 - `summarize` - Generate summaries from transcripts or document content
-- `extract` - Extract metadata from PDF/HTML files
+- `extract` - Extract metadata from PDF/HTML and Docling-supported document formats
 - `title` - Generate titles for files that lack proper titles
 - `feeds` - Generate RSS feeds and index.html
 - `validate` - Validate all metadata files
@@ -118,7 +118,7 @@ Target specific steps or files:
 ### Common Flags
 
 - `--force` - Force re-processing even if complete or unchanged
-- `--dry-run` - Preview without making changes (transcribe, summarize, extract)
+- `--dry-run` - Preview without making changes (transcribe, summarize, extract, title)
 - `--config-file <path>` - Use custom `.env` file
 
 ### Examples

@@ -85,7 +85,7 @@ See proposal.md for problem, intent and scope.
 ### Documents
 - Extract metadata + content from PDF/HTML.
 - Summarization via explicit `summarize` command (required for feed eligibility).
-- Use `publication_date` for feed pubDate if present.
+- Feed item `pubDate` MUST come from the `summarize` step's `end_time`. The summarization-attribution helper may fall back to metadata `date` or `publication_date`; that fallback does not determine `pubDate`.
 
 ### Reflection
 - Check for `reflection.md` in source folder. Prepend its content to summarization prompt.
@@ -97,7 +97,7 @@ See proposal.md for problem, intent and scope.
 - Sort by folder then filename. Markdown→HTML with XSS protection.
 - Conditional generation: only if feed.json exists and eligible files present.
 - Nested feeds: each feed includes all content from its entire subtree (inner feeds are subsets of outer feeds).
-- Root `index.html` lists all feeds. Root feeds require feed.json in data root.
+- Generate `index.html` in every directory containing a `feed.json`; each index lists XML feeds in its own subtree, and the root index lists feeds from the whole tree. Remove stale `index.html` files when their corresponding `feed.json` is gone. Root feeds require `feed.json` in the data root.
 - Ensure hash present before feed generation.
 
 ### CLI

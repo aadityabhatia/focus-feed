@@ -10,7 +10,7 @@ Standalone app that processes supported audio/video media, PDF, and HTML files a
 - Idempotent, skips completed files
 - Mobile-ready RSS feeds
 - Per-folder feeds via `feed.json`
-- Auto root `index.html` discovery
+- Auto `index.html` discovery in every directory with `feed.json`
 
 ## 2. Architecture
 
@@ -21,8 +21,8 @@ Standalone app that processes supported audio/video media, PDF, and HTML files a
   - **Audio Extractor (`services/audio_extractor.py`):** Passes supported audio inputs through unchanged; extracts audio from MKV, MOV, AVI, and WMV to a temporary transcription-compatible file. Uses stream copy where compatible and FLAC conversion as fallback.
   - Summarization Service: LLM key takeaways from transcript/extracted text, with reflection.md injection
   - Extraction Service: PDF/HTML metadata+plaintext via `pypdf`/`beautifulsoup4`; media metadata via `av` (PyAV); hashing (SHA256) computed during first extraction
-- **Feed Generator (`feedgen`):** Aggregates eligible metadata per feed.json, builds RSS items with enclosure links, pubDate logic, and GUIDs; writes podcast.xml / articles.xml
-- **Index Generator:** Builds root index.html with links/titles/descriptions from all feed.json configs
+- **Feed Generator (`feedgen`):** Aggregates eligible metadata per feed.json, builds RSS items with enclosure links, `pubDate` from `summarize.end_time`, and GUIDs; writes podcast.xml / articles.xml
+- **Index Generator:** Builds an `index.html` in every directory with `feed.json`; each lists XML feeds in its subtree, and the root index lists feeds from the whole tree
 - **CLI (`click`) + Config (`pydantic-settings` + `.env`)**
 
 **Data Flow**
@@ -34,7 +34,7 @@ Standalone app that processes supported audio/video media, PDF, and HTML files a
    - PDF/HTML: extract metadata & plaintext → sanitize control chars → compute SHA256 hash → store description/content/mtime → generate_title via LLM → build title dict → apply folder prefix
 4. Write/update JSON with step maps, hash, timestamps, mtime
 5. Feed Generator scans for feed.json, collects feed-eligible items from subtree, sorts by folder/filename, converts markdown→HTML with XSS protection, writes podcast.xml / articles.xml
-6. Index Generator updates root index.html with all feeds
+6. Index Generator updates an `index.html` in every directory with `feed.json`; the root index lists all feeds and each nested index lists feeds in its subtree
 
 ## 3. Interfaces & Contracts
 

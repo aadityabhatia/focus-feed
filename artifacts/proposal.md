@@ -44,7 +44,7 @@ Education files (PDF, HTML, MP4) in `data/` are disconnected. Users cannot consu
 Make content accessible via private RSS feeds hosted on an existing internal web server:
 - Podcast feed for Antennapod and podcast apps
 - Articles feed for RSS readers
-Per-folder feeds via `feed.json`, with auto-generated root `index.html` for discovery.
+Per-folder feeds via `feed.json`, with an auto-generated `index.html` in every directory containing `feed.json`. Each index lists XML feeds in its subtree, and the root index lists feeds from the whole tree.
 
 ## Scope
 
@@ -76,4 +76,4 @@ Per-folder feeds via `feed.json`, with auto-generated root `index.html` for disc
 - Incremental skips completed files unless mtime changed
 - Warnings for orphaned JSONs and special characters
 - Millisecond-precision timestamps, feed eligibility from step statuses
-- Root `index.html` lists all feeds
+- An `index.html` is generated in every directory containing `feed.json`; each lists XML feeds in its subtree, and the root index lists all feeds in the tree
