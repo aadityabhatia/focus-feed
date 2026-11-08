@@ -28,6 +28,7 @@ import html
 import json
 import logging
 import os
+from collections.abc import Iterable
 from pathlib import Path
 import re
 from typing import Any
@@ -38,7 +39,7 @@ import markdown as _md
 
 from focus_feed.config import get_config
 from focus_feed.errors import log_error
-from focus_feed.metadata import Metadata
+from focus_feed.metadata import Metadata, write_metadata_json
 from focus_feed.producer import DOCLING_FILETYPES
 from focus_feed.scanner import SUPPORTED_EXTENSIONS
 
@@ -453,12 +454,16 @@ class FeedGenerator:
     Attributes:
         data_dir: Absolute path to the data directory.
         base_url: Base URL used to construct absolute enclosure/source URLs.
+        persist_hashes: Whether computed source hashes are saved to metadata.
+        _eligible_paths: Optional allow-list of source paths to discover.
     """
 
     def __init__(
         self,
         data_dir: str | Path,
         base_url: str | None = None,
+        eligible_paths: Iterable[Path] | None = None,
+        persist_hashes: bool = True,
     ) -> None:
         """Initialize the feed generator.
 
@@ -468,6 +473,9 @@ class FeedGenerator:
             base_url: Base URL for constructing absolute URLs. When ``None``,
                 the value is loaded from the application configuration
                 (``base_url``).
+            eligible_paths: Optional allow-list of source file paths to
+                include in feed discovery.
+            persist_hashes: Whether to save computed hashes to metadata files.
         """
         if base_url is None:
             config = get_config()
@@ -476,6 +484,12 @@ class FeedGenerator:
         self.data_dir: Path = Path(data_dir).resolve()
         self.base_url: str = base_url.rstrip("/")
         self.data_dir_basename: str = self.data_dir.name
+        self.persist_hashes: bool = persist_hashes
+        self._eligible_paths: frozenset[Path] | None = (
+            None
+            if eligible_paths is None
+            else frozenset(Path(path).resolve() for path in eligible_paths)
+        )
 
         if not self.data_dir.exists():
             _logger.critical("Data directory does not exist: %s", self.data_dir)
@@ -547,6 +561,16 @@ class FeedGenerator:
                         "Failed to parse metadata file %s: %s",
                         json_path,
                         exc,
+                    )
+                    continue
+
+                if (
+                    self._eligible_paths is not None
+                    and source_path.resolve() not in self._eligible_paths
+                ):
+                    _logger.debug(
+                        "Skipping metadata outside eligible paths: %s",
+                        json_path,
                     )
                     continue
 
@@ -622,7 +646,7 @@ class FeedGenerator:
         return self._absolute_url(metadata.source_filepath)
 
     def _ensure_hashes(self, metadata_items: list[Metadata]) -> None:
-        """Compute and persist missing source hashes before feed generation."""
+        """Compute missing source hashes, optionally persisting them to metadata."""
         for metadata in metadata_items:
             if metadata.hash:
                 continue
@@ -635,17 +659,22 @@ class FeedGenerator:
                         digest.update(chunk)
                 metadata.hash = digest.hexdigest()
 
+                if not self.persist_hashes:
+                    continue
+
                 metadata_path = source_path.with_name(source_path.name + ".json")
                 stored_metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
                 if isinstance(stored_metadata, dict):
                     stored_metadata["hash"] = metadata.hash
-                    tmp_path = metadata_path.with_suffix(metadata_path.suffix + ".tmp")
-                    tmp_path.write_text(
-                        json.dumps(stored_metadata, indent=2),
-                        encoding="utf-8",
-                    )
-                    tmp_path.replace(metadata_path)
-            except (OSError, json.JSONDecodeError) as exc:
+                    stored_title = stored_metadata.get("title")
+                    if isinstance(stored_title, str):
+                        stored_metadata["title"] = {
+                            "filename": stored_title,
+                            "extracted": None,
+                            "generated": None,
+                        }
+                    write_metadata_json(stored_metadata, source_path)
+            except (OSError, UnicodeDecodeError, json.JSONDecodeError) as exc:
                 _logger.warning("Failed to compute or store hash for %s: %s", source_path, exc)
 
     def _feed_rel_path(self, output_dir: Path, feed_filename: str) -> str:

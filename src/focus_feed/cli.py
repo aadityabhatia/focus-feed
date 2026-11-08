@@ -23,7 +23,6 @@ Files and directories are passed as positional arguments, e.g.::
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
 import json
 import logging
 import os
@@ -40,7 +39,7 @@ from watchdog.events import FileSystemEventHandler
 from focus_feed.config import reload_config
 from focus_feed.errors import log_error
 from focus_feed.feeds import _is_orphaned_json
-from focus_feed.metadata import Metadata, StepMap
+from focus_feed.metadata import Metadata, StepMap, now_timestamp, write_metadata_json
 from focus_feed.producer import (
     DOCLING_FILETYPES,
     DOCUMENT_FILETYPES,
@@ -308,7 +307,7 @@ def _generate_feeds(data_dir_path: Path) -> dict[str, int]:
         try:
             metadata = Metadata.from_json_file(json_path)
             if metadata.feed_eligible:
-                if metadata.filetype == "mp4":
+                if metadata.filetype in MEDIA_FILETYPES:
                     podcast_count += 1
                 elif metadata.filetype in DOCUMENT_FILETYPES:
                     article_count += 1
@@ -391,17 +390,7 @@ def _write_json_metadata(data: dict[str, Any], source_path: Path) -> None:
     directory as the source file.  Writes go to a temporary file first, then
     are renamed to the final path to avoid corruption from partial writes.
     """
-    json_path = source_path.with_name(source_path.name + ".json")
-    data.pop("filepath", None)
-    data["mtime"] = source_path.stat().st_mtime
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
-    try:
-        tmp_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-        tmp_path.replace(json_path)
-    except OSError as exc:
-        log_error(exc, filepath=str(json_path), stage="metadata_write")
-        raise
+    write_metadata_json(data, source_path)
 
 
 def _find_files_needing_transcription(
@@ -513,7 +502,7 @@ def _find_files_needing_json_generation(data_dir: Path, force: bool = False) -> 
     When *force* is ``True``, all source files are returned regardless
     of their current step statuses.
     """
-    source_files = _find_source_files(data_dir, ("mp4", *DOCUMENT_FILETYPES))
+    source_files = _find_source_files(data_dir, tuple(MEDIA_FILETYPES | DOCUMENT_FILETYPES))
     needs: list[Path] = []
     for source_file in source_files:
         json_path = source_file.with_name(source_file.name + ".json")
@@ -748,7 +737,7 @@ def _cleanup_json_file(json_path: Path) -> tuple[int, list[str]]:
 
     # Rewrite the file with cleaned data.
     try:
-        json_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+        write_metadata_json(data, source_path)
     except OSError as exc:
         log_error(exc, filepath=str(json_path), stage="metadata_write")
         raise
@@ -1314,6 +1303,43 @@ def watch(
 # ---------------------------------------------------------------------------
 
 
+def _find_feed_eligible_sources(
+    data_dir_path: Path,
+    paths: list[Path] | None = None,
+) -> list[Path]:
+    """Find source files whose JSON sidecar exists, parses, and has a summary.
+
+    Prints a note and skips items that have no JSON sidecar, an
+    unparseable sidecar, or a sidecar without a non-empty summary.
+
+    Args:
+        data_dir_path: Absolute path to the data directory.
+        paths: Optional list of resolved paths to limit the scan to.
+
+    Returns:
+        A list of absolute source file paths eligible for feed generation.
+    """
+    eligible: list[Path] = []
+    for source_file in _find_source_files(data_dir_path, ("mp4", *DOCUMENT_FILETYPES)):
+        if paths is not None and not _is_path_within(source_file, paths):
+            continue
+        relative = os.path.relpath(source_file, Path.cwd())
+        json_path = source_file.with_name(source_file.name + ".json")
+        if not json_path.exists():
+            click.echo(f"Skipping {relative}: no JSON metadata sidecar found.")
+            continue
+        metadata = _get_json_metadata(json_path)
+        if metadata is None or not isinstance(metadata, dict):
+            click.echo(f"Skipping {relative}: JSON metadata could not be parsed.")
+            continue
+        summary = metadata.get("summary")
+        if not isinstance(summary, str) or not summary.strip():
+            click.echo(f"Skipping {relative}: no summary in JSON metadata.")
+            continue
+        eligible.append(source_file)
+    return eligible
+
+
 @app.command("feeds")
 @_config_file_option
 @_force_option
@@ -1323,16 +1349,11 @@ def feeds(
     force: bool,
     paths: tuple[str, ...],
 ) -> None:
-    """Generate RSS feeds from existing JSON metadata.
+    """Generate RSS feeds from existing, summarized JSON metadata.
 
-    Before generating feeds, finalizes any incomplete JSON metadata files
-    (i.e., files with step statuses that are not yet ``"complete"``) by
-    filling in missing required fields, setting applicable step statuses
-    to ``"complete"``, and adding timestamps. This makes files
-    feed-eligible so they appear in the generated feeds.
-
-    When ``--force`` is specified, all files are processed even if already
-    feed-eligible.
+    This command treats JSON sidecars as read-only. Source files without a
+    parseable sidecar or non-empty summary are noted and skipped. The
+    ``--force`` option is retained for compatibility and has no effect.
 
     At least one file or directory path is required.
     """
@@ -1342,8 +1363,7 @@ def feeds(
     resolved_paths = _resolve_paths(paths)
     data_dir_path = _resolve_data_dir_from_paths(resolved_paths)
 
-    # Finalize incomplete JSON metadata before generating feeds.
-    _finalize_incomplete_json(data_dir_path, paths=resolved_paths, force=force)
+    eligible_sources = _find_feed_eligible_sources(data_dir_path, paths=resolved_paths)
 
     # Warn if no feed.json is found anywhere in the data directory.
     feed_json_files = list(data_dir_path.glob("**/feed.json"))
@@ -1352,23 +1372,28 @@ def feeds(
 
     from focus_feed.feeds import FeedGenerator
 
-    generator = FeedGenerator(data_dir=str(data_dir_path))
+    generator = FeedGenerator(
+        data_dir=str(data_dir_path),
+        eligible_paths=eligible_sources,
+        persist_hashes=False,
+    )
 
     generator.generate_all_feeds()
 
     # Count items for the summary.
     podcast_count = 0
     article_count = 0
-    for json_path in _find_json_files(data_dir_path):
+    for source_file in eligible_sources:
+        json_path = source_file.with_name(source_file.name + ".json")
         try:
             metadata = Metadata.from_json_file(json_path)
-            if metadata.feed_eligible:
-                if metadata.filetype == "mp4":
-                    podcast_count += 1
-                elif metadata.filetype in DOCUMENT_FILETYPES:
-                    article_count += 1
         except Exception:
-            pass
+            continue
+        if metadata.feed_eligible:
+            if metadata.filetype in MEDIA_FILETYPES:
+                podcast_count += 1
+            elif metadata.filetype in DOCUMENT_FILETYPES:
+                article_count += 1
 
     click.echo("Feeds generated successfully.")
     click.echo(f"  Podcast feed: {podcast_count} item(s)")
@@ -1538,15 +1563,15 @@ def transcribe(
     for i, source_file in enumerate(files, 1):
         relative_path = os.path.relpath(source_file, Path.cwd())
         click.echo(f"[{i}/{len(files)}] Transcribing {relative_path}...")
+        metadata: Any = None
         try:
             # Set transcribe step to in_progress and write before transcription begins.
             json_path = source_file.with_name(source_file.name + ".json")
             metadata = _get_json_metadata(json_path) or {}
-            now = datetime.now(UTC)
             # Initialize or update transcribe step map
             transcribe_step = metadata.get("transcribe") or {}
             transcribe_step["status"] = "in_progress"
-            transcribe_step["start_time"] = int(now.timestamp())
+            transcribe_step["start_time"] = now_timestamp()
             transcribe_step["input_size"] = source_file.stat().st_size
             metadata["transcribe"] = transcribe_step
             metadata.update(
@@ -1562,7 +1587,7 @@ def transcribe(
 
             # Update transcribe step to complete after successful transcription.
             transcribe_step["status"] = "complete"
-            transcribe_step["end_time"] = int(now.timestamp())
+            transcribe_step["end_time"] = now_timestamp()
             transcribe_step["output_size"] = len(transcript.encode("utf-8")) if transcript else 0
             transcribe_step["words"] = len(transcript.split()) if transcript else 0
             transcribe_step["model"] = config.transcription_remote_model or "remote"
@@ -1575,6 +1600,15 @@ def transcribe(
             click.echo(f"  Transcribed {word_count} words.")
         except Exception as exc:
             error_count += 1
+            if isinstance(metadata, dict):
+                step = metadata.setdefault("transcribe", {})
+                if not isinstance(step, dict):
+                    step = {}
+                    metadata["transcribe"] = step
+                step["status"] = None
+                step["error"] = str(exc)
+                step["output_size"] = 0
+                _write_json_metadata(metadata, source_file)
             log_error(exc, filepath=str(relative_path), stage="transcription")
 
     click.echo(f"\nTranscription complete: {success_count} succeeded, {error_count} failed.")
@@ -1647,6 +1681,7 @@ def summarize(
         relative_path = os.path.relpath(source_file, Path.cwd())
         click.echo(f"[{i}/{len(files)}] Summarizing {relative_path}...")
         reflection_questions = None
+        metadata: Any = None
         try:
             json_path = source_file.with_name(source_file.name + ".json")
             metadata = _get_json_metadata(json_path)
@@ -1662,11 +1697,10 @@ def summarize(
                 continue
 
             # Set summarize step to in_progress and write before summarization begins.
-            now = datetime.now(UTC)
             config = get_config()
             summarize_step = metadata.get("summarize") or {}
             summarize_step["status"] = "in_progress"
-            summarize_step["start_time"] = int(now.timestamp())
+            summarize_step["start_time"] = now_timestamp()
             summarize_step["input_size"] = len(content.encode("utf-8")) if content else 0
             metadata["summarize"] = summarize_step
             _write_json_metadata(metadata, source_file)
@@ -1682,7 +1716,7 @@ def summarize(
 
             # Update summarize step to complete after successful summarization.
             summarize_step["status"] = "complete"
-            summarize_step["end_time"] = int(now.timestamp())
+            summarize_step["end_time"] = now_timestamp()
             summarize_step["output_size"] = len(summary.encode("utf-8")) if summary else 0
             summarize_step["words"] = len(summary.split()) if summary else 0
             summarize_step["model"] = config.llm_model
@@ -1702,6 +1736,15 @@ def summarize(
             click.echo(f"  Summarized {word_count} words.")
         except Exception as exc:
             error_count += 1
+            if isinstance(metadata, dict):
+                step = metadata.setdefault("summarize", {})
+                if not isinstance(step, dict):
+                    step = {}
+                    metadata["summarize"] = step
+                step["status"] = None
+                step["error"] = str(exc)
+                step["output_size"] = 0
+                _write_json_metadata(metadata, source_file)
             log_error(exc, filepath=str(relative_path), stage="summarization")
 
     click.echo(f"\nSummarization complete: {success_count} succeeded, {error_count} failed.")
@@ -1777,7 +1820,10 @@ def extract(
     for i, source_file in enumerate(files, 1):
         relative_path = os.path.relpath(source_file, Path.cwd())
         click.echo(f"[{i}/{len(files)}] Extracting metadata from {relative_path}...")
+        metadata: Any = None
         try:
+            json_path = source_file.with_name(source_file.name + ".json")
+            metadata = _get_json_metadata(json_path) or {}
             filetype = source_file.suffix.lower().lstrip(".")
             if filetype == "pdf":
                 extracted = pdf_extractor.extract(str(source_file))
@@ -1791,9 +1837,6 @@ def extract(
                 continue
 
             # Set extract step to in_progress and write before extraction completes.
-            json_path = source_file.with_name(source_file.name + ".json")
-            metadata = _get_json_metadata(json_path) or {}
-            now = datetime.now(UTC)
             title = extracted.get("title") or source_file.stem
             if not title.strip():
                 title = source_file.stem
@@ -1810,7 +1853,7 @@ def extract(
             # Initialize or update extract step map
             extract_step = metadata.get("extract") or {}
             extract_step["status"] = "in_progress"
-            extract_step["start_time"] = int(now.timestamp())
+            extract_step["start_time"] = now_timestamp()
             extract_step["input_size"] = source_file.stat().st_size
             metadata["extract"] = extract_step
             metadata.update(
@@ -1828,7 +1871,7 @@ def extract(
 
             # Update extract step to complete after successful extraction.
             extract_step["status"] = "complete"
-            extract_step["end_time"] = int(now.timestamp())
+            extract_step["end_time"] = now_timestamp()
             content = extracted.get("content")
             extract_step["output_size"] = len(content.encode("utf-8")) if content else 0
             extract_step["words"] = len(content.split()) if content else 0
@@ -1840,6 +1883,15 @@ def extract(
             click.echo(f"  Title: {title}")
         except Exception as exc:
             error_count += 1
+            if isinstance(metadata, dict):
+                step = metadata.setdefault("extract", {})
+                if not isinstance(step, dict):
+                    step = {}
+                    metadata["extract"] = step
+                step["status"] = None
+                step["error"] = str(exc)
+                step["output_size"] = 0
+                _write_json_metadata(metadata, source_file)
             log_error(exc, filepath=str(relative_path), stage="metadata_extraction")
 
     click.echo(f"\nMetadata extraction complete: {success_count} succeeded, {error_count} failed.")
@@ -1910,6 +1962,7 @@ def title(
     for i, source_file in enumerate(files, 1):
         relative_path = os.path.relpath(source_file, Path.cwd())
         click.echo(f"[{i}/{len(files)}] Generating title for {relative_path}...")
+        metadata_dict: Any = {}
         try:
             json_path = source_file.with_name(source_file.name + ".json")
             if not json_path.exists():
@@ -1942,11 +1995,10 @@ def title(
             extracted = title.get("extracted") if isinstance(title, dict) else None
 
             # Initialize the generate_title step map before the LLM call.
-            now = datetime.now(UTC)
             config = get_config()
             generate_title_step = metadata_dict.get("generate_title") or {}
             generate_title_step["status"] = "in_progress"
-            generate_title_step["start_time"] = int(now.timestamp() * 1000) / 1000.0
+            generate_title_step["start_time"] = now_timestamp()
             generate_title_step["input_size"] = len(content.encode("utf-8")) if content else 0
             generate_title_step["output_size"] = 0
             generate_title_step["words"] = 0
@@ -1964,9 +2016,8 @@ def title(
             new_title = _clean_title(new_title) or new_title
 
             # Update the generate_title step map with completion info.
-            generate_title_end = datetime.now(UTC)
             generate_title_step["status"] = "complete"
-            generate_title_step["end_time"] = int(generate_title_end.timestamp() * 1000) / 1000.0
+            generate_title_step["end_time"] = now_timestamp()
             generate_title_step["output_size"] = len(new_title.encode("utf-8")) if new_title else 0
             generate_title_step["words"] = len(new_title.split()) if new_title else 0
             generate_title_step["model"] = config.llm_model
@@ -1976,6 +2027,7 @@ def title(
 
             # Update metadata title dict with generated title.
             if isinstance(title, dict):
+                title["filename"] = filename_title
                 title["generated"] = new_title
             else:
                 title = {
@@ -1992,6 +2044,15 @@ def title(
             click.echo(f"  Tokens in: {prompt_tokens}, Tokens out: {completion_tokens}")
         except Exception as exc:
             error_count += 1
+            if isinstance(metadata_dict, dict):
+                step = metadata_dict.setdefault("generate_title", {})
+                if not isinstance(step, dict):
+                    step = {}
+                    metadata_dict["generate_title"] = step
+                step["status"] = None
+                step["error"] = str(exc)
+                step["output_size"] = 0
+                _write_json_metadata(metadata_dict, source_file)
             log_error(exc, filepath=str(relative_path), stage="title_generation")
 
     click.echo(f"\nTitle generation complete: {success_count} succeeded, {error_count} failed.")
@@ -2013,7 +2074,7 @@ def _finalize_incomplete_json(
 ) -> tuple[int, int]:
     """Finalize incomplete JSON metadata files in the data directory.
 
-    Finds source files (MP4, PDF, HTML) that have incomplete JSON metadata
+    Finds media and document source files that have incomplete JSON metadata
     (i.e., not all applicable step maps have ``status == "complete"``) and
     assembles the final metadata by:
 
@@ -2021,8 +2082,8 @@ def _finalize_incomplete_json(
       JSON, file system statistics, or LLM-generated titles and summaries as
       fallbacks.
     - Setting all applicable step maps to ``"complete"`` status.
-    - Preserving existing ``content`` (transcript for MP4, extracted text for
-      PDF/HTML) fields.
+    - Preserving existing ``content`` (transcript for media, extracted text for
+      documents) fields.
     - Generating LLM summaries for PDF/HTML files when not already present.
 
     This makes files feed-eligible so they appear in generated feeds.
@@ -2053,7 +2114,9 @@ def _finalize_incomplete_json(
         files = _find_files_needing_json_generation(data_dir_path, force=force)
 
     if not files:
-        all_source_files = _find_source_files(data_dir_path, ("mp4", *DOCUMENT_FILETYPES))
+        all_source_files = _find_source_files(
+            data_dir_path, tuple(MEDIA_FILETYPES | DOCUMENT_FILETYPES)
+        )
         if not all_source_files:
             _logger.warning(
                 "No supported source files found in %s for JSON generation. "
@@ -2077,17 +2140,29 @@ def _finalize_incomplete_json(
         try:
             json_path = source_file.with_name(source_file.name + ".json")
             metadata = _get_json_metadata(json_path) or {}
-            metadata.pop("filepath", None)
-
             # Skip files with errors — they should not be finalized.
             if metadata.get("error"):
+                continue
+
+            # Preserve producer step failures; finalization must not turn them
+            # into apparently successful metadata.
+            if any(
+                isinstance(step_map, dict)
+                and step_map.get("error") is not None
+                and step_map.get("status") != "complete"
+                for step_map in (
+                    metadata.get("transcribe"),
+                    metadata.get("summarize"),
+                    metadata.get("extract"),
+                    metadata.get("generate_title"),
+                )
+            ):
                 continue
 
             filetype = source_file.suffix.lower().lstrip(".")
             stat_result = source_file.stat()
             file_size = stat_result.st_size
             file_mtime = stat_result.st_mtime
-            now = datetime.now(UTC)
             config = get_config()
 
             # Ensure required fields are present.
@@ -2110,7 +2185,7 @@ def _finalize_incomplete_json(
             if not title.get("generated") or not title["generated"].strip():
                 generated = filename_title
                 try:
-                    if filetype == "mp4":
+                    if filetype in MEDIA_FILETYPES:
                         content = metadata.get("content") or ""
                         if content.strip():
                             generate_title_content = content
@@ -2166,18 +2241,23 @@ def _finalize_incomplete_json(
 
             # Build the final metadata dict.
             final_metadata: dict[str, Any] = {
-                "title": title,
-                "description": description,
-                "filename": source_file.name,
-                "filetype": filetype,
-                "date": metadata.get("date") or file_mtime,
-                "mtime": stat_result.st_mtime,
-                "size": metadata.get("size") or file_size,
+                key: value for key, value in metadata.items() if key in _ALLOWED_TOP_LEVEL_KEYS
             }
+            final_metadata.update(
+                {
+                    "title": title,
+                    "description": description,
+                    "filename": source_file.name,
+                    "filetype": filetype,
+                    "date": metadata.get("date") or file_mtime,
+                    "mtime": stat_result.st_mtime,
+                    "size": metadata.get("size") or file_size,
+                }
+            )
 
             # Set step maps to complete and include type-specific fields.
-            now_ts = int(now.timestamp())
-            if filetype == "mp4":
+            now_ts = now_timestamp()
+            if filetype in MEDIA_FILETYPES:
                 # For MP4 files, description is left blank and summary holds
                 # the LLM-generated key takeaways.
                 final_metadata["description"] = ""

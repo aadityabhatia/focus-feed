@@ -15,7 +15,6 @@ Error handling flow (design doc section 7.1):
 7. Print connection errors to stdout with detailed information.
 """
 
-from datetime import UTC, datetime
 import logging
 from pathlib import Path
 import sys
@@ -264,7 +263,9 @@ def create_error_metadata(
     Returns:
         A dictionary suitable for JSON serialization as an error metadata file.
     """
-    timestamp = int(datetime.now(UTC).timestamp() * 1000) / 1000.0
+    from focus_feed.metadata import now_timestamp
+
+    timestamp = now_timestamp()
     if filetype not in MEDIA_FILETYPES | _DOC_FILETYPES:
         filetype = None
     if mtime is None:
@@ -301,7 +302,7 @@ def create_error_metadata(
         }
         error_metadata[step_name] = step_map
     result = {key: value for key, value in error_metadata.items() if value is not None}
-    result["title"] = {key: value for key, value in title_dict.items() if value is not None}
+    result["title"] = title_dict
     return result
 
 

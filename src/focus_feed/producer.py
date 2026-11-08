@@ -64,7 +64,7 @@ from focus_feed.errors import (
     create_error_metadata,
     log_error,
 )
-from focus_feed.metadata import Metadata, StepMap
+from focus_feed.metadata import Metadata, StepMap, now_timestamp, write_metadata_json
 from focus_feed.scanner import (
     ScannedFile,
     Scanner,
@@ -145,7 +145,7 @@ def _tag_step(step: str) -> Iterator[None]:
 
 def _now_timestamp() -> float:
     """Return the current UNIX epoch timestamp with millisecond precision."""
-    return int(datetime.now(UTC).timestamp() * 1000) / 1000.0
+    return now_timestamp()
 
 
 def _check_reflection_md(absolute_path: str) -> str | None:
@@ -757,11 +757,10 @@ class Producer:
             # Step 1: Transcribe audio to markdown text.
             with _tag_step("transcribe"):
                 transcript = self.transcriber.transcribe(absolute_path)
-            transcribe_end = datetime.now(UTC)
 
             # Update transcribe step with completion info.
             transcribe_step["status"] = "complete"
-            transcribe_step["end_time"] = int(transcribe_end.timestamp() * 1000) / 1000.0
+            transcribe_step["end_time"] = now_timestamp()
             transcribe_step["output_size"] = len(transcript.encode("utf-8")) if transcript else 0
             transcribe_step["words"] = len(transcript.split()) if transcript else 0
             metadata_dict["transcribe"] = transcribe_step
@@ -799,11 +798,10 @@ class Producer:
                 filepath=filepath,
                 filetype=filetype,
             )
-        summarize_end = datetime.now(UTC)
 
         # Update summarize step with completion info.
         summarize_step["status"] = "complete"
-        summarize_step["end_time"] = int(summarize_end.timestamp() * 1000) / 1000.0
+        summarize_step["end_time"] = now_timestamp()
         summarize_step["output_size"] = len(summary.encode("utf-8")) if summary else 0
         summarize_step["words"] = len(summary.split()) if summary else 0
         summarize_step["model"] = config.llm_model
@@ -881,11 +879,10 @@ class Producer:
                 filepath=filepath,
             )
         generated_title = _clean_title(generated_title) or generated_title
-        generate_title_end = datetime.now(UTC)
 
         # Update generate_title step with completion info.
         generate_title_step["status"] = "complete"
-        generate_title_step["end_time"] = int(generate_title_end.timestamp() * 1000) / 1000.0
+        generate_title_step["end_time"] = now_timestamp()
         generate_title_step["output_size"] = (
             len(generated_title.encode("utf-8")) if generated_title else 0
         )
@@ -1165,11 +1162,10 @@ class Producer:
                     filepath=filepath,
                 )
             generated_title = _clean_title(generated_title) or generated_title
-            generate_title_end = datetime.now(UTC)
 
             # Update generate_title step with completion info.
             generate_title_step["status"] = "complete"
-            generate_title_step["end_time"] = int(generate_title_end.timestamp() * 1000) / 1000.0
+            generate_title_step["end_time"] = now_timestamp()
             generate_title_step["output_size"] = (
                 len(generated_title.encode("utf-8")) if generated_title else 0
             )
@@ -1433,11 +1429,10 @@ class Producer:
                     filepath=filepath,
                 )
             generated_title = _clean_title(generated_title) or generated_title
-            generate_title_end = datetime.now(UTC)
 
             # Update generate_title step with completion info.
             generate_title_step["status"] = "complete"
-            generate_title_step["end_time"] = int(generate_title_end.timestamp() * 1000) / 1000.0
+            generate_title_step["end_time"] = now_timestamp()
             generate_title_step["output_size"] = (
                 len(generated_title.encode("utf-8")) if generated_title else 0
             )
@@ -1541,39 +1536,12 @@ class Producer:
     def _write_metadata_partial(self, metadata_dict: dict[str, Any], source_path: str) -> None:
         """Write a raw metadata dictionary to a JSON file atomically.
 
-        Writes to a temporary file first, then renames to the final path
-        to avoid corruption from partial writes. This bypasses
-        :class:`Metadata` model validation, allowing intermediate states
-        with step maps and other fields.
-
         Args:
             metadata_dict: The raw dictionary to write as JSON.
             source_path: Absolute path to the source file. The JSON
                 metadata file will be written next to it.
         """
-        json_path = Path(source_path).with_name(Path(source_path).name + ".json")
-        json_path.parent.mkdir(parents=True, exist_ok=True)
-
-        metadata_dict.pop("filepath", None)
-        if metadata_dict.get("mtime") is None:
-            try:
-                metadata_dict["mtime"] = Path(source_path).stat().st_mtime
-            except OSError:
-                metadata_dict.pop("mtime", None)
-
-        # Write to a temporary file first, then rename for atomicity.
-        tmp_path = json_path.with_suffix(json_path.suffix + ".tmp")
-        try:
-            tmp_path.write_text(
-                json.dumps(metadata_dict, indent=2),
-                encoding="utf-8",
-            )
-            tmp_path.replace(json_path)
-        except OSError as exc:
-            _logger.warning("Failed to write JSON metadata to %s: %s", json_path, exc)
-            log_error(exc, filepath=str(json_path), stage="partial_metadata_write")
-            raise
-        _logger.debug("Wrote metadata to %s", json_path)
+        write_metadata_json(metadata_dict, source_path)
 
     def _handle_error(
         self,
