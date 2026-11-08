@@ -1542,7 +1542,7 @@ class TestFeedsCommand:
         assert finalized["summarize"]["status"] == "complete"
 
     def test_feeds_counts_audio_media(self, runner, valid_env, tmp_data_dir):
-        """The feeds summary should count eligible non-MP4 media as podcasts."""
+        """The feeds command counts eligible non-MP4 media as podcasts."""
         (tmp_data_dir / "lecture.m4a").write_bytes(b"audio")
         metadata = _make_valid_metadata(
             filepath="lecture.m4a", filename="lecture.m4a", filetype="m4a"
@@ -1619,12 +1619,13 @@ class TestFeedsCommand:
         mock_summarizer.summarize.assert_called_once()
 
     def test_feeds_skips_processing(self, runner, valid_env, tmp_data_dir):
-        """Feeds should not process any files."""
+        """Feeds should not process or modify files/metadata."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
-        # Create a JSON metadata file
-        (tmp_data_dir / "doc.pdf.json").write_text(
-            json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
+        json_path = tmp_data_dir / "doc.pdf.json"
+        original = json.dumps(
+            _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
         )
+        json_path.write_text(original)
 
         with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
@@ -1638,6 +1639,8 @@ class TestFeedsCommand:
 
         assert result.exit_code == 0
         mock_generator.generate_all_feeds.assert_called_once()
+        assert json_path.read_text() == original
+        assert sorted(path.name for path in tmp_data_dir.glob("*.json")) == ["doc.pdf.json"]
 
     def test_feeds_reads_existing_json(self, runner, valid_env, tmp_data_dir):
         """Feeds should read existing JSON metadata files."""
@@ -1646,9 +1649,9 @@ class TestFeedsCommand:
         (tmp_data_dir / "lecture.mp4.json").write_text(json.dumps(_make_valid_metadata()))
         # Create a valid PDF metadata file
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf")
-        (tmp_data_dir / "doc.pdf.json").write_text(
-            json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
-        )
+        pdf_metadata = _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
+        pdf_metadata["summary"] = "Test article summary"
+        (tmp_data_dir / "doc.pdf.json").write_text(json.dumps(pdf_metadata))
 
         with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
@@ -1661,7 +1664,8 @@ class TestFeedsCommand:
             )
 
         assert result.exit_code == 0
-        assert "1 item(s)" in result.output
+        assert "Podcast feed: 1 item(s)" in result.output
+        assert "Articles feed: 1 item(s)" in result.output
 
     def test_feeds_empty_directory(self, runner, valid_env, tmp_data_dir):
         """Feeds should handle empty directory."""
@@ -1740,63 +1744,64 @@ class TestFeedsCommand:
         # Only 1 podcast item (the success one)
         assert "1 item(s)" in result.output
 
-    def test_feeds_finalizes_incomplete_mp4_metadata(self, runner, valid_env, tmp_data_dir):
-        """Feeds should finalize incomplete MP4 metadata before generating feeds."""
+    def test_feeds_does_not_finalize_incomplete_metadata(self, runner, valid_env, tmp_data_dir):
+        """Feeds should leave incomplete metadata untouched and not count it."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
-        (tmp_data_dir / "lecture.mp4.json").write_text(
-            json.dumps(
-                {
-                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
-                    "title": "Test",
-                    "description": "",
-                    "filename": "lecture.mp4",
-                    "filepath": "lecture.mp4",
-                    "filetype": "mp4",
-                    "date": 1728931200,
-                    "size": 1024,
-                    "content": "Some transcript content",
-                    "summary": "Some summary",
-                }
-            )
+        json_path = tmp_data_dir / "lecture.mp4.json"
+        original = json.dumps(
+            {
+                "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                "title": "Test",
+                "description": "",
+                "filename": "lecture.mp4",
+                "filepath": "lecture.mp4",
+                "filetype": "mp4",
+                "date": 1728931200,
+                "size": 1024,
+                "content": "Some transcript content",
+                "summary": "Some summary",
+            }
         )
+        json_path.write_text(original)
 
-        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
+        with (
+            mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer,
+            mock.patch("focus_feed.feeds.FeedGenerator") as MockGen,
+        ):
             mock_generator = mock.MagicMock()
             mock_generator.generate_all_feeds.return_value = None
             MockGen.return_value = mock_generator
-
             result = runner.invoke(
                 app,
                 ["feeds", str(tmp_data_dir)],
             )
 
         assert result.exit_code == 0
-        json_path = tmp_data_dir / "lecture.mp4.json"
-        data = json.loads(json_path.read_text())
-        assert data["transcribe"]["status"] == "complete"
-        assert data["summarize"]["status"] == "complete"
-        assert data["summarize"]["end_time"] is not None
+        assert json_path.read_text() == original
+        assert "Podcast feed: 0 item(s)" in result.output
+        MockSummarizer.assert_not_called()
 
     def test_feeds_skips_finalization_for_complete_files(self, runner, valid_env, tmp_data_dir):
-        """Feeds should not re-finalize files that are already feed-eligible."""
+        """Feeds should leave already complete metadata byte-identical."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
         # Already complete metadata (extract + summarize both complete)
-        (tmp_data_dir / "doc.pdf.json").write_text(
-            json.dumps(
-                {
-                    "extract": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "title": "Existing Title",
-                    "description": "Existing Description",
-                    "filename": "doc.pdf",
-                    "filepath": "doc.pdf",
-                    "filetype": "pdf",
-                    "date": 1728931200,
-                    "size": 1024,
-                }
-            )
+        json_path = tmp_data_dir / "doc.pdf.json"
+        original = json.dumps(
+            {
+                "extract": {"status": "complete", "input_size": 0, "output_size": 0},
+                "summarize": {"status": "complete", "input_size": 0, "output_size": 0},
+                "title": "Existing Title",
+                "description": "Existing Description",
+                "summary": "Existing summary",
+                "filename": "doc.pdf",
+                "filepath": "doc.pdf",
+                "filetype": "pdf",
+                "date": 1728931200,
+                "size": 1024,
+            }
         )
+        json_path.write_text(original)
 
         with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
@@ -1810,31 +1815,33 @@ class TestFeedsCommand:
 
         assert result.exit_code == 0
         # File should still be valid and feed-eligible
-        json_path = tmp_data_dir / "doc.pdf.json"
         data = json.loads(json_path.read_text())
         assert data["extract"]["status"] == "complete"
         assert data["summarize"]["status"] == "complete"
+        assert json_path.read_text() == original
 
-    def test_feeds_generates_title_for_mp4_without_title(self, runner, valid_env, tmp_data_dir):
-        """Feeds finalization should generate a title for MP4 files when missing."""
+    def test_feeds_does_not_generate_title_for_mp4_without_title(
+        self, runner, valid_env, tmp_data_dir
+    ):
+        """Feeds should not generate missing titles or modify the sidecar."""
         (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
-        (tmp_data_dir / "lecture.mp4.json").write_text(
-            json.dumps(
-                {
-                    "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
-                    "summarize": {"status": None, "input_size": 0, "output_size": 0},
-                    "title": "",
-                    "description": "",
-                    "filename": "lecture.mp4",
-                    "filepath": "lecture.mp4",
-                    "filetype": "mp4",
-                    "date": 1728931200,
-                    "size": 1024,
-                    "content": "Some transcript content",
-                    "summary": "Some summary",
-                }
-            )
+        json_path = tmp_data_dir / "lecture.mp4.json"
+        original = json.dumps(
+            {
+                "transcribe": {"status": "complete", "input_size": 0, "output_size": 0},
+                "summarize": {"status": None, "input_size": 0, "output_size": 0},
+                "title": "",
+                "description": "",
+                "filename": "lecture.mp4",
+                "filepath": "lecture.mp4",
+                "filetype": "mp4",
+                "date": 1728931200,
+                "size": 1024,
+                "content": "Some transcript content",
+                "summary": "Some summary",
+            }
         )
+        json_path.write_text(original)
 
         with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
             mock_summarizer = mock.MagicMock()
@@ -1852,16 +1859,97 @@ class TestFeedsCommand:
                 )
 
         assert result.exit_code == 0
+        assert json_path.read_text() == original
+        mock_summarizer.generate_title.assert_not_called()
+
+    def test_feeds_skips_item_without_json_sidecar(self, runner, valid_env, tmp_data_dir):
+        """A source without a sidecar is reported and left untouched."""
+        source = tmp_data_dir / "missing.mp4"
+        source.write_bytes(b"video data")
+
+        result = runner.invoke(app, ["feeds", str(tmp_data_dir)])
+
+        assert result.exit_code == 0
+        assert "no JSON metadata sidecar" in result.output
+        assert "missing.mp4" in result.output
+        assert not source.with_name(source.name + ".json").exists()
+
+    def test_feeds_skips_item_without_summary(self, runner, valid_env, tmp_data_dir):
+        """A sidecar without a summary is reported and remains unchanged."""
+        (tmp_data_dir / "nosummary.pdf").write_bytes(b"pdf data")
+        json_path = tmp_data_dir / "nosummary.pdf.json"
+        original = json.dumps(_make_valid_metadata("nosummary.pdf", "nosummary.pdf", "pdf"))
+        json_path.write_text(original)
+
+        result = runner.invoke(app, ["feeds", str(tmp_data_dir)])
+
+        assert result.exit_code == 0
+        assert "no summary" in result.output
+        assert "nosummary.pdf" in result.output
+        assert json_path.read_text() == original
+
+    def test_feeds_skips_item_with_unparseable_json(self, runner, valid_env, tmp_data_dir):
+        """An invalid JSON sidecar is reported and remains unchanged."""
+        (tmp_data_dir / "invalid.mp4").write_bytes(b"video data")
+        json_path = tmp_data_dir / "invalid.mp4.json"
+        original = "{invalid json"
+        json_path.write_text(original)
+
+        result = runner.invoke(app, ["feeds", str(tmp_data_dir)])
+
+        assert result.exit_code == 0
+        assert "JSON metadata could not be parsed" in result.output
+        assert "invalid.mp4" in result.output
+        assert json_path.read_text() == original
+
+    def test_feeds_does_not_modify_json_sidecars(self, runner, valid_env, tmp_data_dir):
+        """Real feed generation should not persist a computed source hash."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
         json_path = tmp_data_dir / "lecture.mp4.json"
-        data = json.loads(json_path.read_text())
-        assert data["title"]["generated"] == "Generated Title"
-        # Verify generate_title step map is tracked during finalization
-        assert "generate_title" in data
-        assert data["generate_title"]["status"] == "complete"
-        assert data["generate_title"]["model"] == "test-model"
-        assert data["generate_title"]["input_tokens"] == 30
-        assert data["generate_title"]["output_tokens"] == 5
-        mock_summarizer.generate_title.assert_called_once()
+        original = json.dumps(_make_valid_metadata("lecture.mp4", "lecture.mp4", "mp4"))
+        json_path.write_text(original)
+        (tmp_data_dir / "feed.json").write_text(
+            json.dumps({"title": "Test Feed", "description": "Description"})
+        )
+
+        result = runner.invoke(app, ["feeds", str(tmp_data_dir)])
+
+        assert result.exit_code == 0, result.output
+        assert json_path.read_text() == original
+
+    def test_feeds_includes_item_with_summary(self, runner, valid_env, tmp_data_dir):
+        """A summarized, feed-eligible MP4 is included in the item count."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        metadata = _make_valid_metadata("lecture.mp4", "lecture.mp4", "mp4")
+        metadata["summary"] = "A non-empty summary"
+        (tmp_data_dir / "lecture.mp4.json").write_text(json.dumps(metadata))
+
+        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
+            MockGen.return_value.generate_all_feeds.return_value = None
+            result = runner.invoke(app, ["feeds", str(tmp_data_dir)])
+
+        assert result.exit_code == 0
+        assert "Podcast feed: 1 item(s)" in result.output
+        assert "lecture.mp4" not in result.output
+
+    def test_feeds_scoped_to_requested_paths(self, runner, valid_env, tmp_data_dir):
+        """Only source files under the requested path are counted."""
+        for folder in ("first", "second"):
+            directory = tmp_data_dir / folder
+            directory.mkdir()
+            (directory / "lecture.mp4").write_bytes(b"video data")
+            metadata = _make_valid_metadata(
+                filepath="lecture.mp4", filename="lecture.mp4", filetype="mp4"
+            )
+            metadata["summary"] = f"{folder} summary"
+            (directory / "lecture.mp4.json").write_text(json.dumps(metadata))
+
+        result = runner.invoke(app, ["feeds", str(tmp_data_dir / "first")])
+
+        assert result.exit_code == 0
+        assert "Podcast feed: 1 item(s)" in result.output
+        assert "no JSON metadata" not in result.output
+        assert "no summary" not in result.output
 
 
 class TestValidateCommand:
@@ -2242,9 +2330,9 @@ class TestCliIntegration:
     def test_feeds_after_processing(self, runner, valid_env, tmp_data_dir):
         """Feeds should work after processing."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
-        (tmp_data_dir / "doc.pdf.json").write_text(
-            json.dumps(_make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf"))
-        )
+        metadata = _make_valid_metadata(filepath="doc.pdf", filename="doc.pdf", filetype="pdf")
+        metadata["summary"] = "Test article summary"
+        (tmp_data_dir / "doc.pdf.json").write_text(json.dumps(metadata))
 
         with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
             mock_generator = mock.MagicMock()
@@ -2257,7 +2345,7 @@ class TestCliIntegration:
             )
 
         assert result.exit_code == 0
-        assert "1 item(s)" in result.output
+        assert "Articles feed: 1 item(s)" in result.output
 
     def test_cli_group_with_no_command_shows_help(self, runner):
         """Invoking the CLI with no subcommand should show help."""

@@ -1320,7 +1320,9 @@ def _find_feed_eligible_sources(
         A list of absolute source file paths eligible for feed generation.
     """
     eligible: list[Path] = []
-    for source_file in _find_source_files(data_dir_path, ("mp4", *DOCUMENT_FILETYPES)):
+    for source_file in _find_source_files(
+        data_dir_path, tuple(MEDIA_FILETYPES | DOCUMENT_FILETYPES)
+    ):
         if paths is not None and not _is_path_within(source_file, paths):
             continue
         relative = os.path.relpath(source_file, Path.cwd())

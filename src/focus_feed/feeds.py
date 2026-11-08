@@ -21,6 +21,7 @@ Design references:
     - Supports per-folder feed generation via ``feed.json`` files.
 """
 
+from collections.abc import Iterable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
@@ -28,7 +29,6 @@ import html
 import json
 import logging
 import os
-from collections.abc import Iterable
 from pathlib import Path
 import re
 from typing import Any

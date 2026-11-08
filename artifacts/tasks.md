@@ -681,7 +681,8 @@ Implement command-line interface for all processing modes.
   - Read all existing JSON metadata files
   - Generate both root-level and per-folder feeds (only where feed.json exists and applicable files present)
   - Generate or update index.html in every directory containing feed.json
-  - Finalize JSON metadata by computing feed eligibility from step maps
+  - Skip items without a valid JSON sidecar or without a non-empty summary, printing a note for each skipped item
+  - Treat JSON sidecars as read-only (no finalization, no hash persistence)
   - Output summary of feeds generated (counts for podcast and articles)
 - **Dependencies:**
   - T2.2 (Metadata model)
@@ -689,7 +690,8 @@ Implement command-line interface for all processing modes.
 - **Completion Criteria:**
   - Command generates both root-level and per-folder feeds without processing files (where applicable)
   - Existing JSON metadata is used
-  - Feed eligibility computed from step map statuses
+  - Items without a valid JSON sidecar or summary are noted and skipped
+  - JSON sidecars are never created or modified by the feeds command
   - Per-directory index.html files generated where feed.json exists; root index lists the whole tree
   - Summary shows items in each feed
 

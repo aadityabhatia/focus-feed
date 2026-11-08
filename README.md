@@ -110,7 +110,7 @@ Target specific steps or files:
 - `summarize` - Generate summaries from transcripts or document content
 - `extract` - Extract metadata from PDF/HTML and Docling-supported document formats
 - `title` - Generate titles for files that lack proper titles
-- `feeds` - Generate RSS feeds and index.html
+- `feeds` - Generate RSS feeds and index.html from existing metadata (read-only; skips items without a summarized JSON sidecar)
 - `validate` - Validate all metadata files
 - `create-feed` - Create a template `feed.json` in a directory
 - `cleanup` - Remove unknown keys from JSON metadata files
@@ -132,7 +132,7 @@ Each source file has an adjacent metadata file named `<source_filename>.json` (f
 
 Each step map can contain `status` (`null`, `"in_progress"`, or `"complete"`), `start_time`, `end_time` (UNIX epoch seconds with millisecond precision), `input_size`, `output_size`, `words`, `model`, `input_tokens`, `output_tokens`, and `error`. Null-valued fields are preserved by the canonical writer (`write_metadata_json`), including null values nested in the title dict; `Metadata.to_dict()`/`to_json()` omit None values. `feed_eligible` is computed and is not stored.
 
-Media files are feed-eligible when `transcribe` and `summarize` are complete. PDF, HTML, and Docling-supported document files are eligible when `extract` and `summarize` are complete. Any error makes a file ineligible. The `transcribe`, `summarize`, `extract`, and `title` commands run only their respective processing step (and update its related output fields), so other steps may remain incomplete for later processing. `process` and `watch` run the full pipeline. `feeds` and `validate` finalize incomplete metadata before proceeding.
+Media files are feed-eligible when `transcribe` and `summarize` are complete. PDF, HTML, and Docling-supported document files are eligible when `extract` and `summarize` are complete. Any error makes a file ineligible. The `transcribe`, `summarize`, `extract`, and `title` commands run only their respective processing step (and update its related output fields), so other steps may remain incomplete for later processing. `process` and `watch` run the full pipeline. `validate` finalizes incomplete metadata before validating. `feeds` is read-only: it only uses existing JSON sidecars that contain a non-empty `summary`, notes and skips items with no sidecar or no summary, and never creates or modifies JSON metadata.
 
 ```json
 {

@@ -400,6 +400,21 @@ class TestMetadataDiscovery:
             if record.levelno >= 30  # WARNING
         )
 
+    def test_eligible_paths_filters_discovered_metadata(self, tmp_path):
+        """An explicit source allow-list excludes all other metadata."""
+        included = write_metadata_file(tmp_path, "included.mp4")
+        write_metadata_file(tmp_path, "excluded.mp4")
+
+        fg = FeedGenerator(
+            data_dir=tmp_path,
+            base_url="https://example.com",
+            eligible_paths=[included.with_suffix("")],
+        )
+
+        result = fg._discover_metadata_files()
+
+        assert [metadata.source_filepath for metadata in result] == ["included.mp4"]
+
 
 # ---------------------------------------------------------------------------
 
@@ -3584,6 +3599,66 @@ class TestHashUpdateIntegration:
         FeedGenerator(data_dir=tmp_path, base_url="https://example.com").generate_all_feeds()
 
         assert json.loads(json_path.read_text(encoding="utf-8"))["hash"]
+
+    def test_generate_all_feeds_allow_list_excludes_other_root_items(self, tmp_path):
+        """Root feed output includes only sources in the provided allow-list."""
+        included_json = write_metadata_file(
+            tmp_path,
+            "included.mp4",
+            summary="Included summary",
+            transcript="Included transcript",
+        )
+        write_metadata_file(
+            tmp_path,
+            "excluded.mp4",
+            summary="Excluded summary",
+            transcript="Excluded transcript",
+        )
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Root Feed", "description": "Root Description"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(
+            data_dir=tmp_path,
+            base_url="https://example.com",
+            eligible_paths=[included_json.with_suffix("")],
+        )
+        result = fg.generate_all_feeds()
+
+        assert [metadata.source_filepath for metadata in result["podcast"]] == ["included.mp4"]
+        assert "included.mp4" in parse_rss_file(tmp_path / "podcast.xml")
+        assert "excluded.mp4" not in parse_rss_file(tmp_path / "podcast.xml")
+
+    def test_generate_all_feeds_without_hash_persistence(self, tmp_path):
+        """Missing hashes are computed for GUIDs without changing sidecars."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video data")
+        json_path = write_metadata_file(
+            tmp_path,
+            "lecture.mp4",
+            summary="Summary text",
+            transcript="Transcript text",
+        )
+        original = json_path.read_bytes()
+        (tmp_path / "feed.json").write_text(
+            json.dumps({"title": "Root Feed", "description": "Root Description"}),
+            encoding="utf-8",
+        )
+
+        fg = FeedGenerator(
+            data_dir=tmp_path,
+            base_url="https://example.com",
+            persist_hashes=False,
+        )
+        result = fg.generate_all_feeds()
+
+        expected_hash = hashlib.sha256(source.read_bytes()).hexdigest()
+        assert result["podcast"][0].hash == expected_hash
+        assert f'<guid isPermaLink="false">{expected_hash[-12:]}</guid>' in parse_rss_file(
+            tmp_path / "podcast.xml"
+        )
+        assert json_path.read_bytes() == original
 
     @pytest.mark.skip(reason="legacy assertion expects feed generation to add hashes")
     def test_generate_all_feeds_existing_hash_not_changed(self, tmp_path):
