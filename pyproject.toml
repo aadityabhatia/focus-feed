@@ -71,6 +71,10 @@ build-backend = "hatchling.build"
 [tool.hatch.build.targets.wheel]
 packages = ["src/focus_feed"]
 
+[tool.hatch.build.targets.sdist]
+include = ["src", "tests", "README.md", "pyproject.toml", "example.env"]
+exclude = ["data", ".env", "*.log", "scripts", "dist", ".venv", ".github", ".git"]
+
 [project.scripts]
 focus-feed = "focus_feed.cli:main"
 
