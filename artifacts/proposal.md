@@ -38,7 +38,7 @@ Establish the practical PyAV `av>=11.0` capabilities for reading common audio an
 - Current functional scope remains MP4 video transcription only. Supporting MKV, AVI, MOV, WMV or standalone audio files is not implied by this research.
 
 ## Problem
-Education files (PDF, HTML, MP4) in `data/` are disconnected. Users cannot consume them efficiently across devices via standard apps.
+Education files (supported media formats such as MP3/M4A/WAV/WebM/AAC/FLAC/OGG/Opus/MP4/MPEG/MPGA/MKV/MOV/AVI/WMV, PDF, HTML, and Docling documents such as DOCX/DOC/PPTX/PPT/XLSX/XLS) in `data/` are disconnected. Users cannot consume them efficiently across devices via standard apps.
 
 ## User Intent
 Make content accessible via private RSS feeds hosted on an existing internal web server:
@@ -49,18 +49,18 @@ Per-folder feeds via `feed.json`, with an auto-generated `index.html` in every d
 ## Scope
 
 ### In Scope
-- **Input:** PDF, HTML, MP4 in `data/` directory (at workspace root) and its subfolders
+- **Input:** Supported media files (mp3, m4a, wav, webm, aac, flac, ogg, opus, mp4, mpeg, mpga, mkv, mov, avi, wmv), PDF, HTML, and Docling documents (docx, doc, pptx, ppt, xlsx, xls) in `data/` directory (at workspace root) and its subfolders
 - **Processing:** Batch and incremental watch mode
-  - MP4: transcribe to markdown (remote-only), LLM key takeaway summary
-  - PDF/HTML: extract metadata + content; summarization required for feed eligibility
+  - Media: transcribe to markdown (remote-only), LLM key takeaway summary
+  - Documents (PDF, HTML, Docling): extract metadata + content; summarization required for feed eligibility
   - Track steps: `transcribe`, `summarize`, `extract`, `generate_title`
   - File modification time stored in JSON and checked on each process
-- **Metadata:** `<filename>.json` per file with title dict `{filename,extracted,generated}`, description, summary, content, filename, filetype, dates (ms), mtime, size, duration/creation_time, hash, step maps `transcribe/summarize/extract/generate_title`
+- **Metadata:** `<filename>.json` per file with title dict `{filename,extracted,generated}`, description, summary, content, filename, filetype (media formats, PDF, HTML, and Docling documents `docx/doc/pptx/ppt/xlsx/xls`), `date`/`publication_date` (ms), `mtime`, `size`, `duration`, `creation_time`, `hash`, step maps `transcribe/summarize/extract/generate_title`
   - filepath is NOT stored; inferred from JSON filename location
-  - MP4: description blank, summary = takeaways, content = transcript
-  - PDF/HTML: description = extracted metadata, content = plaintext, summary null unless summarized
+  - Media: description blank, summary = takeaways, content = transcript
+  - Documents (PDF, HTML, Docling): description = extracted metadata, content = plaintext, summary null unless summarized
   - SHA256 hash computed during first extraction
-- **Feeds:** `podcast.xml` for MP4, `articles.xml` for PDF/HTML, per-folder only when `feed.json` exists
+- **Feeds:** `podcast.xml` for supported media files, `articles.xml` for documents (PDF, HTML, Docling), per-folder only when `feed.json` exists
 - **Features:** `reflection.md` injection, auto folder-name title prefix, markdown→HTML conversion, control character sanitization
 
 ### Out of Scope
@@ -71,7 +71,7 @@ Per-folder feeds via `feed.json`, with an auto-generated `index.html` in every d
 
 ## Success Criteria
 - Content consumable via standard RSS/podcast apps
-- Automatic transcription (remote-only) + summarization for MP4, extraction for PDF/HTML
+- Automatic transcription (remote-only) + summarization for supported media files, extraction for documents (PDF, HTML, Docling)
 - Local-first processing for extraction/feed generation, remote-only for transcription
 - Incremental skips completed files unless mtime changed
 - Warnings for orphaned JSONs and special characters

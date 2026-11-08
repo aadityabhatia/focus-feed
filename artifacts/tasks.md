@@ -11,7 +11,7 @@
 
 ## Overview
 
-This document provides a detailed, executable implementation plan for building `focus-feed`, a Python application that processes PDF/HTML/MP4 files and generates RSS feeds. The plan is organized into phases with ordered tasks, dependencies, and completion criteria.
+This document provides a detailed, executable implementation plan for building `focus-feed`, a Python application that processes supported media files (mp3, m4a, wav, webm, aac, flac, ogg, opus, mp4, mpeg, mpga, mkv, mov, avi, wmv), PDF, HTML, and Docling documents (docx, doc, pptx, ppt, xlsx, xls), and generates RSS feeds. The plan is organized into phases with ordered tasks, dependencies, and completion criteria.
 
 **Latest Updates:**
   - Added create-feed CLI subcommand to create template feed.json files with title and description placeholders
@@ -139,16 +139,17 @@ Implement the foundational modules for configuration, file scanning, and metadat
   - **NEW:** `title` field is now a dict with keys: `filename`, `extracted`, `generated` (can also be a plain string for backward compatibility)
   - **NEW:** Store the source-extracted title in `title.extracted` (string or None)
   - **NEW:** `date` field is float (millisecond precision UNIX epoch)
-  - **NEW:** Add `duration` field (float, MP4 only, optional)
-  - **NEW:** Add `creation_time` field (ISO-8601 string, MP4 only, optional)
-  - Include all fields: `title` (including `title.extracted`), `description`, `summary`, `content`, `filename`, `filepath`, `filetype`, `date`, `duration`, `creation_time`, `size`, `transcribe`, `summarize`, `extract`, `generate_title`, `feed_eligible`, `error`
-  - `transcribe`, `summarize`, `extract`, `generate_title` are step maps with fields: `status` (null | "in_progress" | "complete"), `start_time` (float, ms precision), `end_time` (float, ms precision), `input_size`, `output_size`, `words`, `model`, `input_tokens`, `output_tokens`
-  - Add validation: `filetype` must be "mp4", "pdf", or "html"
-  - Add validation: `error` field is optional
-  - Add validation: MP4 files should have blank `description`, PDF/HTML files should have extracted metadata in `description`
+  - **NEW:** Add `duration` field (float, media files only, optional)
+  - **NEW:** Add `creation_time` field (ISO-8601 string, media files only, optional)
+  - Include all serialized fields: `title` (dict with `filename`, `extracted`, `generated`), `description`, `summary`, `content`, `filename`, `filetype`, `date`, `mtime`, `publication_date`, `size`, `duration`, `creation_time`, `hash`, `error`, plus step maps `transcribe`, `summarize`, `extract`, `generate_title`
+  - `filepath` is not stored; it is inferred from the JSON file's location. `feed_eligible` and `final_title` are computed properties and are not serialized.
+  - `transcribe`, `summarize`, `extract`, `generate_title` are step maps with fields: `status` (null | "in_progress" | "complete"), `start_time` (float, ms precision), `end_time` (float, ms precision), `input_size`, `output_size`, `words`, `model`, `input_tokens`, `output_tokens`, `error`
+  - Supported `filetype` values: media formats (`mp3`, `m4a`, `wav`, `webm`, `aac`, `flac`, `ogg`, `opus`, `mp4`, `mpeg`, `mpga`, `mkv`, `mov`, `avi`, `wmv`), `pdf`, `html`, and Docling-supported documents (`docx`, `doc`, `pptx`, `ppt`, `xlsx`, `xls`)
+  - Add validation: `error` field is optional and must not be empty or whitespace-only
+  - Add validation: media files should have blank `description`, PDF/HTML/Docling files should have extracted metadata in `description`
   - Add `final_title` computed property to extract the final title string from the title dict with precedence: generated > extracted > filename
-  - Add `feed_eligible` computed property to check step map completion
-  - Implement serialization/deserialization methods
+  - Add `feed_eligible` computed property to check step map completion: media needs `transcribe` + `summarize` complete; PDF/HTML/Docling documents need `extract` + `summarize` complete; any error makes the file ineligible
+  - Implement serialization/deserialization methods (computed properties excluded; None handling matches the canonical writer)
   - Ensure serialization excludes computed properties (feed_eligible, final_title)
   - Add backwards compatibility: warn and ignore deprecated fields
 - **Completion Criteria:**
@@ -159,13 +160,15 @@ Implement the foundational modules for configuration, file scanning, and metadat
   - Deprecated fields trigger warnings when loaded
   - Title dict handled correctly (both dict and string formats)
   - Millisecond precision timestamps handled correctly
+  - `filepath` is never stored and `feed_eligible`/`final_title` are never serialized
+  - Media, PDF/HTML, and Docling document filetypes are all recognized for feed eligibility
 
 - [x] T2.3: Implement File Scanner (Batch Mode)
 - **Description:** Create scanner.py with directory scanning functionality
 - **File:** `src/focus_feed/scanner.py`
 - **Actions:**
   - Implement `Scanner` class with `scan_directory()` method
-  - Recursively walk base directory or provided paths for files with extensions: `.mp4`, `.pdf`, `.html` (case-insensitive)
+  - Recursively walk base directory or provided paths for files with extensions: media formats (`.mp3`, `.m4a`, `.wav`, `.webm`, `.aac`, `.flac`, `.ogg`, `.opus`, `.mp4`, `.mpeg`, `.mpga`, `.mkv`, `.mov`, `.avi`, `.wmv`), `.pdf`, `.html`, and Docling-supported documents (`.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, `.xls`) (case-insensitive)
   - For each file, check if corresponding `.json` file exists in same directory
   - Return list of files that need processing (no JSON or JSON is outdated or incomplete)
   - Implement filename validation for special characters (log warnings only)
@@ -213,8 +216,8 @@ Implement the file processing pipeline including transcription, summarization, a
   - Create `process_file()` method that:
     - Determines file type from extension
     - Dispatches to appropriate processing path
-    - For MP4: call Transcriber (stores result in `content` field), then Summarizer (stores result in `summary` field), sets `description` to blank, then generate title dict with sources (filename=sanitized no extension/no underscores, extracted=from metadata, generated=LLM with prompt including filename+extracted+content), apply module prefix with precedence filename < extracted < generated
-    - For PDF/HTML: call appropriate extractor (stores result in `description` and `content` fields), generate title dict with sources (filename=sanitized no extension/no underscores, extracted=from metadata, generated=LLM with prompt including filename+extracted+content), set `summary` to null, apply module prefix with precedence filename < extracted < generated
+    - For media files: call Transcriber (stores result in `content` field), then Summarizer (stores result in `summary` field), sets `description` to blank, then generate title dict with sources (filename=sanitized no extension/no underscores, extracted=from metadata, generated=LLM with prompt including filename+extracted+content), apply module prefix with precedence filename < extracted < generated
+    - For documents (PDF/HTML/Docling): call appropriate extractor (stores result in `description` and `content` fields), generate title dict with sources (filename=sanitized no extension/no underscores, extracted=from metadata, generated=LLM with prompt including filename+extracted+content), set `summary` to null, apply module prefix with precedence filename < extracted < generated
     - **UPDATED:** Build title as dict with sources (filename, extracted, generated) and precedence (filename < extracted < generated)
     - **NEW:** Sanitize filename for title dict: remove extension, replace underscores with spaces
     - **UPDATED:** Apply module name prefix to final title (computed based on precedence)
@@ -230,7 +233,7 @@ Implement the file processing pipeline including transcription, summarization, a
   - T2.3 (Scanner)
   - T2.1 (Config)
 - **Completion Criteria:**
-  - Producer can process MP4, PDF, and HTML files through appropriate paths
+  - Producer can process supported media files, PDF, HTML, and Docling documents through appropriate paths
   - JSON metadata files are created correctly with all new fields
   - Error handling writes error metadata with appropriate error details
   - Step maps are properly populated for each processing step
@@ -277,17 +280,17 @@ Implement the file processing pipeline including transcription, summarization, a
     - Endpoint: `LLM_ENDPOINT`
     - API Key: `LLM_API_KEY`
     - Model: `LLM_MODEL`
-    - **NEW:** System prompt from `PROMPT_ARTICLE` (for PDF/HTML) or `PROMPT_PODCAST` (for MP4) (required)
-    - **NEW:** Reflection prompt from `PROMPT_ARTICLE_REFLECTION` (PDF/HTML) or `PROMPT_PODCAST_REFLECTION` (MP4) (optional)
+    - **NEW:** System prompt from `PROMPT_ARTICLE` (for documents: PDF/HTML/Docling) or `PROMPT_PODCAST` (for media files) (required)
+    - **NEW:** Reflection prompt from `PROMPT_ARTICLE_REFLECTION` (documents: PDF/HTML/Docling) or `PROMPT_PODCAST_REFLECTION` (media files) (optional)
     - **NEW:** Title prompt from `PROMPT_TITLE` (required)
   - Implement `summarize()` method that:
     - Accepts transcript or extracted content text as input
     - Accepts optional `reflection_questions` parameter
-    - Uses `PROMPT_ARTICLE_REFLECTION` (PDF/HTML) or `PROMPT_PODCAST_REFLECTION` (MP4) when reflection_questions provided, else `PROMPT_ARTICLE` (PDF/HTML) or `PROMPT_PODCAST` (MP4)
+    - Uses `PROMPT_ARTICLE_REFLECTION` (documents: PDF/HTML/Docling) or `PROMPT_PODCAST_REFLECTION` (media files) when reflection_questions provided, else `PROMPT_ARTICLE` (documents: PDF/HTML/Docling) or `PROMPT_PODCAST` (media files)
     - Returns key takeaways as string
     - Tracks processing in summarize step map with timing (millisecond precision) and metrics
     - Handles API errors with retry logic (exponential backoff)
-    - **NEW:** Works with both MP4 transcripts and PDF/HTML extracted content
+    - **NEW:** Works with both media transcripts and document (PDF/HTML/Docling) extracted content
   - Implement `generate_title()` method for generating titles from content using `PROMPT_TITLE`
   - **NEW:** Use millisecond precision for timestamps in step maps
 - **Dependencies:**
@@ -300,7 +303,7 @@ Implement the file processing pipeline including transcription, summarization, a
   - Retry logic handles transient errors
   - Step map is populated with status, timing (ms precision), and metrics
   - Reflection questions are properly prepended to transcript
-  - Works with both MP4 transcripts and PDF/HTML extracted content
+  - Works with both media transcripts and document (PDF/HTML/Docling) extracted content
 
 - [x] T3.4: Implement PDF Metadata and Content Extractor
 - **Description:** Create extractor for PDF files
@@ -416,7 +419,7 @@ Implement RSS feed generation for podcast and articles feeds with new features.
   - Implement `FeedGenerator` class
   - Accept `BASE_URL` from configuration
   - Scan base directory or provided paths recursively for all `*.json` files
-  - Filter entries by `feed_eligible` computed property (which checks step map statuses: MP4 needs transcribe.status="complete" AND summarize.status="complete", PDF/HTML needs extract.status="complete" AND summarize.status="complete")
+  - Filter entries by `feed_eligible` computed property (which checks step map statuses: supported media files need transcribe.status="complete" AND summarize.status="complete", PDF/HTML/Docling documents need extract.status="complete" AND summarize.status="complete")
   - Implement sorting: folder name (ascending), then filename (ascending)
   - Calculate absolute URLs: `BASE_URL` + `filepath`
   - **NEW:** Implement markdown to HTML conversion with XSS protection
@@ -443,29 +446,29 @@ Implement RSS feed generation for podcast and articles feeds with new features.
 - **Actions:**
   - Implement `generate_podcast_feed()` method
   - Use `feedgen` library with podcast extension
-  - Include all MP4 files with `feed_eligible = true` from metadata
+  - Include all supported media files (`.mp3`, `.m4a`, `.wav`, `.webm`, `.aac`, `.flac`, `.ogg`, `.opus`, `.mp4`, `.mpeg`, `.mpga`, `.mkv`, `.mov`, `.avi`, `.wmv`) with `feed_eligible = true` from metadata
    - For each item:
      - Title from metadata title dict's final title computation
      - Description from `summary` field (LLM-generated key takeaways)
     - **NEW:** Convert markdown in summary to HTML
      - Link: absolute URL to source file
-      - Enclosure with URL, type="audio/mp4", length (file size from `size` field)
+      - Enclosure with URL, media-specific MIME type, length (file size from `size` field)
       - Feed item `pubDate` from `summarize.end_time` (UNIX epoch to datetime)
-     - GUID based on filepath
+     - GUID from the last 12 characters of the `hash` field, falling back to the inferred source path/URL
   - Write feed to `base_dir/podcast.xml` (or custom output_dir)
   - **NEW:** Support per-folder feed generation when output_dir is subfolder
   - **NEW:** Accept custom title and description from feed.json
-  - **NEW:** Only generate if MP4 files present in the folder
+  - **NEW:** Only generate if supported media files are present in the folder
 - **Dependencies:**
   - T4.1 (Feed generator base)
 - **Completion Criteria:**
   - Podcast feed is valid RSS with podcast extensions
-  - All MP4 files with complete step maps are included in feed
+  - All supported media files with complete step maps are included in feed
   - Enclosure tags have correct URLs, types, and lengths
   - Markdown in descriptions converted to HTML
   - Feed is written to correct location
   - Per-folder feeds work with custom titles/descriptions
-  - Only generated if MP4 files present
+  - Only generated if supported media files are present
 
 - [x] T4.3: Implement Articles Feed Generation
 - **Description:** Create articles.xml feed generation
@@ -473,28 +476,28 @@ Implement RSS feed generation for podcast and articles feeds with new features.
 - **Actions:**
   - Implement `generate_articles_feed()` method
   - Use `feedgen` library for RSS
-  - Include all PDF/HTML files with `feed_eligible = true` from metadata
+  - Include all document files (PDF, HTML, and Docling-supported documents: `.docx`, `.doc`, `.pptx`, `.ppt`, `.xlsx`, `.xls`) with `feed_eligible = true` from metadata
    - For each item:
      - Title from metadata title dict's final title computation
      - **NEW:** Description from `content` field (if available), otherwise `description` field
     - **NEW:** Convert markdown in content/description to HTML
       - Link: absolute URL to source file
       - Feed item `pubDate` from `summarize.end_time` (UNIX epoch to datetime)
-     - GUID based on filepath
+     - GUID from the last 12 characters of the `hash` field, falling back to the inferred source path/URL
   - Write feed to `base_dir/articles.xml` (or custom output_dir)
   - **NEW:** Support per-folder feed generation when output_dir is subfolder
   - **NEW:** Accept custom title and description from feed.json
-  - **NEW:** Only generate if PDF/HTML files present in the folder
+  - **NEW:** Only generate if document files (PDF, HTML, Docling-supported documents) are present in the folder
 - **Dependencies:**
   - T4.1 (Feed generator base)
 - **Completion Criteria:**
   - Articles feed is valid RSS
-  - All PDF/HTML files with complete step maps are included in feed
+  - All document files with complete step maps are included in feed
   - Content field used as description when available
   - Markdown in descriptions converted to HTML
   - Feed is written to correct location
   - Per-folder feeds work with custom titles/descriptions
-  - Only generated if PDF/HTML files present
+  - Only generated if document files are present
 
 - [x] T4.4: Implement Feed Generation for Per-Folder Feeds
 - **Description:** Create support for feed.json-based per-folder feeds
@@ -507,8 +510,8 @@ Implement RSS feed generation for podcast and articles feeds with new features.
     - Discovers all feed.json files
     - For each feed.json, generates feeds in that folder with items from that folder tree
     - Uses custom title/description from feed.json
-    - **NEW:** Only generates podcast.xml if MP4 files present
-    - **NEW:** Only generates articles.xml if PDF/HTML files present
+    - **NEW:** Only generates podcast.xml if supported media files are present
+    - **NEW:** Only generates articles.xml if document files (PDF, HTML, Docling documents) are present
     - **NEW:** Does NOT generate root-level feeds unless feed.json exists in root
   - Ensure root-level feeds still generated when feed.json exists in root
 - **Dependencies:**
@@ -521,8 +524,8 @@ Implement RSS feed generation for podcast and articles feeds with new features.
   - Only items from folder tree included in per-folder feeds
   - Custom title/description from feed.json used
   - Both podcast.xml and articles.xml generated per folder (if applicable items exist)
-  - podcast.xml only generated if MP4 files present
-  - articles.xml only generated if PDF/HTML files present
+  - podcast.xml only generated if supported media files are present
+  - articles.xml only generated if document files (PDF, HTML, Docling documents) are present
 
 - [x] T4.5: Implement Markdown to HTML Conversion
 - **Description:** Create markdown to HTML converter with XSS protection
@@ -643,9 +646,9 @@ Implement command-line interface for all processing modes.
 - **Actions:**
   - Implement `watch` command with positional directory argument
   - Start watchdog Observer on the specified directory
-  - Register event handlers for:
-    - File created (for .mp4, .pdf, .html)
-    - File modified (for .mp4, .pdf, .html)
+- Register event handlers for:
+      - File created (for supported media files, PDF, HTML, and Docling documents)
+      - File modified (for supported media files, PDF, HTML, and Docling documents)
     - JSON file created/modified (check for orphaned)
   - On file event: Process file => Regenerate feeds => Regenerate index.html
   - On JSON event without source: Log warning
@@ -836,14 +839,14 @@ Implement comprehensive validation and robust error handling throughout the syst
 - **Description:** Ensure all metadata files conform to schema
 - **File:** `src/focus_feed/metadata.py`
 - **Actions:**
-  - Validate required fields for each filetype (title, filename, filepath, filetype, date)
+  - Validate required fields for each filetype (title, filename, filetype, date)
   - Validate field types and formats (UNIX epoch float for date, float for duration, ISO8601 for creation_time)
-  - Validate conditional fields (content/summary only for MP4, description for PDF/HTML)
+  - Validate conditional fields (content/summary for media files, description for PDF/HTML/Docling documents)
   - Validate step map structure (transcribe, summarize, extract, generate_title objects with proper fields)
   - **NEW:** Validate title dict structure (filename=sanitized no extension/no underscores, extracted=from metadata, generated=LLM-generated) with precedence validation
   - **NEW:** Validate millisecond precision timestamps
-  - Add validation for MP4: description should be blank, summary and content should be present for complete files
-  - Add validation for PDF/HTML: description should be present, summary should be null (unless explicitly summarized), content should be present for complete files
+  - Add validation for media files: description should be blank, summary and content should be present for complete files
+  - Add validation for PDF/HTML/Docling documents: description should be present, summary should be null (unless explicitly summarized), content should be present for complete files
 - **Dependencies:**
   - T2.2 (Metadata model)
 - **Completion Criteria:**
@@ -906,10 +909,10 @@ Implement comprehensive validation and robust error handling throughout the syst
   - Create test for special character handling
   - Create test for orphaned JSON detection
   - **NEW:** Create test for new schema fields (title dict, duration, creation_time, content, step maps with ms precision)
-  - **NEW:** Create test for field usage by filetype (MP4 vs PDF/HTML)
+  - **NEW:** Create test for field usage by filetype (media files vs documents)
   - **NEW:** Create test for markdown to HTML conversion
   - **NEW:** Create test for per-folder feed generation
-  - **NEW:** Create test for conditional feed generation (no feeds without feed.json, no podcast without MP4, no articles without PDF/HTML)
+  - **NEW:** Create test for conditional feed generation (no feeds without feed.json, no podcast without media files, no articles without documents)
   - **NEW:** Create test for index.html generation
 - **Completion Criteria:**
   - Integration tests cover critical workflows
@@ -1111,15 +1114,15 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
 - **Actions:**
   - Implement reflection.md detection in producer
   - Pass reflection questions to summarizer
-  - Use PROMPT_ARTICLE_REFLECTION (PDF/HTML) or PROMPT_PODCAST_REFLECTION (MP4) when reflection questions available
+  - Use PROMPT_ARTICLE_REFLECTION (documents: PDF/HTML/Docling) or PROMPT_PODCAST_REFLECTION (media files) when reflection questions available
   - Prepend reflection questions to transcript or extracted content
-  - **NEW:** Works with both MP4 and PDF/HTML files
+  - **NEW:** Works with both media files and documents (PDF/HTML/Docling)
 - **Completion Criteria:**
   - Reflection questions detected and loaded
   - Questions passed to summarizer
-  - PROMPT_ARTICLE_REFLECTION (PDF/HTML) or PROMPT_PODCAST_REFLECTION (MP4) used when available
+  - PROMPT_ARTICLE_REFLECTION (documents: PDF/HTML/Docling) or PROMPT_PODCAST_REFLECTION (media files) used when available
   - Questions prepended to transcript
-  - Works with MP4, PDF, and HTML files
+  - Works with media files, PDF, HTML, and Docling documents
 
 - [x] T9.5: Implement Markdown to HTML Conversion
 - **Description:** Add markdown to HTML conversion for feed descriptions
@@ -1179,7 +1182,7 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
   - XML generation doesn't fail due to control characters
 
 - [x] T9.9: Implement Audio Metadata Extraction with ffprobe
-- **Description:** Extract duration and creation_time from MP4 files
+- **Description:** Extract duration and creation_time from supported media files
 - **Files:** `extractors.py`, `producer.py`
 - **Actions:**
   - Implement get_audio_metadata function
@@ -1212,14 +1215,14 @@ Implement all new features: title dict, millisecond timestamps, per-folder feeds
 - **Files:** `feeds.py`, `cli.py`
 - **Actions:**
   - Update feed generation to check for feed.json before generating feeds
-  - Check for MP4 files before generating podcast.xml
-  - Check for PDF/HTML files before generating articles.xml
+  - Check for supported media files before generating podcast.xml
+  - Check for document files (PDF, HTML, Docling documents) before generating articles.xml
   - Skip feed generation if requirements not met
   - Update root-level feed generation: only if feed.json exists in root AND applicable files present
 - **Completion Criteria:**
   - Feeds only generated where feed.json exists
-  - podcast.xml only generated if MP4 files present
-  - articles.xml only generated if PDF/HTML files present
+  - podcast.xml only generated if supported media files are present
+  - articles.xml only generated if document files (PDF, HTML, Docling documents) are present
   - Root-level feeds require feed.json in root
 
 - [x] T9.12: Implement Per-Directory Index.html Generation (NEW)
@@ -1340,7 +1343,7 @@ The following tasks can be worked on concurrently:
 - All new features (Phase 9) must be implemented and tested
 
 ### Testing Recommendations
-- Test with sample MP4, PDF, and HTML files in Phase 3
+- Test with sample media, PDF, HTML, and Docling document files in Phase 3
 - Validate feed output in Phase 4 with XML validator
 - Test CLI commands in Phase 5 with various inputs
 - Test watch mode in Phase 6 with file system events
@@ -1354,12 +1357,12 @@ The following tasks can be worked on concurrently:
 
 ### Schema Requirements (Version 2.0)
 1. **Title field**: Must be a dict with keys: `filename`, `extracted`, `generated` (or a plain string for backward compatibility)
-2. **Content field**: Used for both MP4 (transcript) and PDF/HTML (extracted text)
+2. **Content field**: Used for media files (transcript) and documents (extracted text)
 3. **Step maps**: Processing tracked via `transcribe`, `summarize`, `extract`, `generate_title` objects (not unified `status` dict)
-4. **Description behavior**: MP4 files have blank `description`, PDF/HTML have extracted metadata in `description`
-5. **Summary behavior**: MP4 files have key takeaways in `summary`, PDF/HTML have null `summary` (unless explicitly summarized via summarize command)
+4. **Description behavior**: Media files have blank `description`, PDF/HTML/Docling documents have extracted metadata in `description`
+5. **Summary behavior**: Media files have key takeaways in `summary`, PDF/HTML/Docling documents have null `summary` (unless explicitly summarized via summarize command)
 6. **Extracted title**: Stored in `title.extracted` within the title dict
-7. **New fields**: `duration` (float, MP4 only), `creation_time` (ISO-8601, MP4 only)
+7. **New fields**: `duration` (float, all supported media filetypes), `creation_time` (ISO-8601, all supported media filetypes)
 8. **Millisecond precision**: All date/timestamp fields use float with 3 decimal places
 9. **Backwards compatibility**: Warn and ignore deprecated fields
 10. **Control characters**: Invalid XML characters removed from extracted content
@@ -1369,12 +1372,12 @@ The following tasks can be worked on concurrently:
 2. **Reflection questions**: Use reflection.md file in folder **if present** (OPTIONAL - not required for summarization)
 3. **Module prefixing**: Automatic based on parent folder name, using an extended filename code as the prefix when present (e.g. `H103RA` in folder `H103`)
 4. **Markdown conversion**: Automatic for feed descriptions with XSS protection
-5. **Content extraction**: PDF/HTML files have content extracted to content field
+5. **Content extraction**: PDF/HTML/Docling documents have content extracted to content field
 6. **Conditional feed generation**: Feeds only generated where feed.json exists AND applicable files present
 7. **Index.html generation**: Auto-generated in every directory containing `feed.json`; each index lists XML feeds in its subtree, and the root index lists the whole tree
 8. **No root feeds without feed.json**: Root-level feeds require explicit feed.json configuration
 9. **Nested feed aggregation**: Each feed includes all content from its entire subtree (inner feeds are subsets of outer feeds)
-10. **summarize command**: Works with MP4 (transcripts), PDF (extracted content), and HTML (extracted content) - **without requiring reflection.md**
+10. **summarize command**: Works with media transcripts and document (PDF/HTML/Docling) extracted content - **without requiring reflection.md**
 11. **create-feed command**: CLI subcommand to create template feed.json files with optional metadata fields
 12. **feed.json metadata fields**: Supports optional fields: title, description, language, author, link, image
 13. **Feed link derivation**: Links derived from BASE_URL + relative path (not hardcoded)
@@ -1501,7 +1504,7 @@ Add review tasks to ensure all clarifications and updates are properly implement
 - [x] Orphaned JSON files detected and logged
 - [x] All environment variables from design doc are supported
 - [x] New schema fields (title dict, duration, creation_time, content, step maps with ms precision) implemented and validated
-- [x] Field usage by filetype validated (MP4 vs PDF/HTML)
+- [x] Field usage by filetype validated (media files vs documents)
 - [x] Feed eligibility computed from step map statuses
 - [x] Backwards compatibility for deprecated fields implemented with warnings
 - [x] New features implemented: per-folder feeds, reflection support, markdown conversion, module prefixing, content extraction
@@ -1511,7 +1514,7 @@ Add review tasks to ensure all clarifications and updates are properly implement
 - [x] Millisecond precision timestamps throughout
 - [x] Debouncing and periodic rescan in watch mode
 - [x] No root feeds without feed.json
-- [x] Conditional feed generation (podcast only with MP4, articles only with PDF/HTML)
+- [x] Conditional feed generation (podcast only with supported media files, articles only with documents: PDF, HTML, Docling documents)
 
 ---
 ## Completion Report
@@ -1546,9 +1549,9 @@ Smart extraction optimization: compatible audio streams are copied without re-en
 12. ✅ Conditional feed generation (feeds only where feed.json exists AND applicable files present)
 13. ✅ Per-directory index.html generation for feed discovery; the root index lists feeds from the whole tree
 14. ✅ NO root feeds without feed.json
-15. ✅ podcast.xml only if MP4 files present
-16. ✅ articles.xml only if PDF/HTML files present
-17. ✅ summarize command processes PDF/HTML files
+15. ✅ podcast.xml only if supported media files are present
+16. ✅ articles.xml only if document files (PDF, HTML, Docling documents) are present
+17. ✅ summarize command processes PDF/HTML/Docling documents
 18. ⚔ create-feed CLI subcommand for template feed.json generation
 19. ⚔ feed.json supports optional metadata fields: title, description, language, author, link, image
 20. ⚔ Feed links derived from BASE_URL + relative path (not hardcoded)
@@ -1577,7 +1580,7 @@ Smart extraction optimization: compatible audio streams are copied without re-en
 - `index.html` is auto-generated in every directory containing `feed.json`; each lists XML feeds in its subtree and the root lists the whole tree
 - Root-level feeds require explicit feed.json configuration
 - Nested feeds: each feed aggregates all content from its entire subtree (inner feeds are subsets of outer feeds)
-- summarize command works with MP4 transcripts, PDF/HTML extracted content WITHOUT requiring reflection.md
+- summarize command works with media transcripts and document (PDF/HTML/Docling) extracted content WITHOUT requiring reflection.md
 - create-feed command generates template feed.json files with optional metadata fields
 - feed.json supports optional metadata: title, description, language, author, link, image
 - Feed links are derived from BASE_URL + relative path (not hardcoded)
