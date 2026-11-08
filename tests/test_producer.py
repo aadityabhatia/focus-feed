@@ -21,6 +21,7 @@ from unittest import mock
 import pytest
 
 from focus_feed.errors import ProcessingError
+from focus_feed.metadata import Metadata
 from focus_feed.producer import Producer
 from focus_feed.scanner import ScannedFile
 
@@ -1562,12 +1563,16 @@ class TestIntermediateStateSaving:
 
         metadata = json.loads((tmp_path / "removed.pdf.json").read_text())
         assert metadata["error"] == "source removed"
-        assert "filetype" not in metadata
+        assert metadata["filetype"] == "pdf"
         assert "mtime" in metadata
         assert metadata["mtime"] is not None
+        assert metadata["title"]["filename"] == "removed"
+        assert metadata["size"] == 0
+        loaded = Metadata.from_json_file(tmp_path / "removed.pdf.json")
+        assert loaded.error == "source removed"
 
-    def test_partial_metadata_omits_mtime_when_source_disappears(self, producer, tmp_path):
-        """Partial metadata should not serialize a null mtime for a missing source."""
+    def test_partial_metadata_with_missing_source_is_loadable(self, producer, tmp_path):
+        """Partial metadata includes schema fields and remains loadable without its source."""
         source = tmp_path / "removed.pdf"
 
         producer._write_metadata_partial(
@@ -1576,7 +1581,11 @@ class TestIntermediateStateSaving:
         )
 
         metadata = json.loads((tmp_path / "removed.pdf.json").read_text())
-        assert "mtime" not in metadata
+        assert metadata["mtime"] is None
+        assert metadata["title"]["filename"] == "removed"
+        assert metadata["size"] == 0
+        loaded = Metadata.from_json_file(tmp_path / "removed.pdf.json")
+        assert loaded.filename == "removed.pdf"
 
     def test_final_state_excludes_none_fields(self, producer, tmp_path):
         """Final JSON state should exclude None fields for PDF."""
@@ -1729,12 +1738,17 @@ class TestIntermediateStatusWrites:
 
         # Track writes to verify intermediate state
         written_statuses: list[str] = []
+        round_tripped_statuses: list[str | None] = []
 
         original_write = producer._write_metadata_partial
 
         def track_write(metadata_dict, source_path):
             written_statuses.append(metadata_dict.get("extract", {}).get("status"))
             original_write(metadata_dict, source_path)
+            loaded = Metadata.from_json_file(tmp_path / "document.pdf.json")
+            round_tripped_statuses.append(
+                loaded.extract.status if loaded.extract is not None else None
+            )
 
         with mock.patch.object(producer, "_write_metadata_partial", side_effect=track_write):
             producer.process_file(scanned)
@@ -1743,6 +1757,10 @@ class TestIntermediateStatusWrites:
         assert len(written_statuses) >= 3
         assert "in_progress" in written_statuses
         assert "complete" in written_statuses
+        assert round_tripped_statuses == written_statuses
+        final_metadata = Metadata.from_json_file(tmp_path / "document.pdf.json")
+        assert final_metadata.extract is not None
+        assert final_metadata.extract.status == "complete"
 
     def test_pdf_writes_extract_complete_without_llm_title_generation(
         self, producer, mock_pdf_extractor, mock_summarizer, tmp_path

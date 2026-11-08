@@ -6,7 +6,7 @@ from typing import Any
 from pydantic import ValidationError
 import pytest
 
-from focus_feed.metadata import Metadata, StepMap
+from focus_feed.metadata import Metadata, StepMap, write_metadata_json
 
 
 class TestStepMap:
@@ -61,21 +61,18 @@ class TestStepMap:
         assert step.status == "in_progress"
 
     @pytest.mark.parametrize(
-        "input_size,output_size,words,extra_field",
+        "input_size,output_size,words",
         [
-            (-1, 0, None, None),  # negative input_size
-            (0, -1, None, None),  # negative output_size
-            (0, 0, -1, None),  # negative words
-            (0, 0, None, "bad"),  # extra field
+            (-1, 0, None),  # negative input_size
+            (0, -1, None),  # negative output_size
+            (0, 0, -1),  # negative words
         ],
     )
-    def test_step_map_validation_errors(self, input_size, output_size, words, extra_field):
-        """StepMap should reject negative sizes, words, and extra fields."""
+    def test_step_map_validation_errors(self, input_size, output_size, words):
+        """StepMap should reject negative sizes and words."""
         kwargs = {"input_size": input_size, "output_size": output_size}
         if words is not None:
             kwargs["words"] = words
-        if extra_field:
-            kwargs["extra_field"] = extra_field
         with pytest.raises(ValidationError):
             StepMap(**kwargs)
 
@@ -1049,6 +1046,54 @@ class TestJsonFileIO:
         assert metadata.error == "Transcription failed"
         assert metadata.feed_eligible is False
 
+    def test_write_metadata_json_normalizes_and_writes_atomically(self, tmp_path):
+        """Canonical writer should output loadable metadata beside its source."""
+        source_path = tmp_path / "subdir" / "my_lecture.MP4"
+        source_path.parent.mkdir()
+        source_path.write_bytes(b"video")
+        data: dict[str, Any] = {
+            "filepath": str(source_path),
+            "transcribe": {"status": "in_progress"},
+        }
+
+        write_metadata_json(data, source_path)
+
+        json_path = source_path.with_name(source_path.name + ".json")
+        written_data = json.loads(json_path.read_text(encoding="utf-8"))
+        metadata = Metadata.from_json_file(json_path)
+        assert "filepath" not in written_data
+        assert written_data["filename"] == source_path.name
+        assert written_data["filetype"] == "mp4"
+        assert written_data["title"] == {
+            "filename": "my lecture",
+            "extracted": None,
+            "generated": None,
+        }
+        assert written_data["size"] == 5
+        assert written_data["mtime"] == source_path.stat().st_mtime
+        assert metadata.filename == source_path.name
+        assert metadata.transcribe is not None
+        assert metadata.transcribe.input_size == 0
+        assert metadata.transcribe.output_size == 0
+        assert not json_path.with_name(json_path.name + ".tmp").exists()
+
+    def test_write_metadata_json_preserves_metadata_when_source_missing(self, tmp_path):
+        """Missing source should retain existing size/mtime or default size."""
+        source_path = tmp_path / "missing_file.pdf"
+        data: dict[str, Any] = {"size": 12, "mtime": 34.5}
+
+        write_metadata_json(data, source_path)
+
+        json_path = source_path.with_name(source_path.name + ".json")
+        written_data = json.loads(json_path.read_text(encoding="utf-8"))
+        assert written_data["size"] == 12
+        assert written_data["mtime"] == 34.5
+
+        fallback_data: dict[str, Any] = {}
+        write_metadata_json(fallback_data, tmp_path / "another_missing.pdf")
+        fallback = json.loads((tmp_path / "another_missing.pdf.json").read_text(encoding="utf-8"))
+        assert fallback["size"] == 0
+
 
 class TestSchemaCompliance:
     """Tests to verify the model matches design doc section 3.3 schema."""
@@ -1148,11 +1193,12 @@ class TestSchemaCompliance:
         assert field_name not in json_schema.get("required", [])
 
     def test_step_map_schema_has_required_fields(self):
-        """StepMap should have input_size and output_size as required."""
-        json_schema = StepMap.model_json_schema()
-        required = json_schema.get("required", [])
-        assert "input_size" in required
-        assert "output_size" in required
+        """StepMap size fields should default to zero."""
+        assert StepMap.model_fields["input_size"].default == 0
+        assert StepMap.model_fields["output_size"].default == 0
+        step = StepMap()
+        assert step.input_size == 0
+        assert step.output_size == 0
 
     def test_publication_date_field_exists(self):
         """publication_date field should exist in the Metadata model."""
@@ -1387,13 +1433,13 @@ class TestTitleDict:
         assert "generated" in title
 
     def test_title_dict_missing_keys_are_added(self):
-        """Title dict missing keys should have them added with empty strings."""
+        """Title dict missing keys should have them added with null values."""
         metadata = self._make_base_metadata({"filename": "my file"})
         title = metadata.title
         assert isinstance(title, dict)
         assert title["filename"] == "my file"
-        assert title["extracted"] == ""
-        assert title["generated"] == ""
+        assert title["extracted"] is None
+        assert title["generated"] is None
 
     def test_title_dict_none_values_preserved(self):
         """Title dict with None values should preserve them."""

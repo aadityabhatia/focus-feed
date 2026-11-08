@@ -1146,8 +1146,8 @@ class TestGenerateAllFeeds:
 
     def test_idempotent_regeneration(self, tmp_path):
         """Feeds should be regenerated identically each time."""
-        write_metadata_file(tmp_path, "videos/lecture.mp4")
-        write_metadata_file(tmp_path, "documents/doc.pdf")
+        write_metadata_file(tmp_path, "videos/lecture.mp4", size=9)
+        write_metadata_file(tmp_path, "documents/doc.pdf", size=9)
         # Create root feed.json so root-level feeds are generated
         (tmp_path / "feed.json").write_text(
             json.dumps({"title": "Root Feed", "description": "Root Description"}),
@@ -3138,6 +3138,22 @@ class TestHashBasedGuid:
         assert f'<guid isPermaLink="false">{expected_guid}</guid>' in content
         stored = json.loads((data_dir / f"{filepath}.json").read_text(encoding="utf-8"))
         assert stored["hash"] == expected_hash
+
+    def test_hash_computation_handles_invalid_utf8_metadata(self, tmp_path):
+        """Invalid UTF-8 metadata should not abort hash computation."""
+        data_dir = tmp_path / "data"
+        source_path = data_dir / "videos" / "lecture.mp4"
+        source_path.parent.mkdir(parents=True)
+        source_path.write_bytes(b"file data")
+        metadata_path = source_path.with_name(source_path.name + ".json")
+        metadata_path.write_bytes(b"\xff")
+        metadata = make_metadata("videos/lecture.mp4")
+
+        fg = FeedGenerator(data_dir=data_dir, base_url="https://example.com/feeds")
+        fg._ensure_hashes([metadata])
+
+        assert metadata.hash == hashlib.sha256(b"file data").hexdigest()
+        assert metadata_path.read_bytes() == b"\xff"
 
     def test_guid_fallback_for_mixed_hash_and_no_hash(self, tmp_path):
         """When some items have hash and others don't, each should use its own guid."""

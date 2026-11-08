@@ -17,6 +17,7 @@ from focus_feed.errors import (
     create_error_metadata,
     log_error,
 )
+from focus_feed.metadata import Metadata
 
 
 class TestExceptionHierarchy:
@@ -102,7 +103,11 @@ class TestCreateErrorMetadata:
         assert metadata["error"] == "disk full"
         assert metadata["filename"] == "lecture.mp4"
         assert metadata["filetype"] == "mp4"
-        assert metadata["title"] == {"filename": "lecture"}
+        assert metadata["title"] == {
+            "filename": "lecture",
+            "extracted": None,
+            "generated": None,
+        }
         assert "date" in metadata
         assert metadata["date"] is not None
         assert "processing_date" not in metadata
@@ -138,6 +143,24 @@ class TestCreateErrorMetadata:
         assert metadata["filename"] == "lecture.mp4"
         assert metadata["filetype"] == "mp4"
 
+    def test_error_metadata_validates_against_metadata_model(self, tmp_path):
+        """Generated error metadata should satisfy the canonical metadata schema."""
+        source = tmp_path / "lecture.mp4"
+        source.write_bytes(b"video")
+        data = create_error_metadata(
+            ProcessingError("processing failed"),
+            source.name,
+            str(source),
+            "mp4",
+        )
+
+        metadata = Metadata.model_validate(data)
+
+        assert metadata.filename == "lecture.mp4"
+        assert metadata.filetype == "mp4"
+        assert metadata.size == 0
+        assert metadata.error == "processing failed"
+
     @pytest.mark.parametrize(
         "exc_class,exc_msg",
         [
@@ -162,13 +185,14 @@ class TestCreateErrorMetadata:
         assert "filepath" not in metadata
 
     def test_none_values_are_omitted(self, tmp_path):
-        """No null-valued top-level or title fields should be emitted."""
+        """Top-level nulls are omitted while title nulls are preserved."""
         source = tmp_path / "missing.pdf"
         metadata = create_error_metadata(
             ProcessingError("failed"), "missing.pdf", str(source), mtime=None
         )
         assert all(value is not None for value in metadata.values())
-        assert all(value is not None for value in metadata["title"].values())
+        assert metadata["title"]["extracted"] is None
+        assert metadata["title"]["generated"] is None
 
     def test_empty_message_uses_class_name(self):
         """Error metadata should use exception class name when message is empty."""

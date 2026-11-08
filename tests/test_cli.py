@@ -25,6 +25,7 @@ from dotenv import load_dotenv
 import pytest
 
 from focus_feed.cli import app, main
+from focus_feed.metadata import Metadata
 from focus_feed.scanner import ScannedFile
 
 # ---------------------------------------------------------------------------
@@ -1477,6 +1478,108 @@ class TestWatchCommand:
 class TestFeedsCommand:
     """Tests for the feeds command (T5.4)."""
 
+    def test_finalization_preserves_step_failure(self, valid_env, tmp_data_dir):
+        """Finalization must not erase a step-map failure without top-level error."""
+        from focus_feed.cli import _finalize_incomplete_json
+
+        source = tmp_data_dir / "failed.mp4"
+        source.write_bytes(b"video")
+        metadata = {
+            "title": {"filename": "failed", "extracted": None, "generated": None},
+            "filename": "failed.mp4",
+            "filetype": "mp4",
+            "transcribe": {"status": "failed", "error": "transcription failed"},
+            "summarize": {"status": None},
+        }
+        json_path = tmp_data_dir / "failed.mp4.json"
+        original = json.dumps(metadata)
+        json_path.write_text(original)
+
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
+            success_count, error_count = _finalize_incomplete_json(tmp_data_dir)
+
+        assert (success_count, error_count) == (0, 0)
+        assert json_path.read_text() == original
+        MockSummarizer.return_value.generate_title.assert_not_called()
+
+    def test_finalization_preserves_schema_fields_for_audio_media(self, valid_env, tmp_data_dir):
+        """Finalization handles non-MP4 media and retains existing metadata fields."""
+        from focus_feed.cli import _finalize_incomplete_json
+
+        source = tmp_data_dir / "lecture.m4a"
+        source.write_bytes(b"audio")
+        metadata = {
+            "title": {"filename": "lecture", "extracted": None, "generated": "Lecture"},
+            "filename": "lecture.m4a",
+            "filetype": "m4a",
+            "date": 1728931200.123,
+            "hash": "abc123",
+            "publication_date": 1728000000.456,
+            "duration": 45.5,
+            "creation_time": "2024-01-15T10:30:00Z",
+            "content": "Existing transcript",
+            "summary": "Existing summary",
+            "transcribe": {"status": "complete"},
+            "summarize": {"status": "in_progress"},
+        }
+        json_path = tmp_data_dir / "lecture.m4a.json"
+        json_path.write_text(json.dumps(metadata))
+
+        success_count, error_count = _finalize_incomplete_json(tmp_data_dir)
+
+        assert (success_count, error_count) == (1, 0)
+        finalized = json.loads(json_path.read_text())
+        for field in (
+            "hash",
+            "publication_date",
+            "duration",
+            "creation_time",
+            "content",
+            "summary",
+        ):
+            assert finalized[field] == metadata[field]
+        assert finalized["transcribe"]["status"] == "complete"
+        assert finalized["summarize"]["status"] == "complete"
+
+    def test_feeds_counts_audio_media(self, runner, valid_env, tmp_data_dir):
+        """The feeds summary should count eligible non-MP4 media as podcasts."""
+        (tmp_data_dir / "lecture.m4a").write_bytes(b"audio")
+        metadata = _make_valid_metadata(
+            filepath="lecture.m4a", filename="lecture.m4a", filetype="m4a"
+        )
+        metadata["transcribe"] = {"status": "complete"}
+        metadata["summarize"] = {"status": "complete"}
+        metadata["content"] = "Test transcript"
+        metadata["summary"] = "Test summary"
+        (tmp_data_dir / "lecture.m4a.json").write_text(json.dumps(metadata))
+
+        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
+            MockGen.return_value.generate_all_feeds.return_value = None
+            result = runner.invoke(app, ["feeds", str(tmp_data_dir)])
+
+        assert result.exit_code == 0
+        assert "Podcast feed: 1 item(s)" in result.output
+
+    def test_generate_feeds_counts_audio_media(self, valid_env, tmp_data_dir):
+        """The shared feed count helper should count all eligible media types."""
+        from focus_feed.cli import _generate_feeds
+
+        (tmp_data_dir / "lecture.m4a").write_bytes(b"audio")
+        metadata = _make_valid_metadata(
+            filepath="lecture.m4a", filename="lecture.m4a", filetype="m4a"
+        )
+        metadata["transcribe"] = {"status": "complete"}
+        metadata["summarize"] = {"status": "complete"}
+        metadata["content"] = "Test transcript"
+        metadata["summary"] = "Test summary"
+        (tmp_data_dir / "lecture.m4a.json").write_text(json.dumps(metadata))
+
+        with mock.patch("focus_feed.feeds.FeedGenerator") as MockGen:
+            MockGen.return_value.generate_all_feeds.return_value = None
+            counts = _generate_feeds(tmp_data_dir)
+
+        assert counts == {"podcast": 1, "articles": 0}
+
     def test_finalize_incomplete_json_does_not_touch_sibling_directories(self, valid_env, tmp_path):
         """A C10 path should not finalize similarly prefixed sibling directories."""
         from focus_feed.cli import _finalize_incomplete_json
@@ -2330,6 +2433,26 @@ class TestTranscribeCommand:
         assert result.exit_code == 1
         assert "1 failed" in result.output
 
+    def test_transcribe_failure_persists_step_error(self, runner, valid_env, tmp_data_dir):
+        """Transcription failures should be saved in the step map and remain valid metadata."""
+        source = tmp_data_dir / "bad.mp4"
+        source.write_bytes(b"bad data")
+
+        with mock.patch("focus_feed.services.transcriber.Transcriber") as MockTranscriber:
+            MockTranscriber.return_value.transcribe.side_effect = RuntimeError(
+                "Transcription failed"
+            )
+            result = runner.invoke(app, ["transcribe", str(tmp_data_dir)])
+
+        assert result.exit_code == 1
+        data = json.loads((tmp_data_dir / "bad.mp4.json").read_text())
+        assert data["transcribe"]["error"] == "Transcription failed"
+        assert data["transcribe"]["status"] is None
+        metadata = Metadata.from_json_file(tmp_data_dir / "bad.mp4.json")
+        assert metadata.transcribe is not None
+        assert metadata.transcribe.error == "Transcription failed"
+        assert metadata.transcribe.status is None
+
     def test_transcribe_with_config_file(self, runner, valid_env, tmp_data_dir, tmp_path):
         """Transcribe should accept --config-file option."""
         config_file = tmp_path / "custom.env"
@@ -2606,6 +2729,32 @@ class TestSummarizeCommand:
         assert data["summary"] == "Key takeaways."
         assert data["description"] == ""  # MP4: description stays blank
         assert data["summarize"]["status"] == "complete"
+
+    def test_summarize_failure_persists_step_error(self, runner, valid_env, tmp_data_dir):
+        """Summarization failures should be saved in the summarize step map."""
+        source = tmp_data_dir / "lecture.mp4"
+        source.write_bytes(b"video data")
+        (tmp_data_dir / "lecture.mp4.json").write_text(
+            json.dumps(
+                {
+                    "title": {"filename": "lecture", "extracted": None, "generated": None},
+                    "filename": "lecture.mp4",
+                    "filetype": "mp4",
+                    "content": "Transcript content",
+                    "transcribe": {"status": "complete"},
+                    "summarize": {"status": None},
+                }
+            )
+        )
+
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
+            MockSummarizer.return_value.summarize.side_effect = RuntimeError("Summarization failed")
+            result = runner.invoke(app, ["summarize", str(tmp_data_dir)])
+
+        assert result.exit_code == 1
+        data = json.loads((tmp_data_dir / "lecture.mp4.json").read_text())
+        assert data["summarize"]["error"] == "Summarization failed"
+        assert data["summarize"]["status"] is None
 
     def test_summarize_force_flag_resummarizes_complete_files(
         self, runner, valid_env, tmp_data_dir
@@ -3534,6 +3683,19 @@ class TestFindFilesNeedingMetadataExtraction:
         assert data["filetype"] == "pdf"
         assert data["extract"]["status"] == "complete"
 
+    def test_extract_failure_persists_step_error(self, runner, valid_env, tmp_data_dir):
+        """Extraction failures should be saved in the extract step map."""
+        (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
+
+        with mock.patch("focus_feed.services.extractors.PDFExtractor") as MockExtractor:
+            MockExtractor.return_value.extract.side_effect = RuntimeError("Extraction failed")
+            result = runner.invoke(app, ["extract", str(tmp_data_dir)])
+
+        assert result.exit_code == 1
+        data = json.loads((tmp_data_dir / "doc.pdf.json").read_text())
+        assert data["extract"]["error"] == "Extraction failed"
+        assert data["extract"]["status"] is None
+
     def test_extract_discovers_docling_file_and_saves_title_provenance(
         self, runner, valid_env, tmp_data_dir
     ):
@@ -3825,6 +3987,38 @@ class TestTitleCommand:
         assert data["generate_title"]["input_tokens"] == 30
         assert data["generate_title"]["output_tokens"] == 5
 
+    def test_title_fills_filename_and_uses_millisecond_timestamps(
+        self, runner, valid_env, tmp_data_dir
+    ):
+        """Title updates fill title.filename and use the shared timestamp helper."""
+        (tmp_data_dir / "lecture.mp4").write_bytes(b"video data")
+        json_path = tmp_data_dir / "lecture.mp4.json"
+        json_path.write_text(
+            json.dumps(
+                {
+                    "title": {"filename": "", "extracted": None, "generated": None},
+                    "filename": "lecture.mp4",
+                    "filetype": "mp4",
+                    "content": "Transcript content",
+                    "transcribe": {"status": "complete"},
+                    "summarize": {"status": "complete"},
+                }
+            )
+        )
+
+        with (
+            mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer,
+            mock.patch("focus_feed.cli.now_timestamp", side_effect=[123.456, 123.789]),
+        ):
+            MockSummarizer.return_value.generate_title.return_value = ("Lecture Title", 10, 5)
+            result = runner.invoke(app, ["title", str(tmp_data_dir)])
+
+        assert result.exit_code == 0
+        finalized = json.loads(json_path.read_text())
+        assert finalized["title"]["filename"] == "lecture"
+        assert finalized["generate_title"]["start_time"] == 123.456
+        assert finalized["generate_title"]["end_time"] == 123.789
+
     def test_title_skips_files_with_proper_title(self, runner, valid_env, tmp_data_dir):
         """Title should skip files that already have a generated title."""
         (tmp_data_dir / "doc.pdf").write_bytes(b"pdf data")
@@ -4091,6 +4285,53 @@ class TestTitleCommand:
 
         assert result.exit_code == 1
         assert "1 failed" in result.output
+
+    def test_title_failure_persists_step_error(self, runner, valid_env, tmp_data_dir):
+        """Title-generation failures should be saved in the generate_title step map."""
+        source = tmp_data_dir / "doc.pdf"
+        source.write_bytes(b"pdf data content")
+        (tmp_data_dir / "doc.pdf.json").write_text(
+            json.dumps(
+                {
+                    "title": {"filename": "", "extracted": None, "generated": None},
+                    "filename": "doc.pdf",
+                    "filetype": "pdf",
+                    "content": "Document content",
+                    "extract": {"status": "complete"},
+                }
+            )
+        )
+
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
+            MockSummarizer.return_value.generate_title.side_effect = RuntimeError("Title failed")
+            result = runner.invoke(app, ["title", str(tmp_data_dir)])
+
+        assert result.exit_code == 1
+        data = json.loads((tmp_data_dir / "doc.pdf.json").read_text())
+        assert data["generate_title"]["error"] == "Title failed"
+        assert data["generate_title"]["status"] is None
+
+    def test_transcribe_and_summarize_output_loads_as_metadata(
+        self, runner, valid_env, tmp_data_dir
+    ):
+        """Granular command output includes required title and size metadata."""
+        source = tmp_data_dir / "lecture.mp4"
+        source.write_bytes(b"video data")
+
+        with mock.patch("focus_feed.services.transcriber.Transcriber") as MockTranscriber:
+            MockTranscriber.return_value.transcribe.return_value = "Transcript content"
+            transcribe_result = runner.invoke(app, ["transcribe", str(tmp_data_dir)])
+        assert transcribe_result.exit_code == 0
+
+        with mock.patch("focus_feed.services.summarizer.Summarizer") as MockSummarizer:
+            MockSummarizer.return_value.summarize.return_value = ("Key takeaways", 10, 5)
+            summarize_result = runner.invoke(app, ["summarize", str(tmp_data_dir)])
+        assert summarize_result.exit_code == 0
+
+        metadata = Metadata.from_json_file(tmp_data_dir / "lecture.mp4.json")
+        assert isinstance(metadata.title, dict)
+        assert metadata.title["filename"] == "lecture"
+        assert metadata.size == source.stat().st_size
 
     def test_title_outputs_generated_title(self, runner, valid_env, tmp_data_dir):
         """Title command should output the generated title."""
