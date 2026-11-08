@@ -19,7 +19,8 @@ from focus_feed.errors import (
     create_error_metadata,
 )
 from focus_feed.metadata import Metadata, StepMap
-from focus_feed.scanner import Scanner
+from focus_feed.producer import Producer
+from focus_feed.scanner import ScannedFile, Scanner
 from focus_feed.services.extractors import (
     HTMLExtractor,
     PDFExtractor,
@@ -103,6 +104,8 @@ class TestConfigMetadataIntegration:
             "PROMPT_PODCAST": "Test podcast prompt",
             "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
 
     def test_config_loads_and_metadata_created_with_config_values(self) -> None:
@@ -318,11 +321,10 @@ class TestScannerMetadataIntegration:
 
 
 class TestProducerComponent:
-    """Tests for producer-like logic with mocked services."""
+    """Tests for the Producer with mocked services."""
 
     def test_file_type_detection(self) -> None:
         """File type should be correctly detected from extension."""
-        # Simulate file type detection logic
         test_cases = [
             ("video.mp4", "mp4"),
             ("doc.pdf", "pdf"),
@@ -337,50 +339,56 @@ class TestProducerComponent:
 
     def test_producer_dispatch_logic_with_mocks(self, tmp_path: Path) -> None:
         """Producer should dispatch to correct services based on file type."""
-        # Setup mock services
         transcriber = MockTranscriber()
         summarizer = MockSummarizer()
-
-        # Simulate processing MP4 file
         mp4_file = tmp_path / "test.mp4"
         mp4_file.write_bytes(b"fake")
+        scanned = ScannedFile(
+            filepath=mp4_file.name,
+            absolute_path=str(mp4_file),
+            filename=mp4_file.name,
+            filetype="mp4",
+        )
+        producer = Producer(
+            transcriber=cast(Any, transcriber),
+            summarizer=cast(Any, summarizer),
+            pdf_extractor=PDFExtractor(),
+            html_extractor=HTMLExtractor(),
+        )
 
-        # Producer logic for MP4
-        filetype = "mp4"
-        if filetype == "mp4":
-            transcript = transcriber.transcribe(str(mp4_file))
-            summary, _, _ = summarizer.summarize(transcript)
+        metadata = producer.process_file(scanned)
 
         assert transcriber.call_count == 1
-        assert summarizer.call_count == 1
-        assert transcript == "Mock transcript for testing"
-        assert summary == "Mock summary of key takeaways"
+        assert summarizer.call_count == 2  # summarize and generate_title
+        assert transcriber.called_with == [str(mp4_file)]
+        assert "Mock transcript for testing" in summarizer.called_with
+        assert metadata is not None
+        assert metadata.content == "Mock transcript for testing"
+        assert metadata.summary == "Mock summary of key takeaways"
 
     def test_producer_creates_valid_metadata_for_mp4(self, tmp_path: Path) -> None:
-        """Producer should create valid metadata for MP4 files."""
+        """Producer should write feed-eligible metadata for MP4 files."""
         transcriber = MockTranscriber()
         summarizer = MockSummarizer()
-
         mp4_file = tmp_path / "lecture.mp4"
         mp4_file.write_bytes(b"fake mp4")
-
-        # Simulate producer processing
-        transcript = transcriber.transcribe(str(mp4_file))
-        summary, _, _ = summarizer.summarize(transcript)
-        stat = mp4_file.stat()
-
-        metadata = Metadata(
-            title="Lecture",
-            description=summary,
-            filename="lecture.mp4",
+        scanned = ScannedFile(
+            filepath=mp4_file.name,
+            absolute_path=str(mp4_file),
+            filename=mp4_file.name,
             filetype="mp4",
-            date=int(stat.st_mtime),
-            size=stat.st_size,
-            content=transcript,
-            summary=summary,
-            transcribe=StepMap(status="complete", input_size=stat.st_size, output_size=0),
-            summarize=StepMap(status="complete", input_size=0, output_size=0),
         )
+        producer = Producer(
+            transcriber=cast(Any, transcriber),
+            summarizer=cast(Any, summarizer),
+            pdf_extractor=PDFExtractor(),
+            html_extractor=HTMLExtractor(),
+        )
+
+        producer.process_file(scanned)
+
+        metadata_path = mp4_file.with_name(f"{mp4_file.name}.json")
+        metadata = Metadata.from_json_file(metadata_path)
 
         assert metadata.transcribe is not None
         assert metadata.transcribe.status == "complete"

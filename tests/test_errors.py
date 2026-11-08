@@ -1,6 +1,5 @@
 """Tests for the error handling utilities."""
 
-from io import StringIO
 import json
 import logging
 
@@ -212,24 +211,6 @@ class TestCreateErrorMetadata:
 class TestLogError:
     """Tests for the log_error helper function."""
 
-    @pytest.fixture
-    def capture_logger(self):
-        """Create a logger with a StringIO handler to capture output."""
-        log = logging.getLogger("test_log_error")
-        log.handlers = []
-        log.setLevel(logging.DEBUG)
-        stream = StringIO()
-        handler = logging.StreamHandler(stream)
-        handler.setFormatter(
-            logging.Formatter(
-                fmt="%(asctime)s | %(levelname)s | %(message)s",
-                datefmt="%Y-%m-%dT%H:%M:%S%z",
-            )
-        )
-        handler.setLevel(logging.DEBUG)
-        log.addHandler(handler)
-        return log, stream
-
     @pytest.mark.parametrize(
         "exc,exc_name,exc_msg",
         [
@@ -241,7 +222,7 @@ class TestLogError:
     )
     def test_logs_exception_details(self, capture_logger, exc, exc_name, exc_msg):
         """log_error should include both the exception class name and message."""
-        log, stream = capture_logger
+        log, stream = capture_logger()
         log_error(exc, filepath="lecture.mp4", logger=log)
         output = stream.getvalue()
         assert exc_name in output
@@ -249,7 +230,7 @@ class TestLogError:
 
     def test_logs_filepath(self, capture_logger):
         """log_error should include the filepath in the log output."""
-        log, stream = capture_logger
+        log, stream = capture_logger()
         exc = ProcessingError("disk full")
         log_error(exc, filepath="videos/lecture.mp4", logger=log)
         output = stream.getvalue()
@@ -257,7 +238,7 @@ class TestLogError:
 
     def test_logs_timestamp(self, capture_logger):
         """log_error should include a timestamp in the log output."""
-        log, stream = capture_logger
+        log, stream = capture_logger()
         exc = ProcessingError("disk full")
         log_error(exc, filepath="videos/lecture.mp4", logger=log)
         output = stream.getvalue()
@@ -270,7 +251,7 @@ class TestLogError:
 
     def test_log_level_is_error(self, capture_logger):
         """log_error should log at the ERROR level."""
-        log, stream = capture_logger
+        log, stream = capture_logger()
         exc = ProcessingError("disk full")
         log_error(exc, filepath="videos/lecture.mp4", logger=log)
         output = stream.getvalue()
@@ -278,7 +259,7 @@ class TestLogError:
 
     def test_logs_without_filepath(self, capture_logger):
         """log_error should work without a filepath argument."""
-        log, stream = capture_logger
+        log, stream = capture_logger()
         exc = ProcessingError("disk full")
         log_error(exc, logger=log)
         output = stream.getvalue()
@@ -293,7 +274,7 @@ class TestLogError:
 
     def test_consistent_format(self, capture_logger):
         """log_error should produce a consistent format across calls."""
-        log, stream = capture_logger
+        log, stream = capture_logger()
         exc1 = ProcessingError("error one")
         exc2 = ProcessingError("error two")
         log_error(exc1, filepath="file1.mp4", logger=log)
@@ -315,7 +296,7 @@ class TestLogError:
     )
     def test_stage_logging(self, capture_logger, stage, expected_in_output):
         """log_error should include stage when provided, omit when not."""
-        log, stream = capture_logger
+        log, stream = capture_logger()
         exc = ProcessingError("processing failed")
         if stage:
             log_error(exc, filepath="lecture.mp4", logger=log, stage=stage)
@@ -382,21 +363,6 @@ class TestSanitizeEndpoint:
 
 class TestConfigureErrorLog:
     """Tests for the _configure_error_log function."""
-
-    @pytest.fixture(autouse=True)
-    def cleanup_error_log_handler(self, tmp_path):
-        """Ensure error.log handler is reset after each test.
-
-        Some tests in this class (e.g. test_returns_none_on_permission_error)
-        may leave the handler in an unexpected state.  The autouse
-        ``isolate_error_log`` fixture in conftest.py handles re-configuration
-        before the next test, but we also explicitly reset here to keep
-        each test self-contained.
-        """
-        _configure_error_log(data_dir=tmp_path, force=True)
-        yield
-        # Reset to a temp dir (not CWD) to avoid creating error.log in CWD
-        _configure_error_log(data_dir=tmp_path, force=True)
 
     def test_creates_error_log_file(self, tmp_path):
         """_configure_error_log should create an error.log file."""
@@ -543,27 +509,9 @@ class TestConfigureErrorLog:
 class TestLogErrorStdout:
     """Tests for stdout printing in log_error."""
 
-    @pytest.fixture
-    def capture_logger(self):
-        """Create a logger with a StringIO handler to capture stderr output."""
-        log = logging.getLogger("test_log_error_stdout")
-        log.handlers = []
-        log.setLevel(logging.DEBUG)
-        stream = StringIO()
-        handler = logging.StreamHandler(stream)
-        handler.setFormatter(
-            logging.Formatter(
-                fmt="%(asctime)s | %(levelname)s | %(message)s",
-                datefmt="%Y-%m-%dT%H:%M:%S%z",
-            )
-        )
-        handler.setLevel(logging.DEBUG)
-        log.addHandler(handler)
-        return log, stream
-
     def test_print_stdout_outputs_to_stdout(self, capture_logger, capsys):
         """log_error with print_stdout=True should print to stdout."""
-        log, _ = capture_logger
+        log, _ = capture_logger("test_log_error_stdout")
         exc = ProcessingError("connection failed")
         log_error(
             exc,
@@ -587,7 +535,7 @@ class TestLogErrorStdout:
 
     def test_print_stdout_false_no_stdout(self, capture_logger, capsys):
         """log_error with print_stdout=False should not print to stdout."""
-        log, _ = capture_logger
+        log, _ = capture_logger("test_log_error_stdout")
         exc = ProcessingError("some error")
         log_error(exc, logger=log, print_stdout=False)
         captured = capsys.readouterr()
@@ -596,7 +544,7 @@ class TestLogErrorStdout:
 
     def test_print_stdout_includes_error_type(self, capture_logger, capsys):
         """stdout output should include the error type (class name)."""
-        log, _ = capture_logger
+        log, _ = capture_logger("test_log_error_stdout")
         exc = SummarizationError("api failure")
         log_error(exc, logger=log, print_stdout=True)
         captured = capsys.readouterr()
@@ -604,7 +552,7 @@ class TestLogErrorStdout:
 
     def test_print_stdout_includes_endpoint(self, capture_logger, capsys):
         """stdout output should include the sanitized endpoint."""
-        log, _ = capture_logger
+        log, _ = capture_logger("test_log_error_stdout")
         exc = ProcessingError("connection refused")
         log_error(
             exc,
@@ -619,7 +567,7 @@ class TestLogErrorStdout:
 
     def test_print_stdout_includes_retry_info(self, capture_logger, capsys):
         """stdout output should include retry attempt information."""
-        log, _ = capture_logger
+        log, _ = capture_logger("test_log_error_stdout")
         exc = ProcessingError("timeout")
         log_error(exc, retry_info="attempt=3/4", logger=log, print_stdout=True)
         captured = capsys.readouterr()
@@ -627,7 +575,7 @@ class TestLogErrorStdout:
 
     def test_print_stdout_without_optional_fields(self, capture_logger, capsys):
         """stdout output should work without optional fields."""
-        log, _ = capture_logger
+        log, _ = capture_logger("test_log_error_stdout")
         exc = ProcessingError("simple error")
         log_error(exc, logger=log, print_stdout=True)
         captured = capsys.readouterr()

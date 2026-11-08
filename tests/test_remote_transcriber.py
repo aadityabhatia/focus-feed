@@ -96,6 +96,18 @@ class TestRemoteTranscriberInit:
                 api_key="transcribe-key",
             )
 
+    def test_uses_injected_client(self, mock_config: Settings) -> None:
+        """An injected client should be used without OpenAI initialization."""
+        client = mock.MagicMock()
+        mock_config.transcription_endpoint = ""
+        mock_config.transcription_api_key = ""
+
+        with mock.patch("focus_feed.services.remote_transcriber.OpenAI") as openai:
+            transcriber = RemoteTranscriber(config=mock_config, client=client)
+
+        assert transcriber._client is client
+        openai.assert_not_called()
+
     @pytest.mark.parametrize(
         "unset_attr,error_msg",
         [

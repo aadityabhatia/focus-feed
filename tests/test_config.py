@@ -241,6 +241,8 @@ class TestEnvFileLoading:
             "PROMPT_PODCAST=My podcast prompt\n"
             "PROMPT_PODCAST_REFLECTION=My podcast reflection prompt\n"
             "PROMPT_TITLE=My title prompt\n"
+            "TRANSCRIPTION_ENDPOINT=https://transcribe.example.com/v1\n"
+            "TRANSCRIPTION_API_KEY=transcribe-test-key\n"
         )
         env_file = tmp_path / ".env"
         env_file.write_text(env_content)
@@ -271,6 +273,8 @@ class TestEnvFileLoading:
             "PROMPT_PODCAST=Podcast prompt from file\n"
             "PROMPT_PODCAST_REFLECTION=Podcast reflection prompt from file\n"
             "PROMPT_TITLE=Prompt from file\n"
+            "TRANSCRIPTION_ENDPOINT=https://transcribe.example.com/v1\n"
+            "TRANSCRIPTION_API_KEY=transcribe-test-key\n"
         )
         env_file = tmp_path / ".env"
         env_file.write_text(env_content)
@@ -363,6 +367,8 @@ class TestSingletonPattern:
             "PROMPT_PODCAST": "Test podcast prompt",
             "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             import focus_feed.config as config_module
@@ -390,6 +396,8 @@ class TestSingletonPattern:
             "PROMPT_PODCAST": "Test podcast prompt",
             "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
         env2 = {
             "BASE_URL": "https://second.example.com",
@@ -401,6 +409,8 @@ class TestSingletonPattern:
             "PROMPT_PODCAST": "Test podcast prompt",
             "PROMPT_PODCAST_REFLECTION": "Test podcast reflection prompt",
             "PROMPT_TITLE": "Test title prompt",
+            "TRANSCRIPTION_ENDPOINT": "https://transcribe.example.com/v1",
+            "TRANSCRIPTION_API_KEY": "transcribe-test-key",
         }
 
         import focus_feed.config as config_module
