@@ -93,6 +93,7 @@ millisecond precision.
     numbers in metadata files.
 """
 
+from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
@@ -140,6 +141,60 @@ _logger = logging.getLogger("focus_feed")
 
 # Required keys for the title dict (design doc section 3.3).
 _TITLE_DICT_KEYS: frozenset[str] = frozenset({"filename", "extracted", "generated"})
+
+
+def now_timestamp() -> float:
+    """Return the current UNIX epoch time with millisecond precision."""
+    return int(datetime.now(UTC).timestamp() * 1000) / 1000.0
+
+
+def write_metadata_json(data: dict[str, Any], source_path: str | Path) -> None:
+    """Write schema-complete metadata atomically beside its source file.
+
+    The writer removes the legacy ``filepath`` key, supplies required
+    ``Metadata`` fields and source file details when available, and writes the
+    result through a temporary file before replacing the final JSON file.
+    Null values in *data*, including nested title values, are preserved.
+
+    Args:
+        data: Metadata fields to normalize and write.
+        source_path: Path to the source file the metadata describes.
+    """
+    path = Path(source_path)
+    json_path = path.with_name(path.name + ".json")
+    sanitized_stem = path.stem.replace("_", " ")
+
+    data.pop("filepath", None)
+    data.setdefault("filename", path.name)
+    data.setdefault("filetype", path.suffix.removeprefix(".").lower())
+
+    title = data.get("title")
+    if not isinstance(title, dict):
+        title = {
+            "filename": sanitized_stem,
+            "extracted": None,
+            "generated": None,
+        }
+        data["title"] = title
+    else:
+        for key in _TITLE_DICT_KEYS:
+            title.setdefault(key, None)
+        filename_title = title.get("filename")
+        if not isinstance(filename_title, str) or not filename_title.strip():
+            title["filename"] = sanitized_stem
+
+    try:
+        stat_result = path.stat()
+    except OSError:
+        data.setdefault("size", 0)
+    else:
+        data["size"] = stat_result.st_size
+        data["mtime"] = stat_result.st_mtime
+
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    temporary_path = json_path.with_name(json_path.name + ".tmp")
+    temporary_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    temporary_path.replace(json_path)
 
 
 def _apply_module_prefix_to_title(title: str, filepath: str) -> str:
@@ -210,7 +265,7 @@ class StepMap(BaseModel):
         error: Error message for this step, if processing failed.
     """
 
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     status: str | None = Field(
         default=None,
@@ -225,10 +280,12 @@ class StepMap(BaseModel):
         description="UNIX epoch end time (millisecond precision)",
     )
     input_size: int = Field(
+        default=0,
         ge=0,
         description="Input size in bytes",
     )
     output_size: int = Field(
+        default=0,
         ge=0,
         description="Output size in bytes",
     )
@@ -426,9 +483,9 @@ class Metadata(BaseModel):
           compatibility).  A deprecation warning including the filename is
           emitted by :meth:`_warn_string_title` after model construction.
         - If *v* is a dict, ensure it has all three required keys
-          (``filename``, ``extracted``, ``generated``).  Missing keys are
-          added with empty-string values so that downstream code can rely
-          on the dict always having exactly those keys.
+          (``filename``, ``extracted``, ``generated``). Missing keys are
+          added with null values so that downstream code can rely on the dict
+          always having exactly those keys.
         """
         if isinstance(v, str):
             return v
@@ -437,11 +494,11 @@ class Metadata(BaseModel):
             missing = _TITLE_DICT_KEYS - set(v.keys())
             if missing:
                 _logger.warning(
-                    "Title dict is missing keys %s; adding them with empty values.",
+                    "Title dict is missing keys %s; adding them with null values.",
                     sorted(missing),
                 )
                 for key in missing:
-                    v[key] = ""
+                    v[key] = None
             return v
 
         return v
