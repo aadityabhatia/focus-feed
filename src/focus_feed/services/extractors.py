@@ -31,7 +31,6 @@ from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
-import re
 import shutil
 import subprocess
 from typing import Any
@@ -40,56 +39,12 @@ from bs4 import BeautifulSoup
 import httpx
 from pypdf import PdfReader
 
-from focus_feed.config import get_config
+from focus_feed.config import Settings, get_config
+from focus_feed.utils import clean_title, sanitize_content
 
 _logger = logging.getLogger("focus_feed")
-
-# Pattern matching control characters that are invalid in XML (everything
-# below 0x20 except tab \x09, newline \x0a, and carriage return \x0d).
-# These characters can leak into extracted text from PDFs and other binary
-# formats, causing feed generation to fail.
-_CONTROL_CHAR_PATTERN = re.compile(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]")
-
-
-def _clean_title(title: str | None) -> str | None:
-    """Clean up a title by replacing special characters with spaces.
-
-    Replaces underscores with spaces so that titles extracted from
-    filenames or metadata (which may use underscores as separators)
-    are human-readable.
-
-    Args:
-        title: The title string to clean, or None.
-
-    Returns:
-        The cleaned title with underscores replaced by spaces, or
-        None if the input was None.
-    """
-    if title is None:
-        return None
-    # Replace underscores with spaces
-    return title.replace("_", " ")
-
-
-def _sanitize_content(text: str | None) -> str | None:
-    """Remove control characters that are invalid in XML from extracted text.
-
-    PDFs and other binary formats can produce text containing control
-    characters (e.g. ``\\x00``-``\\x1f`` except tab/newline/CR, and
-    ``\\x7f``) that are not valid in XML and cause feed generation to fail.
-    This function strips those characters while preserving common
-    whitespace (``\\t``, ``\\n``, ``\\r``).
-
-    Args:
-        text: The extracted text, or None.
-
-    Returns:
-        The sanitized text with control characters removed, or None if
-        the input was None.
-    """
-    if text is None:
-        return None
-    return _CONTROL_CHAR_PATTERN.sub("", text)
+_clean_title = clean_title
+_sanitize_content = sanitize_content
 
 
 class PDFExtractor:
@@ -135,7 +90,7 @@ class PDFExtractor:
 
         # Title is always the filename (without extension, underscores→spaces).
         # The extracted title from PDF metadata is stored separately.
-        title: str | None = _clean_title(filename)
+        title: str | None = clean_title(filename)
         extracted: str | None = None
         description: str | None = None
         date: datetime | None = None
@@ -148,7 +103,7 @@ class PDFExtractor:
 
             if metadata is not None:
                 if metadata.title:
-                    extracted = _clean_title(str(metadata.title))
+                    extracted = clean_title(str(metadata.title))
                 if metadata.author:
                     description = str(metadata.author)
                 if metadata.creation_date:
@@ -164,7 +119,7 @@ class PDFExtractor:
             content = "\n".join(content_parts) if content_parts else None
             # Remove control characters that are invalid in XML and would
             # cause feed generation to fail.
-            content = _sanitize_content(content)
+            content = sanitize_content(content)
         except Exception as e:
             _logger.warning("Failed to extract PDF metadata from %s: %s", filepath, e)
 
@@ -249,7 +204,7 @@ class HTMLExtractor:
 
         # Title is always the filename (without extension, underscores→spaces).
         # The extracted title from <title> tag is stored separately.
-        title: str | None = _clean_title(filename)
+        title: str | None = clean_title(filename)
         extracted: str | None = None
         description: str | None = None
         date: datetime | None = None
@@ -265,7 +220,7 @@ class HTMLExtractor:
             if title_tag:
                 title_text = title_tag.string or title_tag.get_text()
                 if title_text and title_text.strip():
-                    extracted = _clean_title(title_text.strip())
+                    extracted = clean_title(title_text.strip())
 
             # Extract description from <meta name="description">
             desc_meta = soup.find("meta", attrs={"name": "description"})
@@ -276,7 +231,7 @@ class HTMLExtractor:
             # Extract plaintext content from the HTML body (tags removed)
             text_content = soup.get_text()
             # Remove control characters that are invalid in XML.
-            text_content = _sanitize_content(text_content)
+            text_content = sanitize_content(text_content)
 
             # Extract date from various sources
             date = self._extract_date(soup)
@@ -402,6 +357,10 @@ class DoclingExtractor:
 
     SUPPORTED_EXTENSIONS = frozenset({".pdf", ".docx", ".doc", ".pptx", ".ppt", ".xlsx", ".xls"})
 
+    def __init__(self, config: Settings | None = None) -> None:
+        """Initialize the extractor with optional application settings."""
+        self._config = config
+
     def extract(self, filepath: str | Path) -> dict[str, Any]:
         """Send a supported document to Docling and return its extracted Markdown.
 
@@ -418,7 +377,7 @@ class DoclingExtractor:
             ConnectionError: If the Docling API cannot be reached.
         """
         filepath = Path(filepath)
-        config = get_config()
+        config = self._config if self._config is not None else get_config()
         docling_api = config.docling_api
         if not docling_api:
             raise RuntimeError("DOCLING_API is not configured")
@@ -470,7 +429,7 @@ class DoclingExtractor:
             )
 
         return {
-            "title": _clean_title(filepath.stem),
+            "title": clean_title(filepath.stem),
             "extracted": None,
             "description": None,
             "date": int(stat_result.st_mtime * 1000) / 1000.0,
@@ -590,7 +549,7 @@ def get_audio_metadata(filepath: str | Path, filetype: str | None = None) -> dic
     # Extract title from metadata tags if available.
     title: str | None = tags.get("title")
     if title:
-        title = _clean_title(title)
+        title = clean_title(title)
 
     audio_meta = {
         "type": format_info.get("format_name"),

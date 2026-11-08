@@ -23,7 +23,8 @@ from urllib.parse import urlparse
 
 import click
 
-from focus_feed.scanner import _DOC_FILETYPES, MEDIA_FILETYPES
+from focus_feed.filetypes import DOCUMENT_FILETYPES, MEDIA_FILETYPES
+from focus_feed.utils import now_timestamp
 
 # ---------------------------------------------------------------------------
 # Module-level loggers
@@ -263,10 +264,8 @@ def create_error_metadata(
     Returns:
         A dictionary suitable for JSON serialization as an error metadata file.
     """
-    from focus_feed.metadata import now_timestamp
-
     timestamp = now_timestamp()
-    if filetype not in MEDIA_FILETYPES | _DOC_FILETYPES:
+    if filetype not in MEDIA_FILETYPES | DOCUMENT_FILETYPES:
         filetype = None
     if mtime is None:
         try:

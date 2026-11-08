@@ -10,15 +10,16 @@ step:
 
 - ``transcribe``: Step map for transcription progress (audio/video media files).
 - ``summarize``: Step map for summarization progress (all file types).
-- ``extract``: Step map for metadata extraction progress (PDF/HTML only).
+- ``extract``: Step map for metadata extraction progress (PDF/HTML and
+  Docling documents).
 - ``generate_title``: Step map for LLM title generation progress (all file
   types, when LLM title generation runs).
 
     Each step map contains a ``status`` field that can be ``None`` (not started),
     ``"in_progress"``, or ``"complete"``.  The :attr:`feed_eligible` computed
     property returns ``True`` only when all applicable steps are ``"complete"``
-    and there is no error.  For PDF/HTML files, both ``extract`` and
-    ``summarize`` must be complete; for audio/video media files, both
+    and there is no error.  For PDF/HTML and Docling document files, both
+    ``extract`` and ``summarize`` must be complete; for audio/video media files, both
     ``transcribe`` and ``summarize`` must be complete.
 
 Date fields (``date``) are stored as UNIX epoch floats with millisecond
@@ -36,7 +37,7 @@ millisecond precision.
             "description": "string (optional, extracted from source for PDF/HTML, empty for media)",
             "summary": "string (optional, LLM-generated key takeaways for all file types)",
             "filename": "lecture.mp4",
-            "filetype": "media|pdf|html",
+            "filetype": "<media|pdf|html|docx|doc|pptx|ppt|xlsx|xls>",
             "date": 1728931200.123,          # UNIX epoch (float, millisecond precision)
             "mtime": 1728931200.123,         # Source file modification time
             "publication_date": 1728931200.123,  # Document metadata date (PDF/HTML, optional)
@@ -93,7 +94,6 @@ millisecond precision.
     numbers in metadata files.
 """
 
-from datetime import UTC, datetime
 import json
 import logging
 from pathlib import Path
@@ -111,90 +111,14 @@ from pydantic import (
 )
 
 from focus_feed.errors import log_error
-from focus_feed.scanner import _DOC_FILETYPES
-
-# Audio and video filetypes that use the transcription processing path.
-_MEDIA_FILETYPES: frozenset[str] = frozenset(
-    {
-        "mp3",
-        "m4a",
-        "wav",
-        "webm",
-        "aac",
-        "flac",
-        "ogg",
-        "opus",
-        "mp4",
-        "mpeg",
-        "mpga",
-        "mkv",
-        "mov",
-        "avi",
-        "wmv",
-    }
-)
+from focus_feed.filetypes import DOCUMENT_FILETYPES, MEDIA_FILETYPES
+from focus_feed.metadata_io import write_metadata_json as write_metadata_json
+from focus_feed.utils import now_timestamp as now_timestamp
 
 # Step status values.
 _STEP_STATUS_COMPLETE = "complete"
 
 _logger = logging.getLogger("focus_feed")
-
-# Required keys for the title dict (design doc section 3.3).
-_TITLE_DICT_KEYS: frozenset[str] = frozenset({"filename", "extracted", "generated"})
-
-
-def now_timestamp() -> float:
-    """Return the current UNIX epoch time with millisecond precision."""
-    return int(datetime.now(UTC).timestamp() * 1000) / 1000.0
-
-
-def write_metadata_json(data: dict[str, Any], source_path: str | Path) -> None:
-    """Write schema-complete metadata atomically beside its source file.
-
-    The writer removes the legacy ``filepath`` key, supplies required
-    ``Metadata`` fields and source file details when available, and writes the
-    result through a temporary file before replacing the final JSON file.
-    Null values in *data*, including nested title values, are preserved.
-
-    Args:
-        data: Metadata fields to normalize and write.
-        source_path: Path to the source file the metadata describes.
-    """
-    path = Path(source_path)
-    json_path = path.with_name(path.name + ".json")
-    sanitized_stem = path.stem.replace("_", " ")
-
-    data.pop("filepath", None)
-    data.setdefault("filename", path.name)
-    data.setdefault("filetype", path.suffix.removeprefix(".").lower())
-
-    title = data.get("title")
-    if not isinstance(title, dict):
-        title = {
-            "filename": sanitized_stem,
-            "extracted": None,
-            "generated": None,
-        }
-        data["title"] = title
-    else:
-        for key in _TITLE_DICT_KEYS:
-            title.setdefault(key, None)
-        filename_title = title.get("filename")
-        if not isinstance(filename_title, str) or not filename_title.strip():
-            title["filename"] = sanitized_stem
-
-    try:
-        stat_result = path.stat()
-    except OSError:
-        data.setdefault("size", 0)
-    else:
-        data["size"] = stat_result.st_size
-        data["mtime"] = stat_result.st_mtime
-
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    temporary_path = json_path.with_name(json_path.name + ".tmp")
-    temporary_path.write_text(json.dumps(data, indent=2), encoding="utf-8")
-    temporary_path.replace(json_path)
 
 
 def _apply_module_prefix_to_title(title: str, filepath: str) -> str:
@@ -491,7 +415,7 @@ class Metadata(BaseModel):
             return v
 
         if isinstance(v, dict):
-            missing = _TITLE_DICT_KEYS - set(v.keys())
+            missing = {"filename", "extracted", "generated"} - set(v.keys())
             if missing:
                 _logger.warning(
                     "Title dict is missing keys %s; adding them with null values.",
@@ -542,7 +466,7 @@ class Metadata(BaseModel):
         """
         if self.error is not None:
             return False
-        if self.filetype in _MEDIA_FILETYPES:
+        if self.filetype in MEDIA_FILETYPES:
             if (
                 self.transcribe is not None
                 and self.transcribe.error is not None
@@ -559,7 +483,7 @@ class Metadata(BaseModel):
                 and self.summarize is not None
                 and self.summarize.status == _STEP_STATUS_COMPLETE
             )
-        if self.filetype in _DOC_FILETYPES:
+        if self.filetype in DOCUMENT_FILETYPES:
             if (
                 self.extract is not None
                 and self.extract.error is not None

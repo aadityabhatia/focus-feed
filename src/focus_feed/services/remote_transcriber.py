@@ -18,60 +18,27 @@ import json
 import logging
 import os
 from pathlib import Path
-import random
 import time
 from typing import Any
 
-from openai import (
-    APIConnectionError,
-    APITimeoutError,
-    AuthenticationError,
-    BadRequestError,
-    InternalServerError,
-    NotFoundError,
-    OpenAI,
-    PermissionDeniedError,
-    RateLimitError,
-)
+from openai import OpenAI
 
 from focus_feed.config import Settings, get_config
 from focus_feed.errors import TranscriptionError, log_error
+from focus_feed.retry import (
+    DEFAULT_BASE_DELAY,
+    DEFAULT_JITTER,
+    DEFAULT_MAX_RETRIES,
+    NON_RETRYABLE_ERRORS,
+    RETRYABLE_ERRORS,
+    calculate_backoff,
+)
 from focus_feed.services.audio_extractor import ensure_compatible_format
 
 _logger = logging.getLogger("focus_feed")
 
-# ---------------------------------------------------------------------------
-# Retry configuration constants
-# ---------------------------------------------------------------------------
-
-#: Maximum number of retry attempts for transient API failures.
-DEFAULT_MAX_RETRIES = 3
-
-#: Base delay in seconds for the first retry; doubles with each subsequent attempt.
-DEFAULT_BASE_DELAY = 1.0
-
-#: Maximum jitter factor applied on top of the exponential delay (0 to 1).
-DEFAULT_JITTER = 0.1
-
-# ---------------------------------------------------------------------------
-# Retryable vs. non-retryable exception mapping
-# ---------------------------------------------------------------------------
-
-#: Exceptions that indicate a transient failure and should be retried.
-_RETRYABLE_ERRORS: tuple[type[Exception], ...] = (
-    APIConnectionError,
-    APITimeoutError,
-    RateLimitError,
-    InternalServerError,
-)
-
-#: Exceptions that indicate a permanent failure and should not be retried.
-_NON_RETRYABLE_ERRORS: tuple[type[Exception], ...] = (
-    AuthenticationError,
-    BadRequestError,
-    PermissionDeniedError,
-    NotFoundError,
-)
+_RETRYABLE_ERRORS = RETRYABLE_ERRORS
+_NON_RETRYABLE_ERRORS = NON_RETRYABLE_ERRORS
 
 
 class RemoteTranscriber:
@@ -99,6 +66,7 @@ class RemoteTranscriber:
         max_retries: int = DEFAULT_MAX_RETRIES,
         base_delay: float = DEFAULT_BASE_DELAY,
         jitter: float = DEFAULT_JITTER,
+        client: Any = None,
     ) -> None:
         """Initialize the RemoteTranscriber with configuration and client.
 
@@ -111,6 +79,8 @@ class RemoteTranscriber:
                 Defaults to 1.0.
             jitter: Maximum jitter fraction (0.0-1.0) applied on top of
                 the computed delay. Defaults to 0.1.
+            client: Optional OpenAI-compatible client to use instead of
+                validating and constructing one from the configuration.
 
         Raises:
             TranscriptionError: If the transcription endpoint or API key is
@@ -121,24 +91,27 @@ class RemoteTranscriber:
         self._base_delay = base_delay
         self._jitter = jitter
 
-        if not self._config.transcription_endpoint:
-            raise TranscriptionError(
-                "TRANSCRIPTION_ENDPOINT is not configured. "
-                "Set the TRANSCRIPTION_ENDPOINT environment variable."
-            )
-        if not self._config.transcription_api_key:
-            raise TranscriptionError(
-                "TRANSCRIPTION_API_KEY is not configured. "
-                "Set the TRANSCRIPTION_API_KEY environment variable."
-            )
+        if client is not None:
+            self._client: OpenAI = client
+        else:
+            if not self._config.transcription_endpoint:
+                raise TranscriptionError(
+                    "TRANSCRIPTION_ENDPOINT is not configured. "
+                    "Set the TRANSCRIPTION_ENDPOINT environment variable."
+                )
+            if not self._config.transcription_api_key:
+                raise TranscriptionError(
+                    "TRANSCRIPTION_API_KEY is not configured. "
+                    "Set the TRANSCRIPTION_API_KEY environment variable."
+                )
 
-        try:
-            self._client = OpenAI(
-                base_url=self._config.transcription_endpoint,
-                api_key=self._config.transcription_api_key,
-            )
-        except Exception as exc:
-            raise TranscriptionError(f"Failed to initialize OpenAI client: {exc}") from exc
+            try:
+                self._client = OpenAI(
+                    base_url=self._config.transcription_endpoint,
+                    api_key=self._config.transcription_api_key,
+                )
+            except Exception as exc:
+                raise TranscriptionError(f"Failed to initialize OpenAI client: {exc}") from exc
 
     # ------------------------------------------------------------------
     # Public API
@@ -326,21 +299,8 @@ class RemoteTranscriber:
         ) from last_exc
 
     def _calculate_backoff(self, attempt: int) -> float:
-        """Calculate exponential backoff delay with jitter.
-
-        Uses the formula: ``base_delay * (2 ** attempt) + jitter`` where
-        jitter is a random value in ``[-jitter_factor, +jitter_fraction]``.
-
-        Args:
-            attempt: Zero-based attempt index.
-
-        Returns:
-            Delay in seconds before the next retry.
-        """
-        delay = self._base_delay * (2**attempt)
-        jitter_amount = delay * self._jitter
-        jitter: float = random.uniform(-jitter_amount, jitter_amount)
-        return float(max(0.0, delay + jitter))
+        """Calculate exponential backoff delay with jitter."""
+        return calculate_backoff(self._base_delay, self._jitter, attempt)
 
     @staticmethod
     def _get_file_size(path: Path) -> int | None:

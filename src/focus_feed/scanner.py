@@ -3,7 +3,7 @@
 Discovers supported audio, video, PDF, and HTML files in the base directory and determines
 which ones need processing based on the presence, status, and freshness of
 their adjacent JSON metadata files.
-Scanning logic (design doc section 5.2, tasks.md T2.3):
+Scanning logic (design doc section 5.2):
 - Recursively walk the base directory for files with extensions in
   :data:`SUPPORTED_EXTENSIONS` (case-insensitive).
 - For each source file, check whether a corresponding ``.json`` metadata file
@@ -33,173 +33,45 @@ The scanner only reads the filesystem; it never writes or deletes files.
 """
 
 from dataclasses import dataclass
-import json
 import logging
 import os
 from pathlib import Path
-import re
 from typing import Any
 
-from focus_feed.services.extractors import DoclingExtractor
+from focus_feed.filetypes import (
+    DIRECT_TRANSCRIBE_EXTENSIONS,  # noqa: F401
+    DOCUMENT_FILETYPES,
+    MEDIA_FILETYPES,
+    SUPPORTED_EXTENSIONS,
+    VIDEO_EXTRACTION_EXTENSIONS,  # noqa: F401
+)
+from focus_feed.metadata_io import is_dict_feed_eligible, is_orphaned_json, read_metadata_json
+from focus_feed.utils import (
+    SPECIAL_CHAR_PATTERN,
+    is_audio_filetype,
+    is_video_filetype,
+    should_ignore_filename,
+)
 
 _logger = logging.getLogger("focus_feed")
 
 
-# Audio formats supported directly by transcription (case-insensitive).
-DIRECT_TRANSCRIBE_EXTENSIONS: tuple[str, ...] = (
-    ".mp3",
-    ".m4a",
-    ".wav",
-    ".webm",
-    ".aac",
-    ".flac",
-    ".ogg",
-    ".opus",
-    ".mp4",
-    ".mpeg",
-    ".mpga",
-)
+# Backward-compatible aliases for shared utility helpers.
+_SPECIAL_CHAR_PATTERN = SPECIAL_CHAR_PATTERN
+_should_ignore_filename = should_ignore_filename
+_is_audio_filetype = is_audio_filetype
+_is_video_filetype = is_video_filetype
 
-# Video formats that require audio extraction before transcription.
-VIDEO_EXTRACTION_EXTENSIONS: tuple[str, ...] = (".mkv", ".mov", ".avi", ".wmv")
-
-# Media filetypes handled through the transcription pipeline.
-MEDIA_FILETYPES: frozenset[str] = frozenset(
-    extension.lstrip(".")
-    for extension in (*DIRECT_TRANSCRIBE_EXTENSIONS, *VIDEO_EXTRACTION_EXTENSIONS)
-)
-
-# Source file extensions supported by the scanner (case-insensitive).
-SUPPORTED_EXTENSIONS: tuple[str, ...] = (
-    *DIRECT_TRANSCRIBE_EXTENSIONS,
-    *VIDEO_EXTRACTION_EXTENSIONS,
-    ".html",
-    *sorted(DoclingExtractor.SUPPORTED_EXTENSIONS),
-)
-
-# Characters that are problematic in filenames for XML/URL contexts.
-# These trigger a warning but do not block processing.
-_SPECIAL_CHAR_PATTERN = re.compile(r'[<>&"\'\x00-\x1f]')
-
-# Filenames that should be ignored entirely (not treated as metadata or source).
-# Comparison is case-insensitive (see ``scan_directory``).
-_IGNORE_FILENAMES = frozenset(
-    {"podcast.xml", "articles.xml", "podcast.atom", "articles.atom", "index.html", "feed.json"}
-)
+_ERROR_FIELD = "error"
 
 
-def _should_ignore_filename(filename: str) -> bool:
-    """Return whether *filename* is a generated, hidden, or temporary file."""
-    return (
-        filename.lower() in _IGNORE_FILENAMES
-        or filename.startswith(".")
-        or filename.lower().endswith(".tmp")
-    )
-
-
-# JSON status values that indicate a step is complete.
-_COMPLETED_STEP_STATUS: str = "complete"
-
-# JSON field that indicates a previous processing attempt failed.
-_ERROR_FIELD: str = "error"
-
-# File types that use transcribe and summarize step maps.
-_MP4_FILETYPE: str = "mp4"
-
-# File types that use extract step map.
-_DOC_FILETYPES: frozenset[str] = frozenset(
-    {"pdf", "html", *(extension.lstrip(".") for extension in DoclingExtractor.SUPPORTED_EXTENSIONS)}
-)
+# Backward-compatible alias for document filetypes.
+_DOC_FILETYPES = DOCUMENT_FILETYPES
 
 
 def _is_dict_feed_eligible(metadata: dict[str, Any], filetype: str) -> bool:
-    """Check if a raw metadata dict indicates the file is feed-eligible.
-
-    A file is feed-eligible when all applicable steps are
-    ``"complete"`` and there is no error field.
-
-    Checks the separate step maps (``transcribe``, ``summarize``,
-    ``extract``) for step completion status.
-
-    - **MP4**: ``transcribe`` step map exists and
-      ``transcribe.status == "complete"`` and ``summarize`` step map
-      exists and ``summarize.status == "complete"``.
-    - **PDF/HTML**: ``extract`` step map exists and
-      ``extract.status == "complete"`` and ``summarize`` step map
-      exists and ``summarize.status == "complete"``.
-
-    Legacy fields (``transcribe_status``, ``summarize_status``,
-    ``extract_status``) are also supported for backward compatibility.
-
-    Args:
-        metadata: The parsed JSON metadata dictionary.
-        filetype: The source file type (``"mp4"``, ``"pdf"``, ``"html"``).
-
-    Returns:
-        ``True`` if the file is feed-eligible, ``False`` otherwise.
-    """
-    if metadata.get(_ERROR_FIELD):
-        return False
-    if filetype == _MP4_FILETYPE or _is_audio_filetype(filetype) or _is_video_filetype(filetype):
-        # New schema: step maps
-        transcribe = metadata.get("transcribe")
-        summarize = metadata.get("summarize")
-        if (
-            isinstance(transcribe, dict)
-            and transcribe.get(_ERROR_FIELD) is not None
-            and transcribe.get("status") != _COMPLETED_STEP_STATUS
-        ):
-            return False
-        if (
-            isinstance(summarize, dict)
-            and summarize.get(_ERROR_FIELD) is not None
-            and summarize.get("status") != _COMPLETED_STEP_STATUS
-        ):
-            return False
-        transcribe_complete = (
-            isinstance(transcribe, dict) and transcribe.get("status") == _COMPLETED_STEP_STATUS
-        )
-        summarize_complete = (
-            isinstance(summarize, dict) and summarize.get("status") == _COMPLETED_STEP_STATUS
-        )
-        # Legacy schema support
-        if not transcribe_complete:
-            transcribe_complete = metadata.get("transcribe_status") == _COMPLETED_STEP_STATUS
-        if not summarize_complete:
-            summarize_complete = metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
-        return transcribe_complete and summarize_complete
-    if filetype in _DOC_FILETYPES:
-        # New schema
-        extract = metadata.get("extract")
-        if (
-            isinstance(extract, dict)
-            and extract.get(_ERROR_FIELD) is not None
-            and extract.get("status") != _COMPLETED_STEP_STATUS
-        ):
-            return False
-        extract_complete = (
-            isinstance(extract, dict) and extract.get("status") == _COMPLETED_STEP_STATUS
-        )
-        # Legacy schema support
-        if not extract_complete:
-            extract_complete = metadata.get("extract_status") == _COMPLETED_STEP_STATUS
-        if not extract_complete:
-            return False
-        # summarize step must also be complete.
-        summarize = metadata.get("summarize")
-        if (
-            isinstance(summarize, dict)
-            and summarize.get(_ERROR_FIELD) is not None
-            and summarize.get("status") != _COMPLETED_STEP_STATUS
-        ):
-            return False
-        summarize_complete = isinstance(summarize, dict) and (
-            summarize.get("status") == _COMPLETED_STEP_STATUS
-        )
-        if not summarize_complete:
-            summarize_complete = metadata.get("summarize_status") == _COMPLETED_STEP_STATUS
-        return summarize_complete
-    return False
+    """Compatibility wrapper for raw metadata feed eligibility."""
+    return is_dict_feed_eligible(metadata, filetype)
 
 
 @dataclass(frozen=True)
@@ -238,20 +110,6 @@ def _is_supported_source_file(path: Path) -> bool:
 def _filetype_from_path(path: Path) -> str:
     """Return the lowercase filetype (extension without dot) for *path*."""
     return path.suffix.lower().lstrip(".")
-
-
-def _is_audio_filetype(filetype: str) -> bool:
-    """Return whether *filetype* is a directly transcribable audio format."""
-    normalized_filetype = filetype.lower().lstrip(".")
-    return (
-        f".{normalized_filetype}" in DIRECT_TRANSCRIBE_EXTENSIONS and normalized_filetype != "mp4"
-    )
-
-
-def _is_video_filetype(filetype: str) -> bool:
-    """Return whether *filetype* is a video format, case-insensitively."""
-    normalized_filetype = filetype.lower().lstrip(".")
-    return f".{normalized_filetype}" in (".mp4", *VIDEO_EXTRACTION_EXTENSIONS)
 
 
 def _validate_filename(filename: str, absolute_path: Path) -> None:
@@ -538,19 +396,10 @@ class Scanner:
             The parsed JSON as a dictionary, or ``None`` if the file cannot
             be read or parsed. A warning is logged on failure.
         """
-        try:
-            with json_path.open("r", encoding="utf-8") as f:
-                data: dict[str, Any] | None = json.load(f)
-                if isinstance(data, dict):
-                    return data
-                _logger.warning("JSON metadata %s must contain an object", json_path)
-                return None
-        except json.JSONDecodeError as exc:
-            _logger.warning("Could not parse JSON metadata %s: %s", json_path, exc)
-            return None
-        except OSError as exc:
-            _logger.warning("Could not read JSON metadata %s: %s", json_path, exc)
-            return None
+        data = read_metadata_json(json_path)
+        if data is None:
+            _logger.warning("Could not parse JSON metadata or read file %s", json_path)
+        return data
 
     def _is_source_newer(
         self,
@@ -699,15 +548,14 @@ class Scanner:
         yield an existing file with a supported source extension. Such files
         are logged as warnings and never included in the processing list.
         """
-        # feed.json is a configuration file, not orphaned metadata.
-        if json_path.name == "feed.json":
+        if not is_orphaned_json(json_path):
             return
 
         source_filename = json_path.name[: -len(".json")]
         source_path = root_path / source_filename
 
         # The stripped name must have a supported extension to be a real source.
-        if not _is_supported_source_file(source_path):
+        if source_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
             _logger.warning(
                 "Orphaned JSON file (no matching source): %s",
                 json_path,

@@ -9,22 +9,12 @@ import tempfile
 
 import av
 
+from focus_feed.filetypes import DIRECT_TRANSCRIBE_EXTENSIONS, VIDEO_EXTRACTION_EXTENSIONS
+
 _logger = logging.getLogger("focus_feed")
 
-DIRECT_TRANSCRIBE_FORMATS = (
-    ".mp3",
-    ".m4a",
-    ".wav",
-    ".webm",
-    ".aac",
-    ".flac",
-    ".ogg",
-    ".opus",
-    ".mp4",
-    ".mpeg",
-    ".mpga",
-)
-NEARLY_SUPPORTED_FORMATS = (".mkv", ".mov", ".avi", ".wmv")
+DIRECT_TRANSCRIBE_FORMATS = DIRECT_TRANSCRIBE_EXTENSIONS
+NEARLY_SUPPORTED_FORMATS = VIDEO_EXTRACTION_EXTENSIONS
 _SUPPORTED_AUDIO_CODECS = {
     "mp3": (".mp3", "mp3"),
     "aac": (".m4a", "mp4"),

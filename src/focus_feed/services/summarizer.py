@@ -18,30 +18,30 @@ Configuration (from config.py / design doc section 3.2):
 """
 
 import logging
-import random
 import time
-from typing import NamedTuple
+from typing import Any, NamedTuple
 
 from openai import (
     APIConnectionError,
     APITimeoutError,
-    AuthenticationError,
-    BadRequestError,
-    InternalServerError,
-    NotFoundError,
     OpenAI,
-    PermissionDeniedError,
-    RateLimitError,
-    UnprocessableEntityError,
 )
 
 from focus_feed.config import Settings, get_config
 from focus_feed.errors import SummarizationError, log_error
+from focus_feed.retry import (
+    DEFAULT_BASE_DELAY,
+    DEFAULT_JITTER,
+    DEFAULT_MAX_RETRIES,
+    NON_RETRYABLE_ERRORS,
+    RETRYABLE_ERRORS,
+    calculate_backoff,
+)
 
 _logger = logging.getLogger("focus_feed")
 
 
-class LLmResponse(NamedTuple):
+class LLMResponse(NamedTuple):
     """Container for an LLM chat completion response.
 
     Attributes:
@@ -55,39 +55,9 @@ class LLmResponse(NamedTuple):
     completion_tokens: int
 
 
-# ---------------------------------------------------------------------------
-# Retry configuration constants
-# ---------------------------------------------------------------------------
-
-#: Maximum number of retry attempts for transient API failures.
-DEFAULT_MAX_RETRIES = 3
-
-#: Base delay in seconds for the first retry; doubles with each subsequent attempt.
-DEFAULT_BASE_DELAY = 1.0
-
-#: Maximum jitter factor applied on top of the exponential delay (0 to 1).
-DEFAULT_JITTER = 0.1
-
-# ---------------------------------------------------------------------------
-# Retryable vs. non-retryable exception mapping
-# ---------------------------------------------------------------------------
-
-#: Exceptions that indicate a transient failure and should be retried.
-_RETRYABLE_ERRORS: tuple[type[Exception], ...] = (
-    APIConnectionError,
-    APITimeoutError,
-    RateLimitError,
-    InternalServerError,
-)
-
-#: Exceptions that indicate a permanent failure and should not be retried.
-_NON_RETRYABLE_ERRORS: tuple[type[Exception], ...] = (
-    AuthenticationError,
-    BadRequestError,
-    PermissionDeniedError,
-    NotFoundError,
-    UnprocessableEntityError,
-)
+LLmResponse = LLMResponse
+_RETRYABLE_ERRORS = RETRYABLE_ERRORS
+_NON_RETRYABLE_ERRORS = NON_RETRYABLE_ERRORS
 
 
 class Summarizer:
@@ -111,6 +81,7 @@ class Summarizer:
         max_retries: int = DEFAULT_MAX_RETRIES,
         base_delay: float = DEFAULT_BASE_DELAY,
         jitter: float = DEFAULT_JITTER,
+        client: Any = None,
     ) -> None:
         """Initialize the Summarizer with configuration and client.
 
@@ -123,6 +94,8 @@ class Summarizer:
                 Defaults to 1.0.
             jitter: Maximum jitter fraction (0.0-1.0) applied on top of
                 the computed delay. Defaults to 0.1.
+            client: Optional OpenAI-compatible client to use instead of
+                constructing one from the configuration.
 
         Raises:
             SummarizationError: If the OpenAI client cannot be initialized.
@@ -132,14 +105,17 @@ class Summarizer:
         self._base_delay = base_delay
         self._jitter = jitter
 
-        try:
-            self._client = OpenAI(
-                base_url=self._config.llm_endpoint,
-                api_key=self._config.llm_api_key,
-            )
-        except Exception as exc:
-            log_error(exc, stage="summarizer_init")
-            raise SummarizationError(f"Failed to initialize OpenAI client: {exc}") from exc
+        if client is not None:
+            self._client: OpenAI = client
+        else:
+            try:
+                self._client = OpenAI(
+                    base_url=self._config.llm_endpoint,
+                    api_key=self._config.llm_api_key,
+                )
+            except Exception as exc:
+                log_error(exc, stage="summarizer_init")
+                raise SummarizationError(f"Failed to initialize OpenAI client: {exc}") from exc
 
     # ------------------------------------------------------------------
     # Public API
@@ -330,7 +306,7 @@ class Summarizer:
         user_content: str,
         stage: str | None = None,
         filepath: str | None = None,
-    ) -> LLmResponse:
+    ) -> LLMResponse:
         """Execute a chat completion with retry logic.
 
         Sends a two-message conversation (system + user) to the LLM and
@@ -351,7 +327,7 @@ class Summarizer:
                 error logging for debugging context.
 
         Returns:
-            An :class:`LLmResponse` with content, prompt_tokens, and
+            An :class:`LLMResponse` with content, prompt_tokens, and
             completion_tokens.
 
         Raises:
@@ -382,7 +358,7 @@ class Summarizer:
                 prompt_tokens = usage.prompt_tokens if usage is not None else 0
                 completion_tokens = usage.completion_tokens if usage is not None else 0
 
-                return LLmResponse(
+                return LLMResponse(
                     content=str(content).strip(),
                     prompt_tokens=prompt_tokens,
                     completion_tokens=completion_tokens,
@@ -458,18 +434,5 @@ class Summarizer:
         ) from last_exc
 
     def _calculate_backoff(self, attempt: int) -> float:
-        """Calculate exponential backoff delay with jitter.
-
-        Uses the formula: ``base_delay * (2 ** attempt) + jitter`` where
-        jitter is a random value in ``[-jitter_factor, +jitter_fraction]``.
-
-        Args:
-            attempt: Zero-based attempt index.
-
-        Returns:
-            Delay in seconds before the next retry.
-        """
-        delay = self._base_delay * (2**attempt)
-        jitter_amount = delay * self._jitter
-        jitter: float = random.uniform(-jitter_amount, jitter_amount)
-        return float(max(0.0, delay + jitter))
+        """Calculate exponential backoff delay with jitter."""
+        return calculate_backoff(self._base_delay, self._jitter, attempt)
