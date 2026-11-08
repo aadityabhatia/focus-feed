@@ -8,7 +8,6 @@ supported audio and video media files.
 Design references:
     - design.md section 3.4 (Feed Output)
     - design.md section 10.1 (Feed Format: RSS 2.0)
-    - tasks.md T4.1-T4.4
     - design.md section 5.2 (Feed Generator responsibilities)
 
     The feed generator:
@@ -22,7 +21,6 @@ Design references:
 """
 
 from collections.abc import Iterable
-from dataclasses import dataclass, field
 from datetime import UTC, datetime
 import hashlib
 import html
@@ -30,79 +28,28 @@ import json
 import logging
 import os
 from pathlib import Path
-import re
 from typing import Any
-import xml.etree.ElementTree as ET
 
 from feedgen.feed import FeedGenerator as _FeedGenerator
-import markdown as _md
 
-from focus_feed.config import get_config
+from focus_feed.config import Settings, get_config
 from focus_feed.errors import log_error
+from focus_feed.feeds._markdown import _markdown_to_html, _sanitize_cdata_content
+from focus_feed.feeds._mime import PODCAST_MIME_TYPES as _PODCAST_MIME_TYPES  # noqa: F401
+from focus_feed.feeds._mime import get_mime_type
+from focus_feed.feeds._validation import (
+    FeedValidationResult,
+    validate_feed,
+)
+from focus_feed.filetypes import DOCUMENT_FILETYPES, MEDIA_FILETYPES
 from focus_feed.metadata import Metadata, write_metadata_json
-from focus_feed.producer import DOCLING_FILETYPES
-from focus_feed.scanner import SUPPORTED_EXTENSIONS
+from focus_feed.metadata_io import is_orphaned_json
 
 _logger = logging.getLogger("focus_feed")
-
-MEDIA_FILETYPES: frozenset[str] = frozenset(
-    {
-        "mp3",
-        "m4a",
-        "wav",
-        "webm",
-        "aac",
-        "flac",
-        "ogg",
-        "opus",
-        "mp4",
-        "mpeg",
-        "mpga",
-        "mkv",
-        "mov",
-        "avi",
-        "wmv",
-    }
-)
-
-DOCUMENT_FILETYPES: frozenset[str] = frozenset({"pdf", "html"}) | DOCLING_FILETYPES
-
-
-def get_mime_type(filetype: str) -> str:
-    """Return the appropriate MIME type for a media filetype."""
-    mime_map: dict[str, str] = {
-        "mp4": "audio/mp4",
-        "m4a": "audio/mp4",
-        "mp3": "audio/mpeg",
-        "mpeg": "audio/mpeg",
-        "mpga": "audio/mpeg",
-        "wav": "audio/wav",
-        "webm": "audio/webm",
-        "aac": "audio/aac",
-        "ogg": "audio/ogg",
-        "flac": "audio/flac",
-        "opus": "audio/opus",
-        # Audio is extracted from video formats for podcast playback.
-        "mkv": "audio/mp4",
-        "mov": "audio/mp4",
-        "avi": "audio/mp4",
-        "wmv": "audio/mp4",
-    }
-    return mime_map.get(filetype, "application/octet-stream")
-
-
-_PODCAST_MIME_TYPES = frozenset(get_mime_type(filetype) for filetype in MEDIA_FILETYPES)
 
 # Feed titles for the two generated feeds.
 _PODCAST_FEED_TITLE = "Local Podcast Feed"
 _ARTICLES_FEED_TITLE = "Local Articles Feed"
-
-# Dublin Core namespace URI (used for <dc:date> elements).
-_DC_NAMESPACE = "http://purl.org/dc/elements/1.1/"
-
-# URL schemes allowed in markdown links to prevent XSS (e.g. javascript:).
-# Only http, https, mailto, relative paths, and fragment identifiers are allowed.
-_SAFE_URL_SCHEMES = re.compile(r"^(https?://|mailto:|/|#|\.\.)")
 
 
 def _is_orphaned_json(json_path: Path) -> bool:
@@ -117,114 +64,7 @@ def _is_orphaned_json(json_path: Path) -> bool:
     Returns:
         ``True`` if the JSON file is orphaned, ``False`` otherwise.
     """
-    # feed.json is a configuration file, not orphaned metadata.
-    if json_path.name == "feed.json":
-        return False
-
-    source_filename = json_path.name[: -len(".json")]
-    source_path = json_path.parent / source_filename
-
-    # The stripped name must have a supported extension to be a real source.
-    if source_path.suffix.lower() not in SUPPORTED_EXTENSIONS:
-        return True
-
-    return not source_path.exists()
-
-
-def _markdown_to_html(text: str | None) -> str:
-    """Convert markdown text to HTML using the ``markdown`` library.
-
-    Uses the third-party ``markdown`` library (a required dependency) for
-    conversion.  The ``nl2br`` extension is enabled so that single newlines
-    within paragraphs are rendered as ``<br>`` elements.
-
-    The ``markdown`` library handles HTML escaping of text content to
-    prevent XSS vulnerabilities.  URLs in links are additionally validated
-    to only allow safe schemes (``http://``, ``https://``, ``mailto:``,
-    relative paths, and fragment identifiers).  Links with unsafe schemes
-    (e.g. ``javascript:``) have their ``<a>`` tags removed but the link
-    text is preserved.
-
-    If the entire output is a single ``<p>`` wrapper (i.e. the input was a
-    plain paragraph with no other markdown elements), the outer ``<p>`` and
-    ``</p>`` tags are stripped to avoid redundant wrappers.  Legitimate
-         ``<p>`` tags from actual multi-paragraph markdown are preserved.
-
-    The resulting HTML will be wrapped in CDATA sections in RSS feed output
-    to preserve HTML formatting for feed readers.
-
-    Args:
-        text: The markdown string to convert, or ``None``.
-
-    Returns:
-        An HTML string.  Returns an empty string when *text* is ``None``
-        or empty.
-    """
-    if text is None:
-        return ""
-
-    # Fix 3-space indentation for nested list items (LLM quirk)
-    text = re.sub(r"\n   ([-*+])", r"\n    \1", text)
-
-    # A sequence of standalone `---` lines is common in LLM-generated
-    # summaries, but Python-Markdown can interpret the second line as a
-    # setext heading underline (e.g. `---\n---` becomes `<h2>---</h2>`).
-    # Use an equivalent horizontal-rule marker only for consecutive runs;
-    # leave single `---` lines untouched so valid setext headings still work.
-    text = re.sub(
-        r"(?m)(^[ \t]*---[ \t]*(?:\r?\n|$)){2,}",
-        lambda match: match.group().replace("---", "***"),
-        text,
-    )
-
-    # Use the markdown library with the nl2br extension (single newlines → <br>).
-    # Deregister the html_block preprocessor and html inline pattern so that
-    # raw HTML in the input is escaped rather than passed through, preventing
-    # XSS vulnerabilities (the markdown library does not sanitize by default).
-    md = _md.Markdown(extensions=["nl2br"])
-    md.preprocessors.deregister("html_block")
-    md.inlinePatterns.deregister("html")
-    result = md.convert(text)
-
-    # Sanitize URLs in <a> tags — only allow safe schemes.  Unsafe links
-    # have their <a> tags removed but the link text is preserved.
-    result = re.sub(
-        r'<a\s[^>]*href="([^"]*)"[^>]*>(.*?)</a>',
-        lambda m: m.group(2) if not _SAFE_URL_SCHEMES.match(m.group(1)) else m.group(0),
-        result,
-        flags=re.DOTALL,
-    )
-
-    # Replace XHTML-style <br /> with HTML-style <br> for consistency.
-    result = result.replace("<br />", "<br>")
-
-    # Strip the outer <p> wrapper when the entire output is a single
-    # <p> element.  This avoids redundant paragraph tags for plain-text
-    # descriptions while preserving legitimate <p> tags from actual
-    # multi-paragraph markdown content.
-    if result.startswith("<p>") and result.endswith("</p>"):
-        open_count = result.count("<p>")
-        close_count = result.count("</p>")
-        if open_count == 1 and close_count == 1:
-            result = result[3:-4]
-
-    return result
-
-
-def _sanitize_cdata_content(text: str) -> str:
-    """Sanitize content for safe CDATA wrapping.
-
-    CDATA sections cannot contain the sequence ``]]>`` which would prematurely
-    close the CDATA block. This function replaces any occurrence with ``]]&gt;``
-    to prevent CDATA termination.
-
-    Args:
-        text: The HTML string to sanitize for CDATA.
-
-    Returns:
-        The sanitized string safe for CDATA wrapping.
-    """
-    return text.replace("]]>", "]]&gt;")
+    return is_orphaned_json(json_path)
 
 
 def _get_summarization_attribution(metadata: Metadata) -> str:
@@ -238,7 +78,9 @@ def _get_summarization_attribution(metadata: Metadata) -> str:
     """
     # Get config for llm_model fallback; return empty string if config unavailable.
     try:
-        config = get_config()
+        from focus_feed.feeds import get_config as package_get_config
+
+        config = package_get_config()
         llm_model = config.llm_model
     except Exception:
         llm_model = None
@@ -272,171 +114,6 @@ def _get_summarization_attribution(metadata: Metadata) -> str:
     return f"Summarized by {model} at {formatted_dt}"
 
 
-@dataclass
-class FeedValidationResult:
-    """Structured result of validating an RSS feed.
-
-    Attributes:
-        feed_name: Name of the feed being validated (e.g., ``"podcast.xml"``).
-        valid: ``True`` when no errors were found.
-        errors: List of error messages. Non-empty implies ``valid`` is ``False``.
-        warnings: List of warning messages. Non-empty does not affect ``valid``.
-    """
-
-    feed_name: str
-    valid: bool = True
-    errors: list[str] = field(default_factory=list)
-    warnings: list[str] = field(default_factory=list)
-
-    @property
-    def is_valid(self) -> bool:
-        """Return ``True`` if the feed passed all validation checks."""
-        return self.valid and not self.errors
-
-
-def validate_feed(
-    xml_content: str,
-    feed_name: str = "feed",
-    is_podcast: bool = False,
-) -> FeedValidationResult:
-    """Validate an RSS 2.0 feed.
-
-    Performs the following checks:
-
-    - **XML well-formedness** — the content can be parsed by
-      :mod:`xml.etree.ElementTree`.  This also verifies that XML special
-      characters (``<``, ``>``, ``&``, etc.) are properly escaped.
-    - **RSS 2.0 compliance** — the root element is ``<rss>`` with
-      ``version="2.0"``.
-    - **Item required elements** — each ``<item>`` has a non-empty
-      ``<title>``, ``<link>``, ``<guid>``, and a ``<pubDate>`` *or*
-      ``<dc:date>``.
-    - **Podcasts** — each ``<item>`` has an ``<enclosure>`` tag with
-      ``url``, a supported media MIME type, and ``length`` attributes.
-    - **Articles** — no enclosure validation is performed.
-
-    Args:
-        xml_content: Raw XML string of the feed to validate.
-        feed_name: Human-readable name of the feed (used in messages).
-        is_podcast: When ``True``, enforce podcast-specific enclosure
-            checks.  When ``False`` (articles), enclosure checks are skipped.
-
-    Returns:
-        A :class:`FeedValidationResult` with any errors and warnings found.
-    """
-    result = FeedValidationResult(feed_name=feed_name)
-
-    # --- XML well-formedness (also verifies proper character escaping) ---
-    try:
-        root = ET.fromstring(xml_content)
-    except ET.ParseError as exc:
-        result.errors.append(f"XML is not well-formed: {exc}")
-        result.valid = False
-        return result
-
-    # --- Root element <rss> with version="2.0" ---
-    if root.tag != "rss":
-        result.errors.append(f"Root element is <{root.tag}>, expected <rss>")
-        result.valid = False
-        return result
-
-    version = root.get("version")
-    if version != "2.0":
-        result.errors.append(f"RSS version is '{version}', expected '2.0'")
-        result.valid = False
-
-    # --- <channel> element ---
-    channel = root.find("channel")
-    if channel is None:
-        result.errors.append("Missing <channel> element")
-        result.valid = False
-        return result
-
-    # --- Per-item validation ---
-    items = channel.findall("item")
-    if not items:
-        result.warnings.append("No <item> elements found in feed")
-
-    for index, item in enumerate(items, 1):
-        _validate_item(item, index, is_podcast, result)
-
-    if result.errors:
-        result.valid = False
-
-    return result
-
-
-def _validate_item(
-    item: ET.Element,
-    index: int,
-    is_podcast: bool,
-    result: FeedValidationResult,
-) -> None:
-    """Validate a single ``<item>`` element and append issues to *result*.
-
-    Args:
-        item: The ``<item>`` ElementTree element.
-        index: 1-based position of the item (for error messages).
-        is_podcast: Whether the enclosing feed is a podcast feed.
-        result: The accumulating validation result to append to.
-    """
-    prefix = f"Item {index}"
-
-    # --- <title> ---
-    title = item.find("title")
-    if title is None or not (title.text or "").strip():
-        result.errors.append(f"{prefix}: missing or empty <title>")
-
-    # --- <link> ---
-    link = item.find("link")
-    if link is None or not (link.text or "").strip():
-        result.errors.append(f"{prefix}: missing or empty <link>")
-
-    # --- <pubDate> or <dc:date> ---
-    pub_date = item.find("pubDate")
-    dc_date = item.find(f"{{{_DC_NAMESPACE}}}date")
-    if pub_date is None and dc_date is None:
-        result.errors.append(f"{prefix}: missing <pubDate> or <dc:date>")
-
-    # --- <guid> ---
-    guid = item.find("guid")
-    if guid is None or not (guid.text or "").strip():
-        result.errors.append(f"{prefix}: missing or empty <guid>")
-
-    # --- Podcast: <enclosure> with url, type, length ---
-    if is_podcast:
-        enclosure = item.find("enclosure")
-        if enclosure is None:
-            result.errors.append(f"{prefix}: missing <enclosure> (required for podcast feed)")
-        else:
-            enc_url = enclosure.get("url")
-            enc_type = enclosure.get("type")
-            enc_length = enclosure.get("length")
-
-            if not enc_url:
-                result.errors.append(f"{prefix}: enclosure missing 'url' attribute")
-            if not enc_type:
-                result.errors.append(f"{prefix}: enclosure missing 'type' attribute")
-            elif enc_type not in _PODCAST_MIME_TYPES:
-                result.errors.append(
-                    f"{prefix}: enclosure type is '{enc_type}', "
-                    "expected a supported media MIME type"
-                )
-            if not enc_length:
-                result.errors.append(f"{prefix}: enclosure missing 'length' attribute")
-            else:
-                try:
-                    length_val = int(enc_length)
-                    if length_val < 0:
-                        result.errors.append(
-                            f"{prefix}: enclosure length is negative ({length_val})"
-                        )
-                except ValueError:
-                    result.errors.append(
-                        f"{prefix}: enclosure length '{enc_length}' is not a valid integer"
-                    )
-
-
 class FeedGenerator:
     """Generates RSS 2.0 feeds from JSON metadata files.
 
@@ -464,6 +141,7 @@ class FeedGenerator:
         base_url: str | None = None,
         eligible_paths: Iterable[Path] | None = None,
         persist_hashes: bool = True,
+        config: Settings | None = None,
     ) -> None:
         """Initialize the feed generator.
 
@@ -476,10 +154,14 @@ class FeedGenerator:
             eligible_paths: Optional allow-list of source file paths to
                 include in feed discovery.
             persist_hashes: Whether to save computed hashes to metadata files.
+            config: Optional application settings. When ``None``, settings
+                are loaded using ``get_config()``.
         """
+        self._config = config
         if base_url is None:
-            config = get_config()
-            base_url = config.base_url
+            resolved_config = self._config if self._config is not None else get_config()
+            self._config = resolved_config
+            base_url = resolved_config.base_url
 
         self.data_dir: Path = Path(data_dir).resolve()
         self.base_url: str = base_url.rstrip("/")
