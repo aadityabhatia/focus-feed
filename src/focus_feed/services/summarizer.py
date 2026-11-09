@@ -18,6 +18,7 @@ Configuration (from config.py / design doc section 3.2):
 """
 
 import logging
+import threading
 import time
 from typing import Any, NamedTuple
 
@@ -58,6 +59,26 @@ class LLMResponse(NamedTuple):
 LLmResponse = LLMResponse
 _RETRYABLE_ERRORS = RETRYABLE_ERRORS
 _NON_RETRYABLE_ERRORS = NON_RETRYABLE_ERRORS
+_summarize_semaphore: threading.Semaphore | None = None
+_summarize_semaphore_lock = threading.Lock()
+
+
+def _get_summarize_semaphore() -> threading.Semaphore:
+    """Return the process-wide semaphore limiting concurrent summaries."""
+    global _summarize_semaphore
+    with _summarize_semaphore_lock:
+        if _summarize_semaphore is None:
+            _summarize_semaphore = threading.BoundedSemaphore(
+                max(1, get_config().max_summarize_concurrency)
+            )
+        return _summarize_semaphore
+
+
+def reset_summarize_semaphore() -> None:
+    """Reset the shared summarization semaphore, primarily for tests."""
+    global _summarize_semaphore
+    with _summarize_semaphore_lock:
+        _summarize_semaphore = None
 
 
 class Summarizer:
@@ -211,12 +232,13 @@ class Summarizer:
             filetype,
         )
 
-        result = self._chat_completion(
-            system_prompt=system_prompt,
-            user_content=user_content,
-            stage="summarization",
-            filepath=filepath,
-        )
+        with _get_summarize_semaphore():
+            result = self._chat_completion(
+                system_prompt=system_prompt,
+                user_content=user_content,
+                stage="summarization",
+                filepath=filepath,
+            )
         _logger.info(
             "Summarization completed for %s: %d words",
             filepath or "unknown",

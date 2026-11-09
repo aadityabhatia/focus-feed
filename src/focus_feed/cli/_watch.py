@@ -11,9 +11,11 @@ from typing import Any
 import click
 from watchdog.events import FileSystemEventHandler
 
+from focus_feed.concurrency import InFlightRegistry
 from focus_feed.errors import log_error
 from focus_feed.feeds import FeedGenerator
 from focus_feed.filetypes import SUPPORTED_EXTENSIONS
+from focus_feed.metadata import Metadata
 from focus_feed.scanner import ScannedFile, Scanner
 
 _logger = logging.getLogger("focus_feed")
@@ -65,17 +67,28 @@ class _WatchHandler(FileSystemEventHandler):
     # A value of ``0`` disables the periodic rescan.
     _rescan_interval: int = 300
 
-    def __init__(self, data_dir: Path, producer: Any) -> None:
+    def __init__(
+        self,
+        data_dir: Path,
+        producer: Any,
+        orchestrator: Any = None,
+        in_flight: InFlightRegistry | None = None,
+    ) -> None:
         self.data_dir = data_dir
         self.producer = producer
+        self.orchestrator = orchestrator
+        self._in_flight = in_flight if in_flight is not None else InFlightRegistry()
         _cli()._logger.info("Watch handler initialized for %s", str(self.data_dir))
         # Last event timestamp per file path, for debouncing (T6.2).
         self._last_event: dict[str, float] = {}
         # Lock protecting _last_event, since watchdog dispatches events
         # from a separate thread.
         self._debounce_lock = threading.Lock()
+        self._feeds_lock = threading.Lock()
+        self._print_lock = threading.Lock()
         # Timestamps of recent errors, used for rate limiting (T6.4).
         self._error_timestamps: list[float] = []
+        self._error_lock = threading.Lock()
         # Timestamp of the last periodic rescan, or None if no rescan
         # has occurred yet (T6.3).
         self.last_rescan_time: float | None = None
@@ -113,24 +126,25 @@ class _WatchHandler(FileSystemEventHandler):
             stage: Optional processing stage label for additional context.
         """
         now = _time().monotonic()
-        # Trim timestamps older than the error window.
-        self._error_timestamps = [
-            ts for ts in self._error_timestamps if now - ts < self._error_window_seconds
-        ]
+        with self._error_lock:
+            # Trim timestamps older than the error window.
+            self._error_timestamps = [
+                ts for ts in self._error_timestamps if now - ts < self._error_window_seconds
+            ]
 
-        if len(self._error_timestamps) >= self._max_errors_per_minute:
-            # Rate-limited: log a summary instead of the detailed error.
-            _cli()._logger.warning(
-                "Error rate limit reached (%d errors in %ds); "
-                "suppressing detailed error for file=%s",
-                self._max_errors_per_minute,
-                self._error_window_seconds,
-                filepath,
-            )
-            return
+            if len(self._error_timestamps) >= self._max_errors_per_minute:
+                # Rate-limited: log a summary instead of the detailed error.
+                _cli()._logger.warning(
+                    "Error rate limit reached (%d errors in %ds); "
+                    "suppressing detailed error for file=%s",
+                    self._max_errors_per_minute,
+                    self._error_window_seconds,
+                    filepath,
+                )
+                return
 
-        # Record this error timestamp and log the detailed error.
-        self._error_timestamps.append(now)
+            # Record this error timestamp and log the detailed error.
+            self._error_timestamps.append(now)
         getattr(_cli(), "log_error", log_error)(exc, filepath=filepath, stage=stage)
 
     def _handle_event(self, filepath: str) -> None:
@@ -186,29 +200,93 @@ class _WatchHandler(FileSystemEventHandler):
                     )
                     return
 
+        relative_path = os.path.relpath(source_path, Path.cwd())
+        scanned = ScannedFile(
+            filepath=relative_path,
+            absolute_path=str(source_path),
+            filename=source_path.name,
+            filetype=source_path.suffix.lower().lstrip("."),
+        )
+
+        if self.orchestrator is not None:
+            key = str(source_path)
+            if self._in_flight.is_processing(key):
+                _cli()._logger.debug("Skipping %s: already being processed", key)
+                return
+            processing_mtime: float | None
+            try:
+                processing_mtime = source_path.stat().st_mtime
+            except OSError:
+                processing_mtime = None
+            with self._print_lock:
+                click.echo(f"Processing {scanned.filepath}...")
+            self._in_flight.register(key)
+            try:
+                future = self.orchestrator.submit(scanned, self.producer)
+            except Exception as exc:
+                self._in_flight.unregister(key)
+                self._log_processing_error(exc, filepath=key, stage="processing")
+                return
+            future.add_done_callback(
+                lambda completed: self._on_file_done(key, scanned, processing_mtime, completed)
+            )
+        else:
+            try:
+                with self._print_lock:
+                    click.echo(f"Processing {scanned.filepath}...")
+                self.producer.process_file(scanned)
+
+                generator = FeedGenerator(data_dir=str(self.data_dir))
+                generator.generate_all_feeds()
+                with self._print_lock:
+                    click.echo(f"Feeds regenerated after processing {scanned.filepath}.")
+            except Exception as exc:
+                # Log the error without crashing the watcher (T6.4).
+                # The watcher continues monitoring after errors.
+                self._log_processing_error(
+                    exc,
+                    filepath=str(source_path),
+                    stage="processing",
+                )
+
+    def _on_file_done(
+        self,
+        key: str,
+        scanned: ScannedFile,
+        source_mtime: float | None,
+        future: Any,
+    ) -> None:
+        """Handle completion of an asynchronously processed file."""
+        resubmitted = False
         try:
-            relative_path = os.path.relpath(source_path, Path.cwd())
-            scanned = ScannedFile(
-                filepath=relative_path,
-                absolute_path=str(source_path),
-                filename=source_path.name,
-                filetype=source_path.suffix.lower().lstrip("."),
-            )
+            try:
+                future.result()
+            except Exception as exc:
+                self._log_processing_error(exc, filepath=key, stage="processing")
 
-            click.echo(f"Processing {scanned.filepath}...")
-            self.producer.process_file(scanned)
+            with self._feeds_lock:
+                FeedGenerator(data_dir=str(self.data_dir)).generate_all_feeds()
+            with self._print_lock:
+                click.echo(f"Feeds regenerated after processing {scanned.filepath}.")
 
-            generator = FeedGenerator(data_dir=str(self.data_dir))
-            generator.generate_all_feeds()
-            click.echo(f"Feeds regenerated after processing {scanned.filepath}.")
-        except Exception as exc:
-            # Log the error without crashing the watcher (T6.4).
-            # The watcher continues monitoring after errors.
-            self._log_processing_error(
-                exc,
-                filepath=str(source_path),
-                stage="processing",
-            )
+            try:
+                current_mtime = Path(key).stat().st_mtime
+            except OSError:
+                current_mtime = None
+            if (
+                source_mtime is not None
+                and current_mtime is not None
+                and current_mtime != source_mtime
+            ):
+                self._in_flight.register(key)
+                next_future = self.orchestrator.submit(scanned, self.producer)
+                resubmitted = True
+                next_future.add_done_callback(
+                    lambda completed: self._on_file_done(key, scanned, current_mtime, completed)
+                )
+        finally:
+            if not resubmitted:
+                self._in_flight.unregister(key)
 
     def _handle_json_event(self, json_path: Path) -> None:
         """Check a JSON file for orphaned status."""
@@ -256,23 +334,58 @@ class _WatchHandler(FileSystemEventHandler):
 
         _cli()._logger.info("Periodic rescan: found %d file(s) to process.", len(files))
 
-        for file in files:
-            click.echo(f"Rescan: Processing {file.filepath}...")
-            try:
-                result = self.producer.process_file(file)
-                if result is not None and result.feed_eligible:
-                    click.echo(f"Rescan: Processed {file.filepath} successfully.")
-                else:
-                    click.echo(
-                        f"Rescan: Processing {file.filepath} resulted in ineligible metadata."
-                    )
-            except Exception as exc:
-                self._log_processing_error(
-                    exc,
-                    filepath=file.filepath,
-                    stage="rescan",
-                )
+        if self.orchestrator is not None:
+            accepted_files: list[ScannedFile] = []
+            reserved_keys: list[str] = []
+            for file in files:
+                key = str(file.absolute_path)
+                if self._in_flight.is_processing(key):
+                    continue
+                self._in_flight.register(key)
+                accepted_files.append(file)
+                reserved_keys.append(key)
 
-        counts = _cli()._generate_feeds(self.data_dir)
+            if not accepted_files:
+                _cli()._logger.info("Periodic rescan: no new files to process.")
+                return
+
+            try:
+                results = self.orchestrator.run_all(accepted_files, self.producer)
+            finally:
+                for key in reserved_keys:
+                    self._in_flight.unregister(key)
+
+            for file, result in zip(accepted_files, results, strict=True):
+                with self._print_lock:
+                    click.echo(f"Rescan: Processing {file.filepath}...")
+                    if isinstance(result, Metadata) and result.feed_eligible:
+                        click.echo(f"Rescan: Processed {file.filepath} successfully.")
+                    else:
+                        click.echo(
+                            f"Rescan: Processing {file.filepath} resulted in ineligible metadata."
+                        )
+        else:
+            for file in files:
+                with self._print_lock:
+                    click.echo(f"Rescan: Processing {file.filepath}...")
+                try:
+                    result = self.producer.process_file(file)
+                    with self._print_lock:
+                        if result is not None and result.feed_eligible:
+                            click.echo(f"Rescan: Processed {file.filepath} successfully.")
+                        else:
+                            click.echo(
+                                "Rescan: Processing "
+                                f"{file.filepath} resulted in ineligible metadata."
+                            )
+                except Exception as exc:
+                    self._log_processing_error(
+                        exc,
+                        filepath=file.filepath,
+                        stage="rescan",
+                    )
+
+        with self._feeds_lock:
+            counts = _cli()._generate_feeds(self.data_dir)
         _cli()._print_feed_summary(counts)
         _cli()._logger.info("Periodic rescan complete. Feeds regenerated.")

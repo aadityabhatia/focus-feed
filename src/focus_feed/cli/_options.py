@@ -39,3 +39,23 @@ def _dry_run_option(func: Any) -> Any:
         default=False,
         help="Show what would be processed without making any changes.",
     )(func)
+
+
+def _max_workers_option(func: Any) -> Any:
+    """Add the ``--max-workers`` option to a Click command."""
+    return click.option(
+        "--max-workers",
+        type=click.IntRange(min=1),
+        default=None,
+        help="Maximum number of files processed concurrently (default: 4).",
+    )(func)
+
+
+def _max_summarize_jobs_option(func: Any) -> Any:
+    """Add the ``--max-summarize-jobs`` option to a Click command."""
+    return click.option(
+        "--max-summarize-jobs",
+        type=click.IntRange(min=1),
+        default=None,
+        help="Maximum number of concurrent summarization calls (default: 4).",
+    )(func)

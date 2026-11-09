@@ -57,6 +57,8 @@ class Settings(BaseSettings):
 
     docling_api: str | None = None
     transcription_remote_model: str | None = None
+    max_workers: int = 4
+    max_summarize_concurrency: int = 4
 
     # --- Validators ---
 
@@ -76,6 +78,14 @@ class Settings(BaseSettings):
         """Ensure required fields are not empty strings."""
         if not v or not v.strip():
             raise ValueError("Field must not be empty")
+        return v
+
+    @field_validator("max_workers", "max_summarize_concurrency")
+    @classmethod
+    def validate_concurrency_limits(cls, v: int) -> int:
+        """Ensure concurrency limits are positive integers."""
+        if v < 1:
+            raise ValueError("Concurrency limit must be at least 1")
         return v
 
 

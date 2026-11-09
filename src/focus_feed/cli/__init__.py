@@ -64,7 +64,13 @@ from focus_feed.cli._helpers import (
     _resolve_paths,
     _write_json_metadata,
 )
-from focus_feed.cli._options import _config_file_option, _dry_run_option, _force_option
+from focus_feed.cli._options import (
+    _config_file_option,
+    _dry_run_option,
+    _force_option,
+    _max_summarize_jobs_option,
+    _max_workers_option,
+)
 from focus_feed.cli._watch import _WatchHandler
 from focus_feed.errors import log_error
 from focus_feed.feeds import _is_orphaned_json
@@ -167,10 +173,14 @@ def app(log_level: str | None) -> None:
 
 @app.command()
 @_config_file_option
+@_max_workers_option
+@_max_summarize_jobs_option
 @_force_option
 @click.argument("paths", nargs=-1)
 def process(
     config_file: str | None,
+    max_workers: int | None,
+    max_summarize_jobs: int | None,
     force: bool,
     paths: tuple[str, ...],
 ) -> None:
@@ -222,24 +232,33 @@ def process(
     _logger.info("Found %d file(s) to process", len(files))
 
     # --- Process --------------------------------------------------------
+    from focus_feed.concurrency import ConcurrencyOrchestrator
+    from focus_feed.config import get_config
     from focus_feed.producer import Producer
+    from focus_feed.services.summarizer import reset_summarize_semaphore
+
+    config = get_config()
+    workers = max(1, max_workers or config.max_workers)
+    summarize_jobs = max(1, max_summarize_jobs or config.max_summarize_concurrency)
+    config.max_summarize_concurrency = summarize_jobs
+    reset_summarize_semaphore()
 
     producer = Producer(force=force)
+    orchestrator = ConcurrencyOrchestrator(max_workers=workers)
+    try:
+        for i, file in enumerate(files, 1):
+            click.echo(f"[{i}/{len(files)}] Processing {file.filepath}...")
+        results = orchestrator.run_all(files, producer)
+    finally:
+        orchestrator.shutdown()
 
     success_count = 0
     error_count = 0
-
-    for i, file in enumerate(files, 1):
-        click.echo(f"[{i}/{len(files)}] Processing {file.filepath}...")
-        try:
-            result = producer.process_file(file)
-            if result is not None and result.feed_eligible:
-                success_count += 1
-            else:
-                error_count += 1
-        except Exception as exc:
+    for result in results:
+        if isinstance(result, Metadata) and result.feed_eligible:
+            success_count += 1
+        else:
             error_count += 1
-            log_error(exc, filepath=file.filepath, stage="processing")
 
     click.echo(f"\nProcessing complete: {success_count} succeeded, {error_count} failed.")
     _logger.info("Process complete: %d succeeded, %d failed", success_count, error_count)
@@ -260,10 +279,14 @@ def process(
 
 @app.command()
 @_config_file_option
+@_max_workers_option
+@_max_summarize_jobs_option
 @_force_option
 @click.argument("paths", nargs=-1)
 def watch(
     config_file: str | None,
+    max_workers: int | None,
+    max_summarize_jobs: int | None,
     force: bool,
     paths: tuple[str, ...],
 ) -> None:
@@ -292,6 +315,18 @@ def watch(
         )
         sys.exit(1)
 
+    from focus_feed.concurrency import ConcurrencyOrchestrator, InFlightRegistry
+    from focus_feed.config import get_config
+    from focus_feed.services.summarizer import reset_summarize_semaphore
+
+    config = get_config()
+    workers = max(1, max_workers or config.max_workers)
+    summarize_jobs = max(1, max_summarize_jobs or config.max_summarize_concurrency)
+    config.max_summarize_concurrency = summarize_jobs
+    reset_summarize_semaphore()
+    orchestrator = ConcurrencyOrchestrator(max_workers=workers)
+    in_flight = InFlightRegistry()
+
     # --- Initial scan --------------------------------------------------
     if force:
         # Force processing: expand all source files regardless of status.
@@ -318,13 +353,7 @@ def watch(
     if files:
         click.echo(f"Initial scan: found {len(files)} file(s) to process.")
         producer = Producer(force=force)
-
-        for file in files:
-            click.echo(f"Processing {file.filepath}...")
-            try:
-                producer.process_file(file)
-            except Exception as exc:
-                log_error(exc, filepath=file.filepath, stage="processing")
+        orchestrator.run_all(files, producer)
 
         counts = _generate_feeds(data_dir_path)
         _print_feed_summary(counts)
@@ -335,7 +364,12 @@ def watch(
 
     # --- Start watching ------------------------------------------------
     producer = Producer()
-    event_handler = _WatchHandler(data_dir=data_dir_path, producer=producer)
+    event_handler = _WatchHandler(
+        data_dir=data_dir_path,
+        producer=producer,
+        orchestrator=orchestrator,
+        in_flight=in_flight,
+    )
 
     from watchdog.observers import Observer
 
@@ -392,6 +426,7 @@ def watch(
             rescan_thread.join(timeout=5)
             if rescan_thread.is_alive():
                 _logger.warning("Rescan thread did not shut down within timeout.")
+        orchestrator.shutdown()
         click.echo("\nWatcher stopped.")
         _logger.info("Watcher stopped")
 
