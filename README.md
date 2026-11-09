@@ -2,6 +2,19 @@
 
 **Transform education content into RSS feeds with AI summarization powered by your reflection questions.**
 
+## Installation & First Run
+
+Install the project dependencies, configure the required environment variables, and process your data:
+
+```bash
+uv sync
+cp example.env .env
+# Edit .env and set all 9 required environment variables.
+uv run focus-feed process ./data
+```
+
+The nine required variables are `BASE_URL`, `LLM_ENDPOINT`, `LLM_API_KEY`, `LLM_MODEL`, `PROMPT_ARTICLE`, `PROMPT_PODCAST`, `PROMPT_TITLE`, `TRANSCRIPTION_ENDPOINT`, and `TRANSCRIPTION_API_KEY`.
+
 ## What It Does
 
 Focus Feed turns your educational content (PDF, DOCX, HTML, and other supported document formats, plus audio files) into private RSS feeds that you can consume in any podcast or RSS reader app.
@@ -72,7 +85,28 @@ uv run focus-feed process ./data
 # Access your feeds at {BASE_URL}/index.html in your browser
 ```
 
+## Project Layout
+
+- `src/focus_feed/` - Application package. `producer/` contains base, media, and document strategies; `feeds/` contains feed generation, markdown, and validation; `cli/` contains command helpers, watch, and options. Shared modules include `filetypes.py`, `retry.py`, `utils.py`, and `metadata_io.py`; `services/` contains extractors, the transcriber, summarizer, and audio extraction service.
+- `tests/` - Automated tests.
+- `data/` - Example input data and generated files; this directory is gitignored.
+- `scripts/` - Project scripts (gitignored).
+- `artifacts/` - Project proposal, specifications, and design documents.
+- `example.env` - Environment-variable template to copy to `.env`.
+
+## Development
+
+```bash
+uv sync
+uv run pytest
+uv run ruff check
+uv run ruff format
+uv run mypy .
+```
+
 ## Environment Variables
+
+Copy `example.env` to `.env` and set all nine required variables below. Optional variables can be added as needed.
 
 Required configuration:
 - BASE_URL - base URL for your feeds
@@ -87,6 +121,8 @@ Required configuration:
 
 Optional:
 - DOCLING_API - endpoint for the Docling API service used for document extraction
+- MAX_WORKERS - maximum number of files processed concurrently (default: `4`)
+- MAX_SUMMARIZE_CONCURRENCY - maximum number of concurrent summarization calls (default: `4`); equivalent to `--max-summarize-jobs`
 - PROMPT_ARTICLE_REFLECTION - reflection-aware article prompt
 - PROMPT_PODCAST_REFLECTION - reflection-aware podcast prompt
 - TRANSCRIPTION_REMOTE_MODEL - transcription model override
@@ -102,6 +138,9 @@ Watch for new or updated files:
 uv run focus-feed watch ./data
 ```
 
+### Parallel Processing
+Batch and watch mode process independent files concurrently with a bounded in-process thread pool. Steps within a single file stay sequential, so the metadata JSON and step ordering are unchanged. Concurrent summarization is capped at 4 by default; adjust it with `--max-summarize-jobs` / `MAX_SUMMARIZE_CONCURRENCY` or the overall file concurrency with `--max-workers`. The primary use case is a small number of new files per run, so no external task queue is used.
+
 ## Granular Processing
 
 Target specific steps or files:
@@ -114,6 +153,14 @@ Target specific steps or files:
 - `validate` - Validate all metadata files
 - `create-feed` - Create a template `feed.json` in a directory
 - `cleanup` - Remove unknown keys from JSON metadata files
+
+## Feeds & Discovery
+
+Each folder can contain a `feed.json` configuration with `title`, `description`, `language`, `author`, `link`, and `image` fields. `title` is optional; when omitted, the feed uses the default title. Feeds are generated only for folders containing `feed.json` and when eligible files are present. An `index.html` is generated in every directory containing `feed.json`; the root index lists feeds across the whole data tree. Use `{BASE_URL}/index.html` as the browser entry point.
+
+## Reflection Questions
+
+Place a `reflection.md` file in a folder containing a list of questions. Those questions are passed to the summarizer for files in that folder. When set, `PROMPT_ARTICLE_REFLECTION` overrides `PROMPT_ARTICLE`, and `PROMPT_PODCAST_REFLECTION` overrides `PROMPT_PODCAST`.
 
 ## Metadata JSON Schema
 
@@ -152,9 +199,14 @@ Media files are feed-eligible when `transcribe` and `summarize` are complete. PD
 
 ### Common Flags
 
-- `--force` - Force re-processing even if complete or unchanged
-- `--dry-run` - Preview without making changes (transcribe, summarize, extract, title)
-- `--config-file <path>` - Use custom `.env` file
+| Flag | Scope | Description |
+| --- | --- | --- |
+| `--config-file <path>` | Commands that accept configuration | Use a custom configuration file instead of `.env`. |
+| `--force` | Processing commands | Force re-processing even if complete or unchanged. |
+| `--dry-run` | `transcribe`, `summarize`, `extract`, `title` | Preview without making changes. |
+| `--max-workers <n>` | `process`, `watch` | Maximum number of files processed concurrently (default: `4`). |
+| `--max-summarize-jobs <n>` / `MAX_SUMMARIZE_CONCURRENCY` | `process`, `watch` | Maximum number of concurrent summarization calls (default: `4`). |
+| `--log-level <level>` / `LOG_LEVEL` | Global `focus-feed` command group | Set the logging level (default: `INFO`). |
 
 ### Examples
 

@@ -10,7 +10,7 @@ See proposal.md for problem, intent and scope.
 - For each directory provided, process all relevant files within that directory recursively
 - Skip files with JSON where all applicable steps complete AND file modification time matches JSON mtime. Treat missing JSON as new.
 - Warn on orphaned JSON and special characters in filenames. Preserve filenames.
-- Supported types: PDF, HTML, MP4, supported audio inputs, and video containers requiring audio extraction (see Audio Format Support)
+- Supported types: PDF, HTML, Docling documents (docx, doc, pptx, ppt, xlsx, xls), MP4, supported audio inputs, and video containers requiring audio extraction (see Audio Format Support)
 - Check file modification time on each process; store mtime in JSON; use to verify if file was modified after processing
 
 ### Metadata
@@ -21,11 +21,11 @@ See proposal.md for problem, intent and scope.
 - Remove control chars 0x00-0x1f except tab/newline/CR and 0x7f from extracted PDF/HTML.
 - Compute SHA256 during first extraction or before feed generation (whichever comes first).
 - Transcribed audio/video: description blank, summary = key takeaways, content = transcript
-- PDF/HTML: description = extracted metadata, content = plaintext, summary null unless summarized
+- PDF/HTML/Docling documents: description = extracted metadata, content = plaintext, summary null unless summarized
 
 ### Feed Eligibility
 - Transcribed audio/video: transcribe.complete AND summarize.complete
-- PDF/HTML: extract.complete AND summarize.complete
+- PDF/HTML/Docling documents: extract.complete AND summarize.complete
 - Ineligible items excluded from feeds
 - Nested feeds: each feed includes all content from its entire subtree (inner feeds are subsets of outer feeds)
 
@@ -38,11 +38,11 @@ See proposal.md for problem, intent and scope.
 - If a video has no audio stream, or its container/codec cannot be processed, transcription MUST fail with a clear error and MUST NOT be marked complete.
 - Transcribe supported audio and video inputs to markdown via the remote OpenAI-compatible API only (no local transcription). TRANSCRIPTION_ENDPOINT required.
 - Summarize audio/video transcripts via LLM, feeding the entire transcript.
-- Use PyAV for media container and stream metadata where available. Metadata values may be absent, container-level rather than stream-specific, or reported in stream time-base units.
+- Use PyAV for audio extraction and duration probing; use the optional `ffprobe` executable for audio metadata (duration, creation_time) where available. Metadata values may be absent, container-level rather than stream-specific, or reported in stream time-base units.
 - Record remote API errors in JSON.
 - Feed eligibility for transcribed media remains `transcribe.complete` AND `summarize.complete`.
 
-## PyAV Capability Assessment (`av>=11.0`)
+## PyAV Capability Assessment (current requirement `av>=19.0.2`)
 
 ### Technical Findings
 - PyAV is a Python binding around FFmpeg libraries, including libavformat and libavcodec. It does not have a separate, fixed catalog of media formats. File/container demuxing and codec decoding are determined by the FFmpeg libraries and build linked to the installed PyAV package.
@@ -83,13 +83,13 @@ See proposal.md for problem, intent and scope.
 - Acceptance tests MUST cover direct-submit audio formats, video extraction formats, absent audio, multiple streams, unsupported codecs, and temporary-file cleanup against the deployed PyAV build.
 
 ### Documents
-- Extract metadata + content from PDF/HTML.
+- Extract metadata + content from PDF/HTML and Docling documents (docx, doc, pptx, ppt, xlsx, xls).
 - Summarization via explicit `summarize` command (required for feed eligibility).
 - Feed item `pubDate` MUST come from the `summarize` step's `end_time`. The summarization-attribution helper may fall back to metadata `date` or `publication_date`; that fallback does not determine `pubDate`.
 
 ### Reflection
 - Check for `reflection.md` in source folder. Prepend its content to summarization prompt.
-- Prompts: audio/video `PROMPT_PODCAST_REFLECTION` fallback `PROMPT_PODCAST`; PDF/HTML `PROMPT_ARTICLE_REFLECTION` fallback `PROMPT_ARTICLE`.
+- Prompts: audio/video `PROMPT_PODCAST_REFLECTION` fallback `PROMPT_PODCAST`; PDF/HTML/Docling documents `PROMPT_ARTICLE_REFLECTION` fallback `PROMPT_ARTICLE`.
 
 ### Feeds
 - Generate `podcast.xml` and `articles.xml` per folder with `feed.json`.
@@ -103,14 +103,19 @@ See proposal.md for problem, intent and scope.
 ### CLI
 Commands: `process`, `watch`, `transcribe`, `summarize`, `extract`, `title`, `feeds`, `validate`, `create-feed`, `cleanup`
 Accept one or more files or directories as positional arguments.
-Flags: `--config-file`, `--force`, `--dry-run` for transcribe/summarize/extract.
+Flags: `--config-file`, `--force`, `--dry-run` for transcribe/summarize/extract/title.
 `--force` re-runs step regardless of completion status or mtime.
+`--max-workers` (batch and watch): maximum number of files processed concurrently; defaults to 4.
+`--max-summarize-jobs` (batch and watch): maximum number of concurrent summarization calls; defaults to 4. Also configurable via `MAX_SUMMARIZE_CONCURRENCY`.
 
 ## Non-Functional
 - Local processing by default for extraction and feed generation; transcription is remote-only
 - Open-weight models supported via OpenAI-compatible endpoints for transcription and summarization
 - Summaries = concise key takeaways, transcripts = markdown
-- Watch mode debounced with periodic rescan fallback
+- Batch and watch processing run independent files concurrently with a bounded in-process thread pool; per-file step order is unchanged and no external task queue or broker is used
+- Concurrent summarization is capped at 4 by default and configurable; the cap applies across all workers
+- Watch mode debounced with periodic rescan fallback and per-path in-flight guards to prevent duplicate concurrent processing of the same file
+- Feed generation runs only after all concurrent file processing has settled
 
 ## Constraints
 - Remote-only transcription; no local whisper
@@ -119,9 +124,9 @@ Flags: `--config-file`, `--force`, `--dry-run` for transcribe/summarize/extract.
 - Special characters preserved with warnings only
 - Unix epoch timestamps with millisecond precision
 - Title dict with filename/extracted/generated
-- Markdown library (>=3.5.0) required for markdown to HTML conversion with XSS protection
+- Markdown library (>=3.11.2) required for markdown to HTML conversion with XSS protection
 - Remote transcription: vLLM server requires `VLLM_MAX_AUDIO_DECODE_DURATION_S` configuration for longer audio files
-- PyAV media capabilities depend on its linked FFmpeg build; package version `av>=11.0` alone is not a universal codec/container guarantee
+- PyAV media capabilities depend on its linked FFmpeg build; package version `av>=19.0.2` alone is not a universal codec/container guarantee
 - No requirement currently exists to ship or invoke an FFmpeg CLI executable. PyAV's FFmpeg library dependency and the standalone CLI are separate deployment considerations.
 
 ## Risks
@@ -135,6 +140,9 @@ Flags: `--config-file`, `--force`, `--dry-run` for transcribe/summarize/extract.
 - Transcoding can be slower and lossy compared with stream-copy extraction; packet remuxing may fail when the target container cannot carry the source codec.
 - Missing or unreliable metadata can produce incorrect duration or publication information unless fields remain optional and are validated.
 - Broadening extensions without updating scanning, validation, feed type rules, documentation, and tests creates inconsistent user expectations.
+- Concurrent LLM calls may hit endpoint rate limits → concurrency capped at 4 and configurable; retries keep exponential backoff.
+- Duplicate processing in watch mode → per-path in-flight guards plus scanner dedupe.
+- Shared HTTP client thread safety → verify with concurrency tests; avoid mutable per-request state.
 
 ## Open Questions
 - Is the requested outcome limited to recording this capability assessment, or should a later change expand Focus Feed's accepted inputs beyond MP4/PDF/HTML?
@@ -148,7 +156,7 @@ Flags: `--config-file`, `--force`, `--dry-run` for transcribe/summarize/extract.
 - Stream selection, codec context and timing: https://pyav.org/docs/stable/api/stream.html
 - Audio sample properties and resampling: https://pyav.org/docs/stable/api/audio.html
 - Packet remuxing cookbook: https://pyav.org/docs/stable/cookbook/basics.html
-- PyAV 11.0.0 package information: https://pypi.org/project/av/11.0.0/
+- PyAV package information: https://pypi.org/project/av/
 
 ## Metadata Example
 ```json
@@ -176,7 +184,7 @@ Flags: `--config-file`, `--force`, `--dry-run` for transcribe/summarize/extract.
 
 ## Environment
 Required: BASE_URL, LLM_ENDPOINT, LLM_API_KEY, LLM_MODEL, PROMPT_ARTICLE, PROMPT_PODCAST, PROMPT_TITLE, TRANSCRIPTION_ENDPOINT, TRANSCRIPTION_API_KEY
-Optional: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION, TRANSCRIPTION_REMOTE_MODEL
+Optional: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION, TRANSCRIPTION_REMOTE_MODEL, DOCLING_API, MAX_WORKERS, MAX_SUMMARIZE_CONCURRENCY
 
 ## FFmpeg and PyAV Capability Research
 
@@ -185,7 +193,7 @@ Optional: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION, TRANSCRIPTION_RE
 - MP4, MKV/Matroska, AVI, MOV, and WMV/ASF are common container families. MP3, WAV, OGG, M4A, and AAC refer to common audio file/container or codec forms, not interchangeable types. A filename extension alone does not establish that the specific stream codec can be decoded or encoded.
 - FFmpeg can inspect and process a large set of media types, but exact support depends on the installed build, enabled components, input codec, and output muxer/encoder. `ffmpeg -formats`, `-demuxers`, `-muxers`, `-decoders`, and `-encoders` reveal local capability. Consequently do not publish an unconditional exhaustive supported-format list.
 - `ffprobe` reads container and stream information and can emit JSON, including format and stream fields and metadata tags. Useful fields include format name, duration, bit rate, tags, stream codec name/type, sample rate, channel layout/count, stream duration, and per-stream tags where available. Probe results can omit fields, and duration or timestamps may be absent, estimated, or container-level rather than specific to the selected audio stream.
-- Project inspection: `pyproject.toml` requires `av>=11.0`. PyAV is a Python binding around FFmpeg libraries and is used by remote transcription and `services/audio_extractor.py`; `src/focus_feed/services/extractors.py` invokes the `ffprobe` executable through `subprocess` and parses JSON. The `ffmpeg` CLI is not used for audio extraction.
+- Project inspection: `pyproject.toml` requires `av>=19.0.2`. PyAV is a Python binding around FFmpeg libraries and is used by remote transcription and `services/audio_extractor.py`; `src/focus_feed/services/extractors.py` invokes the `ffprobe` executable through `subprocess` and parses JSON. The `ffmpeg` CLI is not used for audio extraction.
 
 ### Extraction approaches and quality
 - **Stream copy/remux:** Select an audio stream and copy its compressed packets into a compatible audio container without decoding/re-encoding. This avoids generational quality loss and is fast, but only works when the output container supports that codec. It does not convert codec, sample rate, or channels. Example: `ffmpeg -i input.mp4 -map 0:a:0 -vn -c:a copy output.m4a`.
@@ -205,7 +213,7 @@ Optional: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION, TRANSCRIPTION_RE
 - PyAV can open containers, inspect streams, demux packets, decode audio frames, resample, encode, and mux output. It supports the in-process extraction pipeline when the required operations are available in the linked FFmpeg libraries and PyAV API.
 - Direct `ffmpeg` is not required merely because PyAV uses FFmpeg. Use the CLI when its concise stream mapping and filter/transcode workflow is preferred, when a tested command is easier to maintain than manual packet/frame handling, or when operations exposed by the CLI are not conveniently available through the installed PyAV version.
 - PyAV is used for in-process audio extraction and metadata handling, avoiding an extra `ffmpeg` CLI executable dependency. Keep existing `ffprobe` dependency behavior explicit: it is optional at runtime today and metadata extraction warns/falls back when missing. If portable probing is needed, PyAV can also provide much of this information, but field coverage and parsing behavior must be validated against representative files.
-- Neither approach guarantees support for every input. Distribution of PyAV binary wheels or system FFmpeg binaries should be checked for codec build features and platform compatibility. The existing project requirement `av>=11.0` does not itself specify the FFmpeg runtime version or exact codec set.
+- Neither approach guarantees support for every input. Distribution of PyAV binary wheels or system FFmpeg binaries should be checked for codec build features and platform compatibility. The existing project requirement `av>=19.0.2` does not itself specify the FFmpeg runtime version or exact codec set.
 
 ### Licensing and legal considerations
 - FFmpeg's upstream codebase is generally LGPL v2.1 or later, but optional GPL components can cause a build to be GPL; certain nonfree configurations can make resulting binaries non-redistributable. External libraries can add separate obligations or change the effective licensing situation.
@@ -229,7 +237,7 @@ Optional: PROMPT_ARTICLE_REFLECTION, PROMPT_PODCAST_REFLECTION, TRANSCRIPTION_RE
 - Container and codec support is assumed to be adequate for representative target files but depends on runtime build configuration. This must be validated against real course media before promising format coverage.
 - FLAC fallback extraction can produce large intermediate files and extend processing time; remote endpoint format limits remain external constraints.
 - Multiple audio tracks, commentary, silence, corruption, DRM, unsupported codecs, and inaccurate metadata can prevent extraction or yield the wrong track.
-- Licensing conclusions cannot be drawn solely from `av>=11.0`; linked-library build details and distribution model are not captured by that dependency declaration.
+- Licensing conclusions cannot be drawn solely from `av>=19.0.2`; linked-library build details and distribution model are not captured by that dependency declaration.
 
 ### References
 - FFmpeg command documentation: https://ffmpeg.org/ffmpeg.html
