@@ -38,7 +38,7 @@ def mock_title_response():
 
 
 @pytest.fixture
-def summarizer(mock_config):
+def summarizer(mock_config, valid_env):
     """Create a Summarizer instance with a mocked OpenAI client."""
     with mock.patch.object(OpenAI, "__init__", return_value=None):
         s = Summarizer(config=mock_config)

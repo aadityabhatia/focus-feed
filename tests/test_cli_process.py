@@ -20,6 +20,7 @@ from click.testing import CliRunner
 import pytest
 
 from focus_feed.cli import app
+from focus_feed.metadata import Metadata, StepMap
 from focus_feed.scanner import ScannedFile
 
 # ---------------------------------------------------------------------------
@@ -185,10 +186,16 @@ def _make_valid_metadata(
 
 
 def _make_mock_metadata(feed_eligible: bool = True):
-    """Create a mock Metadata object for testing."""
-    mock_obj = mock.MagicMock()
-    mock_obj.feed_eligible = feed_eligible
-    return mock_obj
+    """Create Metadata for testing the process result contract."""
+    status = "complete" if feed_eligible else None
+    return Metadata(
+        title={"filename": "test", "extracted": None, "generated": None},
+        filename="test.mp4",
+        filetype="mp4",
+        size=0,
+        transcribe=StepMap(status=status),
+        summarize=StepMap(status=status),
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -299,11 +306,10 @@ class TestProcessCommand:
             mock_gen.return_value = {"podcast": 0, "articles": 1}
             with mock.patch("focus_feed.producer.Producer") as MockProducer:
                 mock_producer = mock.MagicMock()
-                # First call (bad.mp4) returns error, second (doc.pdf) returns success
-                mock_producer.process_file.side_effect = [
-                    _make_mock_metadata(feed_eligible=False),
-                    _make_mock_metadata(feed_eligible=True),
-                ]
+                # Choose a result by filename rather than worker scheduling order.
+                mock_producer.process_file.side_effect = lambda scanned_file: _make_mock_metadata(
+                    feed_eligible=scanned_file.filename != "bad.mp4"
+                )
                 MockProducer.return_value = mock_producer
 
                 result = runner.invoke(

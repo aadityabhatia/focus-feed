@@ -23,6 +23,7 @@ from dotenv import load_dotenv
 import pytest
 
 from focus_feed.cli import app, main
+from focus_feed.metadata import Metadata, StepMap
 from focus_feed.scanner import ScannedFile
 
 # ---------------------------------------------------------------------------
@@ -188,10 +189,16 @@ def _make_valid_metadata(
 
 
 def _make_mock_metadata(feed_eligible: bool = True):
-    """Create a mock Metadata object for testing."""
-    mock_obj = mock.MagicMock()
-    mock_obj.feed_eligible = feed_eligible
-    return mock_obj
+    """Create Metadata for testing the process result contract."""
+    status = "complete" if feed_eligible else None
+    return Metadata(
+        title={"filename": "test", "extracted": None, "generated": None},
+        filename="test.mp4",
+        filetype="mp4",
+        size=0,
+        transcribe=StepMap(status=status),
+        summarize=StepMap(status=status),
+    )
 
 
 # ---------------------------------------------------------------------------
